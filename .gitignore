@@ -1,0 +1,30 @@
+# secrets and credentials
+.env
+.env.*
+*.pem
+*.key
+**/credentials*
+
+# raw private transcripts and worker files never enter this repo
+transcripts/
+*.transcript.jsonl
+subagents/
+
+# caches, temp, worker scratch
+__pycache__/
+*.pyc
+.pytest_cache/
+.symforge/
+.citadel/
+.codex/
+.planning/
+tmp/
+temp/
+*.tmp
+
+# build and environments
+.venv/
+venv/
+target/
+node_modules/
+dist/
