@@ -9,7 +9,7 @@ Date: 2026-10-28. Status: accepted by the chair after independent verification. 
 | `Cargo.toml` | package `coding-supervisor` 0.1.0, edition 2024, no dependency section of any kind (normal, dev, build, target-specific) |
 | `Cargo.lock` | one `[[package]]` entry, the project itself |
 | `src/lib.rs` | records `TaskContract`, `Candidate`, `VerificationReceipt`, `Finding`, `Checkpoint`; `TaskState` with the ten states; the `Task` gate with freshness invalidation, bounded repair, receipt validation and resume; `#![forbid(unsafe_code)]`; 438 lines |
-| `tests/scenarios.rs` | `FakeRunner` fake provider, Duet contract helper (C1 to C4 mandatory, scope `src/` and `tests/`, two repair rounds), eleven tests; 243 lines |
+| `tests/scenarios.rs` | `FakeRunner` fake provider, Duet contract helper (C1 to C4 mandatory, scope `src/` and `tests/`, two repair rounds), twelve tests |
 
 All four files are LF (zero carriage-return bytes). No `target/` directory inside the checkout; artifacts under `C:\Target\coding-supervisor\main\target`.
 
@@ -19,7 +19,7 @@ Toolchain: `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.1 (5f94df478 2026-
 
 | Command | Exit code | Evidence |
 |---|---|---|
-| `cargo test` | 0 | `test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out` (scenarios binary); lib unit tests: 0 |
+| `cargo test` | 0 | `test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out` (scenarios binary); lib unit tests: 0. An earlier run of the worker's handoff showed 11 passed before the chair's additions below. |
 | `cargo fmt --check` | 0 | no diff lines |
 | `cargo clippy --all-targets -- -D warnings` | 0 | `Finished dev profile`, no warning or error lines |
 | `cargo tree -e normal,build,dev --target all` | 0 | single line `coding-supervisor v0.1.0 (E:\project\coding-supervisor)`; no other package on any edge kind or target |
@@ -43,6 +43,25 @@ The T2 table has ten rows covering thirteen inherited identifiers (the `C1-C4` r
 | X1 | X1 | `x1_receipt_without_exit_code_rejected` | ok | `ReceiptMissingExitCode` |
 | X2 | X2 | `x2_receipt_for_other_candidate_rejected` | ok | `ReceiptForOtherCandidate { expected, got }` |
 | (none) | A20 spirit | `resumed_review_requires_fresh_receipts` | ok | see deviation below |
+| (none) | state machine (T1 acceptance) | `illegal_transitions_return_typed_errors_and_preserve_state` | ok | `try_accept`, `request_repair`, `observe_candidate` from `Queued`; `start_preparing`, `finish_repair`, `complete` from `Verifying`; `record_receipt` from `Repairing` (no receipt stored, repair count unchanged); `block`, `fail`, `raise_finding`, `finish_repair` from `Cancelled`. Each returns `InvalidTransition { from, event }` and leaves state, candidate, receipts and findings unchanged. |
+
+## Candidate identity: who owns it
+
+`CandidateId { base_commit, dirty_digest }` is supplied by the caller. The core never reads a repository, never hashes a working tree and never computes a digest; it only compares identities for equality. Fingerprinting uncommitted content is therefore **not implemented** in this slice and remains an adapter obligation (T4 onward): the adapter must produce a `dirty_digest` that changes whenever tracked or untracked content it covers changes, and must state what it covers. The freshness tests (A19, R28, X2) use synthetic identities (`"one"`, `"two"`, `"other"`); they prove that the gate invalidates and rejects on an identity change, not that any real content change would be detected. No claim of candidate-change detection is made for a live repository until an adapter exists and is tested.
+
+## Source checks (checks, not proofs)
+
+These are mechanical scans and compiler runs. Passing them does not prove the absence of panics or memory errors; failing any of them would have blocked acceptance.
+
+| Check | Method | Result |
+|---|---|---|
+| No explicit panic call in production source | `grep -nE 'panic!|unwrap\(|expect\(|unreachable!|todo!|unimplemented!|assert!|assert_eq!' src/lib.rs` | zero matches after the chair replaced the worker's single `expect` in `try_accept` with a typed `ReceiptMissingExitCode` arm |
+| No unsafe code | `#![forbid(unsafe_code)]` is line 1 of `src/lib.rs`; a violation is a compile error | present; `cargo test` compiled |
+| Clippy with warnings denied | `cargo clippy --all-targets -- -D warnings` | exit 0 |
+| Arithmetic | one `+= 1` on `consumed_repair_rounds: u32`, executed only when `consumed < max_repair_rounds`, so it cannot overflow | by inspection |
+| Indexing | no slice or `Vec` indexing in `src/lib.rs`; all lookups are iterator `find`/`any` | by inspection |
+
+Not checked: stack exhaustion, allocation failure, or panics inside the standard library.
 
 Not covered by any test here: `forbidden_effects` (stored on the contract, not evaluated; no scenario in T2 asks for it), `block`, `fail`, `cancel` transitions, `UnknownCriterion`, `UnknownFinding`, `ReceiptUnsupported` (a receipt with `claim_supported = false`).
 
@@ -61,4 +80,4 @@ Nothing in the live harness, the Jev policy, the agent briefs or the measurement
 ## Execution record
 
 - Worker: one Codex session `session-mvs7j3rf-fumluyl7`, background, high reasoning, full write access restricted by brief to the checkout and the target directory, no git writes; about 15 minutes wall time including the cold build.
-- Chair: design decisions, independent re-run of every check through Terminal Commander, code read, this file, commit.
+- Chair: design decisions, independent re-run of every check through Terminal Commander, code read, the `expect` removal, the illegal-transition test, this file, commits `b90b565` (worker's crate plus this file) and the follow-up commit with the chair's additions.

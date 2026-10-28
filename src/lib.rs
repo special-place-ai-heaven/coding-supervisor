@@ -309,13 +309,16 @@ impl Task {
                 .rev()
                 .find(|(r, s)| r.criterion == criterion.id && *s == ReceiptStatus::Current);
             match receipt {
-                Some((r, _)) if r.exit_code != Some(0) => {
-                    return Err(GateError::FailingReceipt {
-                        criterion: criterion.id.clone(),
-                        exit_code: r.exit_code.expect("accepted receipts have exit codes"),
-                    });
-                }
-                Some(_) => (),
+                Some((r, _)) => match r.exit_code {
+                    Some(0) => (),
+                    Some(exit_code) => {
+                        return Err(GateError::FailingReceipt {
+                            criterion: criterion.id.clone(),
+                            exit_code,
+                        });
+                    }
+                    None => return Err(GateError::ReceiptMissingExitCode),
+                },
                 None if self
                     .receipts
                     .iter()

@@ -241,3 +241,50 @@ fn x2_receipt_for_other_candidate_rejected() {
     );
     assert_eq!(t.state(), TaskState::Verifying);
 }
+#[test]
+fn illegal_transitions_return_typed_errors_and_preserve_state() {
+    let mut t = Task::new(contract());
+    let err = |from, event| Err(GateError::InvalidTransition { from, event });
+    assert_eq!(t.try_accept(), err(TaskState::Queued, "try_accept"));
+    assert_eq!(t.request_repair(), err(TaskState::Queued, "request_repair"));
+    assert_eq!(
+        t.observe_candidate(candidate("one")),
+        err(TaskState::Queued, "observe_candidate")
+    );
+    assert_eq!(t.state(), TaskState::Queued);
+    assert_eq!(t.candidate(), None);
+
+    let mut t = task();
+    assert_eq!(
+        t.start_preparing(),
+        err(TaskState::Verifying, "start_preparing")
+    );
+    assert_eq!(
+        t.finish_repair(),
+        err(TaskState::Verifying, "finish_repair")
+    );
+    assert_eq!(t.complete(), err(TaskState::Verifying, "complete"));
+    t.request_repair().unwrap();
+    let c = t.candidate().unwrap().clone();
+    assert_eq!(
+        t.record_receipt(FakeRunner::receipt("C1", &c, Some(0))),
+        err(TaskState::Repairing, "record_receipt")
+    );
+    assert_eq!(t.receipt_status(&CriterionId("C1".into())), None);
+    assert_eq!(t.state(), TaskState::Repairing);
+    assert_eq!(t.consumed_repair_rounds(), 1);
+
+    t.cancel().unwrap();
+    assert_eq!(t.block("x"), err(TaskState::Cancelled, "block"));
+    assert_eq!(t.fail("x"), err(TaskState::Cancelled, "fail"));
+    assert_eq!(
+        t.raise_finding(finding()),
+        err(TaskState::Cancelled, "raise_finding")
+    );
+    assert_eq!(
+        t.finish_repair(),
+        err(TaskState::Cancelled, "finish_repair")
+    );
+    assert_eq!(t.state(), TaskState::Cancelled);
+    assert_eq!(t.open_findings(), vec![]);
+}
