@@ -24,6 +24,10 @@ pub struct TaskContract {
     pub id: TaskId,
     pub goal: String,
     pub criteria: Vec<Criterion>,
+    /// Declared only. Not enforced by the gate in this slice: nothing observes
+    /// effects, so a forbidden effect neither blocks acceptance nor is prevented.
+    /// Enforcement needs adapter-supplied observations and an effect history
+    /// that survives candidate changes and resume; see T1-T2-RESULTS.md.
     pub forbidden_effects: Vec<String>,
     pub scope: Vec<String>,
     pub budget: Budget,
@@ -192,7 +196,10 @@ impl Task {
     pub fn observe_candidate(&mut self, candidate: Candidate) -> Result<(), GateError> {
         if !matches!(
             self.state,
-            TaskState::Preparing | TaskState::Verifying | TaskState::Repairing
+            TaskState::Preparing
+                | TaskState::Verifying
+                | TaskState::Repairing
+                | TaskState::ReadyForReview
         ) && !self.awaiting_observation
         {
             return Err(GateError::InvalidTransition {
@@ -203,6 +210,9 @@ impl Task {
         if self.candidate_identity.as_ref() != Some(&candidate.id) {
             for (_, status) in &mut self.receipts {
                 *status = ReceiptStatus::Stale;
+            }
+            if self.state == TaskState::ReadyForReview {
+                self.state = TaskState::Verifying;
             }
         }
         self.candidate_identity = Some(candidate.id.clone());
@@ -281,7 +291,13 @@ impl Task {
         Ok(())
     }
     pub fn request_repair(&mut self) -> Result<(), GateError> {
-        self.require(TaskState::Verifying, "request_repair")?;
+        self.ensure_observed()?;
+        if !matches!(self.state, TaskState::Verifying | TaskState::ReadyForReview) {
+            return Err(GateError::InvalidTransition {
+                from: self.state,
+                event: "request_repair",
+            });
+        }
         let max = self.contract.budget.max_repair_rounds;
         if self.consumed_repair_rounds >= max {
             self.state = TaskState::BudgetExhausted;
@@ -369,7 +385,6 @@ impl Task {
         event: &'static str,
         reason: String,
     ) -> Result<(), GateError> {
-        self.ensure_observed()?;
         if self.state.is_terminal() {
             return Err(GateError::InvalidTransition {
                 from: self.state,

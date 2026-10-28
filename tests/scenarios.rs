@@ -288,3 +288,173 @@ fn illegal_transitions_return_typed_errors_and_preserve_state() {
     assert_eq!(t.state(), TaskState::Cancelled);
     assert_eq!(t.open_findings(), vec![]);
 }
+
+#[test]
+fn block_fail_cancel_are_terminal_and_refuse_complete() {
+    for state in [TaskState::Blocked, TaskState::Failed, TaskState::Cancelled] {
+        let mut t = task();
+        for c in ["C1", "C2", "C3", "C4"] {
+            pass(&mut t, c);
+        }
+        t.raise_finding(finding()).unwrap();
+        match state {
+            TaskState::Blocked => t.block("r").unwrap(),
+            TaskState::Failed => t.fail("r").unwrap(),
+            TaskState::Cancelled => t.cancel().unwrap(),
+            _ => unreachable!(),
+        }
+        assert_eq!(t.state(), state);
+        for (event, result) in [
+            ("complete", t.complete()),
+            ("try_accept", t.try_accept()),
+            ("request_repair", t.request_repair()),
+        ] {
+            assert_eq!(
+                result,
+                Err(GateError::InvalidTransition { from: state, event })
+            );
+        }
+        assert_eq!(t.state(), state);
+        assert_eq!(
+            t.receipt_status(&CriterionId("C1".into())),
+            Some(ReceiptStatus::Current)
+        );
+        assert_eq!(t.open_findings(), vec![finding()]);
+        assert_eq!(t.consumed_repair_rounds(), 0);
+    }
+}
+
+#[test]
+fn resume_from_repairing_reobserves_before_transition() {
+    let mut t = task();
+    t.raise_finding(finding()).unwrap();
+    t.request_repair().unwrap();
+    let mut t = Task::resume(contract(), t.checkpoint());
+    assert_eq!(t.state(), TaskState::Repairing);
+    assert_eq!(t.consumed_repair_rounds(), 1);
+    assert_eq!(t.finish_repair(), Err(GateError::CandidateNotObserved));
+    assert_eq!(t.state(), TaskState::Repairing);
+    t.observe_candidate(candidate("one")).unwrap();
+    t.finish_repair().unwrap();
+    assert_eq!(t.state(), TaskState::Verifying);
+    assert_eq!(
+        t.try_accept(),
+        Err(GateError::MissingReceipt(CriterionId("C1".into())))
+    );
+}
+
+#[test]
+fn review_candidate_change_invalidates_receipts_and_reverts_to_verifying() {
+    let mut t = task();
+    for c in ["C1", "C2", "C3", "C4"] {
+        pass(&mut t, c);
+    }
+    t.try_accept().unwrap();
+    assert_eq!(t.state(), TaskState::ReadyForReview);
+    t.observe_candidate(candidate("one")).unwrap();
+    assert_eq!(t.state(), TaskState::ReadyForReview);
+    assert_eq!(
+        t.receipt_status(&CriterionId("C1".into())),
+        Some(ReceiptStatus::Current)
+    );
+    t.observe_candidate(candidate("two")).unwrap();
+    assert_eq!(t.state(), TaskState::Verifying);
+    assert_eq!(
+        t.receipt_status(&CriterionId("C1".into())),
+        Some(ReceiptStatus::Stale)
+    );
+    assert_eq!(
+        t.complete(),
+        Err(GateError::InvalidTransition {
+            from: TaskState::Verifying,
+            event: "complete"
+        })
+    );
+    assert_eq!(
+        t.try_accept(),
+        Err(GateError::StaleReceipt(CriterionId("C1".into())))
+    );
+    for c in ["C1", "C2", "C3", "C4"] {
+        pass(&mut t, c);
+    }
+    t.try_accept().unwrap();
+    t.complete().unwrap();
+}
+
+#[test]
+fn review_same_candidate_preserves_evidence() {
+    let mut t = task();
+    for c in ["C1", "C2", "C3", "C4"] {
+        pass(&mut t, c);
+    }
+    t.try_accept().unwrap();
+    t.observe_candidate(candidate("one")).unwrap();
+    t.complete().unwrap();
+}
+
+#[test]
+fn review_finding_enters_bounded_repair() {
+    let mut t = task();
+    for c in ["C1", "C2", "C3", "C4"] {
+        pass(&mut t, c);
+    }
+    t.try_accept().unwrap();
+    // A Low finding does not block acceptance, so review can reach the cap.
+    let low = Finding {
+        severity: Severity::Low,
+        ..finding()
+    };
+    t.raise_finding(low.clone()).unwrap();
+    t.request_repair().unwrap();
+    assert_eq!(t.state(), TaskState::Repairing);
+    assert_eq!(t.consumed_repair_rounds(), 1);
+    t.finish_repair().unwrap();
+    t.try_accept().unwrap();
+    t.request_repair().unwrap();
+    assert_eq!(t.consumed_repair_rounds(), 2);
+    t.finish_repair().unwrap();
+    t.try_accept().unwrap();
+    assert_eq!(t.state(), TaskState::ReadyForReview);
+    assert_eq!(
+        t.request_repair(),
+        Err(GateError::RepairBudgetExhausted { max: 2 })
+    );
+    assert_eq!(t.state(), TaskState::BudgetExhausted);
+    assert_eq!(t.consumed_repair_rounds(), 2);
+    assert_eq!(t.open_findings(), vec![low]);
+    assert_eq!(
+        t.receipt_status(&CriterionId("C1".into())),
+        Some(ReceiptStatus::Current)
+    );
+    assert_eq!(
+        t.complete(),
+        Err(GateError::InvalidTransition {
+            from: TaskState::BudgetExhausted,
+            event: "complete"
+        })
+    );
+}
+
+#[test]
+fn stopping_a_resumed_task_needs_no_workspace() {
+    for state in [TaskState::Blocked, TaskState::Failed, TaskState::Cancelled] {
+        let mut t = Task::resume(contract(), task().checkpoint());
+        assert_eq!(t.try_accept(), Err(GateError::CandidateNotObserved));
+        match state {
+            TaskState::Blocked => t.block("workspace gone").unwrap(),
+            TaskState::Failed => t.fail("workspace gone").unwrap(),
+            TaskState::Cancelled => t.cancel().unwrap(),
+            _ => unreachable!(),
+        }
+        assert_eq!(t.state(), state);
+        assert_eq!(
+            t.checkpoint().next_action,
+            if state == TaskState::Cancelled {
+                ""
+            } else {
+                "workspace gone"
+            }
+        );
+        assert_eq!(t.complete(), Err(GateError::CandidateNotObserved));
+    }
+}

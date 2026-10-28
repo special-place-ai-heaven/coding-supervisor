@@ -81,3 +81,60 @@ Nothing in the live harness, the Jev policy, the agent briefs or the measurement
 
 - Worker: one Codex session `session-mvs7j3rf-fumluyl7`, background, high reasoning, full write access restricted by brief to the checkout and the target directory, no git writes; about 15 minutes wall time including the cold build.
 - Chair: design decisions, independent re-run of every check through Terminal Commander, code read, the `expect` removal, the illegal-transition test, this file, commits `b90b565` (worker's crate plus this file) and the follow-up commit with the chair's additions.
+
+## Follow-up: state-machine correctness repair (same day, after `ec632a8`)
+
+### Mapping to Duet spec section 9 (`docs/archive/inherited-specs/Duet-Hermes-Ultra-Harness-Implementation-Spec-v1.md`, lines 240 to 246)
+
+What the spec states explicitly:
+
+- Path `queued -> preparing -> verifying -> ready_for_review`; "verification failure may enter `repairing -> verifying`"; other terminal/paused states `blocked`, `cancelled`, `budget_exhausted`, `failed`.
+- "`ready_for_review` requires all mandatory checks passing on the current candidate."
+- "v1 conservatively invalidates all code-check results whenever candidate content changes."
+- Resume "reobserves the workspace before mutating"; "restarting does not reset consumed budgets"; a stopped or budget-exhausted task "produces a partial receipt with missing criteria and a resume reference".
+
+| Transition in the core | Spec basis | Label |
+|---|---|---|
+| `observe_candidate` in `ready_for_review`; identity change marks every receipt stale and returns the task to `verifying` | Staleness: explicit ("invalidates all code-check results whenever candidate content changes"; "passing on the current candidate"). The return arrow `ready_for_review -> verifying` is not drawn in the spec. | Staleness explicit; the state return is an implementation interpretation serving A19 |
+| `observe_candidate` in `ready_for_review` with the same identity: no change | Follows from the same two sentences | Explicit by implication |
+| `request_repair` from `ready_for_review` | Spec draws `repairing` only from a verification failure. A finding raised during review is not a verification failure in the spec's words. | Implementation interpretation serving bounded repair; cap and `budget_exhausted` behaviour unchanged |
+| `block`, `fail`, `cancel` without prior re-observation after resume | Spec: resume "reobserves the workspace before mutating". Stopping mutates task state, not the workspace, and `on_block: checkpoint_and_report` needs a stop that works when the workspace is gone. | Implementation interpretation serving A20 and `checkpoint_and_report`; all other transitions keep the re-observation precondition |
+| `completed` state, reached by `complete()` from `ready_for_review` with a fresh acceptance check | **Not in the spec's state list.** Added by this repository's `CLAUDE.md` (first-slice scope) as the explicit reviewer-accept terminal. | Repository addition; reported, not rewritten |
+| `blocked` treated as terminal | Spec calls it "terminal/paused". Un-blocking is not modelled; a checkpoint taken in `blocked` resumes as `blocked`. | Narrower than the spec's wording; reported, not changed |
+
+No conflict with the explicit transitions. Two differences from the spec's state list are reported above and left as they are.
+
+### `forbidden_effects`: declared, unenforced
+
+The field exists on `TaskContract` and is stored. Nothing in the core observes an effect, so a forbidden effect neither blocks acceptance nor is prevented. Documented in a doc comment on the field, in `CLAUDE.md` and here. Requirements for a later slice, not implemented now:
+
+1. Adapter-supplied observations: the core cannot see effects; an adapter must report each observed effect (kind, target, time, evidence reference) as a typed record.
+2. Effect history scoped to the task or attempt, not the candidate: it must survive candidate changes and resume, because an effect that happened is not undone by a new candidate or a restart.
+3. Explicit observation coverage per adapter: which effect kinds the adapter can see and which it cannot, so an absent observation is not read as "no effect".
+4. Two distinct capabilities, declared separately: rejecting acceptance after a forbidden effect is observed (gate-side, possible once 1 to 3 exist) versus preventing the effect (needs an interception point in the harness, the subject of T3).
+
+### Changes made (`src/lib.rs`, `tests/scenarios.rs` only)
+
+| Gap | Change | Test | Result |
+|---|---|---|---|
+| 3a | `observe_candidate` allowed in `ReadyForReview`; an identity change marks every receipt stale and returns the task to `Verifying` | `review_candidate_change_invalidates_receipts_and_reverts_to_verifying`, `review_same_candidate_preserves_evidence` | ok: after the change `complete()` is refused (`InvalidTransition` from `Verifying`) and `try_accept()` reports `StaleReceipt(C1)`; the same identity leaves state and receipts untouched and `complete()` succeeds |
+| 3b | `request_repair` allowed from `ReadyForReview` | `review_finding_enters_bounded_repair` | ok: a Low finding raised in review enters `Repairing` (consumed 1), the cycle repeats to the cap, the third request returns `RepairBudgetExhausted { max: 2 }` with state `BudgetExhausted`, consumed still 2, the finding still open, `receipt_status(C1)` still `Current`, `complete()` refused. "Without state mutation" is read as: no change to consumed rounds, receipts or findings; the state itself follows the existing R23 contract and becomes `BudgetExhausted`. |
+| 3c | `block`, `fail`, `cancel` no longer require re-observation; terminal-state restriction kept; no other precondition changed | `stopping_a_resumed_task_needs_no_workspace` | ok: on a resumed, unobserved task `try_accept()` still returns `CandidateNotObserved`, each stop succeeds, the reason lands in `checkpoint().next_action`, and `complete()` afterwards returns `CandidateNotObserved` (the observation precondition is checked before the state check; a typed error with no mutation, not `InvalidTransition`) |
+| item 1 | none (tests only) | `block_fail_cancel_are_terminal_and_refuse_complete` | ok: from each terminal state `complete`, `try_accept`, `request_repair` return `InvalidTransition { from, event }`; state, receipt status, open findings and consumed rounds unchanged |
+| item 1 | none (tests only) | `resume_from_repairing_reobserves_before_transition` | ok: resume restores `Repairing` and consumed 1; `finish_repair` is refused until `observe_candidate`; afterwards receipts are absent (`MissingReceipt(C1)`) |
+| item 2 | doc comment on `forbidden_effects` | none | documented, unenforced |
+
+Worker brief errors, corrected by the chair rather than worked around: the 3b sequence as dispatched used a High finding, which blocks acceptance by design, so the worker's version stopped at `OpenFinding`; the chair rewrote the test with a Low finding so the cycle reaches the cap. The 3c brief expected `InvalidTransition` after a stop on an unobserved task; the code returns `CandidateNotObserved` first, which the chair accepted as the typed, non-mutating result it is.
+
+### Verification (chair, Terminal Commander, `CARGO_TARGET_DIR=C:\Target\coding-supervisor\main\target`)
+
+| Command | Exit code | Evidence |
+|---|---|---|
+| `cargo test` | 0 | `test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out` |
+| `cargo fmt --check` | 0 | no diff |
+| `cargo clippy --all-targets -- -D warnings` | 0 | `Finished dev profile` |
+| `cargo tree -e normal,build,dev --target all` | 0 | single line, the project itself |
+| `grep -nE 'panic!|unwrap\(|expect\(|unreachable!|todo!|unimplemented!|assert!|assert_eq!' src/lib.rs` | no match | zero explicit panic sites in production source (a check, not a proof) |
+| `grep -nE 'dependencies' Cargo.toml` | no match | zero dependency sections of any kind |
+
+Worker: Codex session `session-mvs8rj0i-kvghu2ah`, background, high reasoning, about 8 minutes. Test count went from 12 to 18.
