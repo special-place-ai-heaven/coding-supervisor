@@ -40,9 +40,15 @@ Out of scope for the first slice: a standalone loop engine, agent roster managem
 - Jev routing: live in advisory mode on this machine; persona abstention rate 74 percent over 4,375 receipts; the cause is **unmeasured**. A roster correction (epoch 2) is deferred until the running brief-after cohort is measured.
 - Known failing test in the Jev engine suite: `test_harnesses.py:349`, a stale pinned skill description unrelated to this project. The engine's full suite has not been run.
 
+## Language and toolchain (as_of 2026-10-28)
+
+- **The core is Rust.** Standard library only for the first slice; fake-provider tests run through `cargo test`. Owner's decision: Rust everywhere, latest stable. Installed 2026-10-28 after `rustup update stable`: `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.1`, `stable-x86_64-pc-windows-msvc`; pinned by `rust-toolchain.toml`.
+- The existing Python Jev engine at `C:\Users\rakovnik\.agents\jev` stays Python and unchanged; it is a separate integration reached through its CLI and JSON contract, never rewritten here.
+- Build artifacts never live in the checkout. Set `CARGO_TARGET_DIR=C:\Target\coding-supervisor\main\target` before any cargo command (see `C:\Target\README.md`). Builds and test runs go through Terminal Commander.
+
 ## Environment notes
 
-- Windows host, Linux-style line endings enforced by `.gitattributes`. Python 3.14 at `python`; pytest is not installed for it, use `unittest`. PyYAML lives in the user site, so `python -I` cannot import it.
+- Windows host, Linux-style line endings enforced by `.gitattributes`. Python 3.14 at `python` is used only for the lab's measurement scripts; pytest is not installed for it, and PyYAML lives in the user site, so `python -I` cannot import it.
 - Long-running commands go through Terminal Commander (`run_and_watch` for short runs, `command_start_combed` plus `bucket_wait` for long ones) and are cited by exit code and matched lines. Never pipe to tail, never redirect and grep, never sleep-poll.
 - Codex worker lessons: dispatch with `background=true` (a foreground call over 180 s is cancelled, not timed out); each Codex turn has a ten-minute cap, so jobs must write results as they go or be split; wait in 150 s slices.
 - Memory: decisions and lessons go to EverOS with the five-slot tag (project `TEAM` until a project tag exists); this file and `HANDOVER.md` must stand without it.

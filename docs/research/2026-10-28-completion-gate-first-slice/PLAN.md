@@ -10,17 +10,17 @@ A completion gate that, given a task contract and a stream of events (candidate 
 
 ### T1 — Core records and state machine
 
-Implement the five records and the task state machine in one small Python package (standard library only; `dataclasses`, `json`, `hashlib`).
+Implement the five records and the task state machine in one small Rust crate (standard library only for the first slice; no serialisation crate until a record must cross a process boundary, and then one, justified in the commit). Owner's decision: Rust, latest stable (installed and pinned: 1.99.1). `CARGO_TARGET_DIR=C:\Target\coding-supervisor\main\target` for every cargo command.
 
 - Records: `TaskContract` (id, goal, criteria list with ids and check names, forbidden effects, budget with max repair rounds), `Candidate` (base commit, dirty-tree digest, provenance), `VerificationReceipt` (criterion id, candidate identity, command, cwd, exit code, output reference, claim supported, timestamps), `Finding` (stable id, candidate identity, severity, location, evidence reference, disposition), `Checkpoint` (task state, candidate identity, open findings, consumed budget, next action).
 - States: `queued → preparing → verifying → ready_for_review`; `verifying → repairing → verifying`; terminal `blocked`, `budget_exhausted`, `failed`, `cancelled`, `completed`.
 - Rules: a receipt binds to exactly one candidate identity; a candidate change marks every affected receipt stale (conservative: all of them); `ready_for_review` requires a current, exit-0 receipt for every mandatory criterion; the repair cap is enforced before starting a repair, not after; resume loads the checkpoint and re-observes the candidate before any transition.
 
-Acceptance: the scenario tests in T2 pass; the package has no dependency outside the standard library; no record can be created with an unknown field.
+Acceptance: the scenario tests in T2 pass; the crate has no dependency outside the standard library; a record cannot be constructed with an unknown field (typed constructors, no free-form maps).
 
 ### T2 — Scenario tests with fake providers
 
-`unittest` only (pytest is not installed). One test per scenario, each named by its id so the mapping to the inherited contracts is visible.
+`cargo test`, run through Terminal Commander and cited by exit code. One test per scenario, each named by its id so the mapping to the inherited contracts is visible.
 
 | Id | Scenario | Required result |
 |---|---|---|
@@ -35,7 +35,7 @@ Acceptance: the scenario tests in T2 pass; the package has no dependency outside
 | X1 | Receipt cites a command whose exit code is missing | Receipt rejected as unsupported |
 | X2 | Receipt for a different candidate identity | Receipt rejected |
 
-Acceptance: all scenarios pass under `python -m unittest`; the run is recorded with command and exit code.
+Acceptance: all scenarios pass under `cargo test`; the run is recorded with command, toolchain version and exit code.
 
 ### T3 — Claude Code enforcement investigation (isolated fixture)
 
@@ -76,4 +76,4 @@ T1 and T2 together, then T3, then T4 and T5, then T6. No step starts on the live
 
 ## Explicitly not in this plan
 
-Routing changes, the epoch-2 Jev roster correction, an MCP server, a CLI beyond `python -m unittest`, any multi-harness adapter beyond Claude Code, and any claim about verified-work-per-token improvement. That claim is tested by the brief-after cohort in the lab, not by this plan.
+Routing changes, the epoch-2 Jev roster correction, an MCP server, a CLI beyond what T4's hooks need, any multi-harness adapter beyond Claude Code, any rewrite of the Python Jev engine, and any claim about verified-work-per-token improvement. That claim is tested by the brief-after cohort in the lab, not by this plan.

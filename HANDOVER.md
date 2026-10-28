@@ -45,14 +45,14 @@ Authoritative files inside it:
 
 Verify access from a fresh session: `git -C C:\Users\rakovnik\.claude\robert log --oneline -1` must print `7829ebe`, and the manifest check in section 9 must report no differences.
 
-## 4. Inherited contracts (not in git; copy before relying on them)
+## 4. Inherited contracts (preserved in this repository)
 
-Both live only in `C:\Users\rakovnik\Downloads\`, which is not durable. Copy them into the lab under `docs/` or into this repository's `docs/archive/` before the next session depends on them.
+Preserved on 2026-10-28 as byte-identical copies under `E:\project\coding-supervisor\docs\archive\inherited-specs\`, hashes verified against the originals in `C:\Users\rakovnik\Downloads\` (originals are LF, so git stores them unchanged). Cite the repository copies; the Downloads copies are provenance only.
 
 | Document | Path | Hash | What to preserve |
 |---|---|---|---|
-| Duet on Hermes Ultra harness spec v1 (2026-10-23) | `C:\Users\rakovnik\Downloads\Duet-Hermes-Ultra-Harness-Implementation-Spec-v1.md` | `5152b33988bc6041` | Section 9 Prepare: task contract with checks C1 baseline reproduces the failure, C2 candidate passes the reported test, C3 configured regression suite passes, C4 diff within scope; `max_repair_rounds`; states `queued, preparing, verifying, ready_for_review, repairing, blocked, cancelled, budget_exhausted, failed`. Section 13: A18 self-reported pass cannot mark ready; A19 candidate change makes a check stale; A20 resume keeps contract, budget, pending effects, candidate identity. |
-| Hermes harness research ledger (2026-10-23) | `C:\Users\rakovnik\Downloads\Hermes-Harness-Research-Ledger-2026-10-23.md` | `f068c894caf2a0ea` | H01 to H19 method cues; evaluation plan T01 to T16; per-accepted-task cost rule |
+| Duet on Hermes Ultra harness spec v1 (2026-10-23) | `docs\archive\inherited-specs\Duet-Hermes-Ultra-Harness-Implementation-Spec-v1.md` (original: `C:\Users\rakovnik\Downloads\Duet-Hermes-Ultra-Harness-Implementation-Spec-v1.md`) | `5152b33988bc6041` | Section 9 Prepare: task contract with checks C1 baseline reproduces the failure, C2 candidate passes the reported test, C3 configured regression suite passes, C4 diff within scope; `max_repair_rounds`; states `queued, preparing, verifying, ready_for_review, repairing, blocked, cancelled, budget_exhausted, failed`. Section 13: A18 self-reported pass cannot mark ready; A19 candidate change makes a check stale; A20 resume keeps contract, budget, pending effects, candidate identity. |
+| Hermes harness research ledger (2026-10-23) | `docs\archive\inherited-specs\Hermes-Harness-Research-Ledger-2026-10-23.md` (original: `C:\Users\rakovnik\Downloads\Hermes-Harness-Research-Ledger-2026-10-23.md`) | `f068c894caf2a0ea` | H01 to H19 method cues; evaluation plan T01 to T16; per-accepted-task cost rule |
 | Build Your Own Duet (source PDF) | `C:\Users\rakovnik\Downloads\build-your-own-duet.pdf` | `a57db5d75700b3d1` | Background only |
 
 No Rust or TypeScript product repository for "Hermes Ultra" exists on this machine. The only local Hermes material is the Nous Hermes Agent adapter under `C:\Users\rakovnik\.agents\`. The target of the research packages is therefore unnamed and unpinned; this repository is the product that fills that gap.
@@ -136,6 +136,7 @@ Epoch 2 (deferred): extend the persona registry so the candidate set includes th
 7. Per-accepted-task cost, failed attempts in the numerator, four repetitions or a cross-variant table before attributing a flip; these are the measurement rules for every comparison.
 8. Terminal Commander for every long command; the verdict header for every judge.
 9. Naming and GitHub location are decided: `coding-supervisor` at `https://github.com/special-place-ai-heaven/coding-supervisor`, local `E:\project\coding-supervisor`.
+10. Implementation language is Rust, latest stable, standard library only for the first slice, tests through `cargo test`. Updated and pinned on 2026-10-28: rustc 1.99.1 (58cf8f9c3), cargo 1.99.1, via `rust-toolchain.toml`. The Python Jev engine stays Python and unchanged.
 
 ## 9. Verification commands for the next session
 
@@ -156,4 +157,4 @@ Get-FileHash C:\Users\rakovnik\.agents\jev\policies\claude.yaml -Algorithm SHA25
 
 ## 10. What the next session should do first
 
-Read `CLAUDE.md`, then `docs/research/2026-10-28-completion-gate-first-slice/PLAN.md`, run section 9, then start PLAN T1 and T2 (core records, state machine, scenario tests with fake providers). Do not touch the live harness, the Jev policy, the agent briefs or the running cohort. Delegate execution to Codex workers in background mode with Terminal Commander for any long command; keep the chair for decisions and verification.
+Read `CLAUDE.md`, then `docs/research/2026-10-28-completion-gate-first-slice/PLAN.md`, run section 9, confirm `rustc --version` and set `CARGO_TARGET_DIR=C:\Target\coding-supervisor\main\target`, then start PLAN T1 and T2 (Rust core records, state machine, `cargo test` scenarios with fake providers). Do not touch the live harness, the Jev policy, the agent briefs or the running cohort. Delegate execution to Codex workers in background mode with Terminal Commander for any long command; keep the chair for decisions and verification.
