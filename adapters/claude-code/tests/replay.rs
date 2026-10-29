@@ -11,6 +11,7 @@ use coding_supervisor::{Candidate, CandidateId};
 use serde_json::{Value, json};
 use supervisor_claude_code::adapter::{Decision, Env, handle};
 use supervisor_claude_code::candidate::CandidateProvider;
+use supervisor_claude_code::journal::decision_parts;
 
 const CAPTURES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -422,17 +423,110 @@ fn journal_has_one_line_per_handled_event() {
         .collect();
     assert_eq!(lines.len(), decisions.len());
     for (line, decision) in lines.iter().zip(&decisions) {
-        assert_eq!(line["decision"], decision.clone().unwrap_or(Value::Null));
-        assert!(line["event"].is_string() && line["t"] == 1_000);
+        let (kind, text) = decision_parts(decision.as_ref().unwrap_or(&Value::Null));
+        assert_eq!(line["decision"], json!({"kind": kind, "text": text}));
+        assert!(line["event"].is_string() && line["t"] == 1_000 && line["v"] == 1);
     }
     let async_line = &lines[decisions.len() - 6];
     assert_eq!(async_line["event"], "PostToolUse");
     assert!(
-        async_line["decision"]["hookSpecificOutput"]["additionalContext"]
+        async_line["decision"]["text"]
             .as_str()
             .unwrap()
             .contains("background dispatch")
     );
+    // No prompt text, worker message or tool input is copied.
+    for leaked in [
+        "dispatch the fake-worker",
+        "Verify the fix in candidate.txt",
+        "candidate content v2",
+        "The gate is right to refuse",
+    ] {
+        assert!(!journal.contains(leaked), "{leaked}");
+    }
+}
+
+#[test]
+fn journal_v1_fields() {
+    let d = dir("journal-v1");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    assert_eq!(worker(&mut env, "w1", "PASS", &ALL4), Decision::None);
+    handle(
+        &template(FOREGROUND, "PostToolUse", Some("Agent")),
+        &mut env,
+    );
+    assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
+    handle(&stop("Done.", false), &mut env);
+    let r = handle(&pre("Write"), &mut env);
+    assert!(matches!(r, Decision::Deny(_)));
+    let journal = fs::read_to_string(env.state_dir.join("events.jsonl")).unwrap();
+    let lines: Vec<Value> = journal
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let keys = [
+        "v",
+        "t",
+        "session_id",
+        "prompt_id",
+        "task_id",
+        "state_location",
+        "candidate",
+        "event",
+        "tool_name",
+        "agent_id",
+        "agent_type",
+        "decision",
+        "reason",
+        "reasons",
+        "receipts",
+        "header",
+        "gate_state",
+        "accepted",
+        "tampered",
+        "usage",
+    ];
+    for line in &lines {
+        let mut got: Vec<&str> = line
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        got.sort();
+        let mut want = keys.to_vec();
+        want.sort();
+        assert_eq!(got, want);
+        assert_eq!(line["task_id"], "t4-test");
+        assert_eq!(
+            line["candidate"],
+            json!({"base_commit": "base", "dirty_digest": "one"})
+        );
+    }
+    let [handback, agent, first_stop, second_stop, deny] = &lines[lines.len() - 5..] else {
+        unreachable!()
+    };
+    assert_eq!(handback["event"], "SubagentStop");
+    assert_eq!(
+        handback["receipts"]["recorded"],
+        json!(["C1", "C2", "C3", "C4"])
+    );
+    assert_eq!(
+        handback["header"],
+        json!({"verdict": "PASS", "checks_run": 4, "lines": 4, "consistent": true})
+    );
+    assert_eq!(handback["gate_state"], "ready_for_review");
+    assert_eq!(agent["usage"]["total_tokens"], 7086);
+    assert_eq!(agent["usage"]["model"], "claude-haiku-5-5");
+    assert_eq!(
+        (&first_stop["accepted"], &first_stop["gate_state"]),
+        (&json!(true), &json!("completed"))
+    );
+    // Only the call that completed the task counts as acceptance.
+    assert_eq!(second_stop["accepted"], false);
+    assert_eq!(deny["decision"]["kind"], "deny");
+    assert_eq!(deny["reason"], "task is completed");
+    assert_eq!(deny["tampered"], false);
 }
 
 fn edit_gate(env: &Env, change: impl FnOnce(&mut Value)) -> Vec<u8> {

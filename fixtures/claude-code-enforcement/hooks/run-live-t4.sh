@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
-# T4 live runs through the adapter binary. Sequential: every session shares .supervisor/ in this cwd.
-# Usage (from Terminal Commander, env CLAUDECODE etc. cleared): bash hooks/run-live-t4.sh
+# T4 live runs through the adapter binary. Sequential: every session shares one gate state.
+# State lives outside the tree (local app data), as the adapter resolves it; the contract is copied there.
+# Usage (from Terminal Commander with Git Bash, env CLAUDECODE etc. cleared): bash hooks/run-live-t4.sh
 set -u
 FX="E:/project/coding-supervisor/fixtures/claude-code-enforcement"
 cd "$FX" || exit 1
 MODEL=sonnet
+OUT="${OUT_DIR:-captures}"
+mkdir -p "$OUT"
+
+# Same rule as the adapter: absolute cwd with every non-alphanumeric character replaced by '-'.
+KEY=$(python -c "import re;print(re.sub(r'[^A-Za-z0-9]','-',r'E:\\project\\coding-supervisor\\fixtures\\claude-code-enforcement'))")
+STATE_UNIX=$(cygpath -u "$LOCALAPPDATA\\coding-supervisor\\state\\$KEY")
+echo "state dir (unix): $STATE_UNIX"
 
 reset_state() {
+  rm -rf "$STATE_UNIX"
+  mkdir -p "$STATE_UNIX"
+  cp .supervisor/contract.json "$STATE_UNIX/contract.json"
   rm -f .supervisor/gate.json .supervisor/runs.jsonl .supervisor/events.jsonl
   printf 'candidate content v1\n' > candidate.txt
   rm -f out.txt
@@ -14,9 +25,9 @@ reset_state() {
 
 snapshot() {
   local name=$1
-  cp .supervisor/events.jsonl "captures/$name.adapter-events.jsonl" 2>/dev/null
-  cp .supervisor/gate.json "captures/$name.gate.json" 2>/dev/null
-  cp .supervisor/runs.jsonl "captures/$name.runs.jsonl" 2>/dev/null
+  cp "$STATE_UNIX/events.jsonl" "$OUT/$name.adapter-events.jsonl" 2>/dev/null
+  cp "$STATE_UNIX/gate.json" "$OUT/$name.gate.json" 2>/dev/null
+  cp "$STATE_UNIX/runs.jsonl" "$OUT/$name.runs.jsonl" 2>/dev/null
   echo "$name candidate.txt=$(cat candidate.txt) out.txt=$([ -f out.txt ] && echo present || echo absent)"
 }
 
@@ -29,21 +40,21 @@ run() {
     --setting-sources project --settings "$FX/.claude/settings-adapter.json" \
     --agents "$FX/hooks/agents-t4.json" --permission-mode acceptEdits \
     --session-id "$sid" --debug-file "$FX/captures/$name.debug.txt" --max-turns "$turns" \
-    > "captures/$name.result.json"
+    > "$OUT/$name.result.json"
   echo "$name exit=$?"
-  echo "$sid" > "captures/$name.session"
+  echo "$sid" > "$OUT/$name.session"
 }
 
 resume() {
   local name=$1 prev=$2 prompt=$3
   local sid
-  sid=$(cat "captures/$prev.session")
+  sid=$(cat "$OUT/$prev.session")
   echo "== $name resume session=$sid"
   claude -p "$prompt" --resume "$sid" --model "$MODEL" --output-format json \
     --setting-sources project --settings "$FX/.claude/settings-adapter.json" \
     --agents "$FX/hooks/agents-t4.json" --permission-mode acceptEdits \
     --debug-file "$FX/captures/$name.debug.txt" --max-turns 6 \
-    > "captures/$name.result.json"
+    > "$OUT/$name.result.json"
   echo "$name exit=$?"
 }
 

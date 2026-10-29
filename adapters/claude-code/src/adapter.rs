@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::candidate::{CandidateProvider, GitCandidate};
 use crate::header::{self, Verdict};
+use crate::journal::{self, Trace};
 use crate::state::{self, Gate, Stored, obj, state_name};
 use crate::{claim, guard, location};
 
@@ -116,18 +117,20 @@ pub fn handle(payload: &Value, env: &mut Env) -> Decision {
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let agent = text(payload, "agent_id").unwrap_or("main");
     let mut reasons = Vec::new();
-    let decision = process(payload, env, event, agent, &mut reasons).unwrap_or_else(|what| {
-        reasons.push(format!("adapter error: {what}"));
-        fail_open(&what)
-    });
-    let line = obj([
-        ("t", (env.clock)().into()),
-        ("event", event.into()),
-        ("agent_id", agent.into()),
-        ("decision", decision.to_json().into()),
-        ("reasons", reasons.into()),
-        ("state_location", env.state_location.into()),
-    ]);
+    let mut trace = Trace::default();
+    let decision =
+        process(payload, env, event, agent, &mut reasons, &mut trace).unwrap_or_else(|what| {
+            reasons.push(format!("adapter error: {what}"));
+            fail_open(&what)
+        });
+    let line = journal::line(
+        payload,
+        env.state_location,
+        (env.clock)(),
+        decision.to_json(),
+        &reasons,
+        &trace,
+    );
     match state::append_line(&env.state_dir.join("events.jsonl"), &line) {
         Ok(()) => decision,
         Err(what) => fail_open(&format!("events journal not written: {what}")),
@@ -140,6 +143,7 @@ fn process(
     event: &str,
     agent: &str,
     reasons: &mut Vec<String>,
+    trace: &mut Trace,
 ) -> Result<Decision, String> {
     if event == "PreToolUse"
         && let Some(denial) = guard::state_write_denial(payload, &env.state_dir)
@@ -153,9 +157,11 @@ fn process(
         reasons.push("command run journaled".to_owned());
     }
     let (contract, contract_sha256) = state::read_contract(&env.state_dir)?;
+    trace.task_id = contract.as_ref().map(|c| c.id.0.clone());
     // A removed contract with a gate.json still present fails the chain as well.
     let stored = match state::load_gate(&env.state_dir, &contract_sha256)? {
         Stored::Tampered(what) => {
+            trace.tampered = true;
             reasons.push(format!("state tampered: {what}"));
             return Ok(tampered(payload, event, &what));
         }
@@ -166,7 +172,9 @@ fn process(
         reasons.push("no contract: advisory only".to_owned());
         return Ok(no_contract(payload, event));
     };
+    trace.state_before = stored.as_ref().map(|g| g.checkpoint.state);
     let observed = env.candidate.observe();
+    trace.candidate = observed.as_ref().ok().map(|c| c.id.clone());
     if let Err(why) = &observed {
         reasons.push(format!("candidate not observed: {why}"));
     }
@@ -186,6 +194,7 @@ fn process(
         _ => Decision::None,
     };
     session.gate.checkpoint = session.task.checkpoint();
+    trace.state_after = Some(session.task.state());
     state::save_gate(&env.state_dir, &session.gate, &contract_sha256)?;
     Ok(decision)
 }

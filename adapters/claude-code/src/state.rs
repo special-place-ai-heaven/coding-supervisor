@@ -202,7 +202,7 @@ fn strings(v: &Value, key: &str) -> Result<Vec<String>, String> {
         .collect()
 }
 
-fn candidate_json(c: &CandidateId) -> Value {
+pub(crate) fn candidate_json(c: &CandidateId) -> Value {
     obj([
         ("base_commit", c.base_commit.clone().into()),
         ("dirty_digest", c.dirty_digest.clone().into()),
