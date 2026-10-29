@@ -73,6 +73,16 @@ jobs:
             exit 1
           fi
 
+      # The npm launcher's tests and the Claude Code plugin wrapper's tests need no binary.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Run the npm launcher and plugin wrapper tests
+        run: |
+          (cd npm && npm test)
+          node --test hooks/supervisor-hook.test.js
+
   linux-hosted:
     name: "Linux (hosted, pull requests): format, lint, test, core dependency check"
     if: github.event_name == 'pull_request'
@@ -102,6 +112,16 @@ jobs:
             cargo tree -p coding-supervisor --edges normal,build,dev
             exit 1
           fi
+
+      # The npm launcher's tests and the Claude Code plugin wrapper's tests need no binary.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Run the npm launcher and plugin wrapper tests
+        run: |
+          (cd npm && npm test)
+          node --test hooks/supervisor-hook.test.js
 
   windows-hosted:
     name: "Windows (hosted): format, lint, test"
