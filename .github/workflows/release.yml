@@ -29,19 +29,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Self-hosted runners (org level, as of 2026-10-29): five Linux x64
-          # labelled fresh, one Windows x64 labelled windows-host-interim. No
-          # self-hosted macOS exists and hosted runners are billing-blocked, so
-          # the macOS entries are best effort and never block the release.
+          # Owner's rule (2026-10-29): Linux builds on the five self-hosted
+          # runners labelled fresh; Windows and macOS on GitHub-hosted runners
+          # (the repository is public). The x86_64 macOS runner label is
+          # unverified, so that entry is best effort and never blocks the release.
           - target: x86_64-pc-windows-msvc
-            os: [self-hosted, Windows, X64, windows-host-interim]
+            os: windows-latest
             best_effort: false
           - target: x86_64-unknown-linux-gnu
             os: [self-hosted, Linux, X64, fresh]
             best_effort: false
           - target: aarch64-apple-darwin
             os: macos-latest
-            best_effort: true
+            best_effort: false
           - target: x86_64-apple-darwin
             os: macos-15-intel
             best_effort: true
