@@ -138,3 +138,104 @@ Worker brief errors, corrected by the chair rather than worked around: the 3b se
 | `grep -nE 'dependencies' Cargo.toml` | no match | zero dependency sections of any kind |
 
 Worker: Codex session `session-mvs8rj0i-kvghu2ah`, background, high reasoning, about 8 minutes. Test count went from 12 to 18.
+
+## Follow-up 2: declared transition matrix and test-only pass (same day, after `3ad8c7f`)
+
+Written by the chair BEFORE any test ran, derived from Duet section 9 and the interpretations labelled in the previous section, not from the implementation's behaviour. Provenance: **S** = specified by section 9 wording or an inherited scenario; **I** = implementation interpretation (section 9 silent); **R** = repository addition (`completed`). No-mutation rule for every error outcome: state, candidate identity, receipt statuses, findings and consumed repair rounds unchanged. **One named exception:** repair-cap exhaustion changes state to `budget_exhausted` while preserving consumed rounds, receipts and findings. The rule is not widened to cover it.
+
+Terminal states (`blocked`, `budget_exhausted`, `failed`, `cancelled`, `completed`) share one row per event: no event leaves a terminal state (I; un-blocking is a declared gap, see below). "Unobserved" means a task restored by `resume` on which `observe_candidate` has not yet been called.
+
+Guard precedence as implemented and not reordered in this pass: the observation guard is checked before the state guard for every event except `block`, `fail`, `cancel`, which have no observation guard. The matrix records the typed error that results; it does not claim this order is specified.
+
+| Event | State / guard | Expected outcome | Prov. |
+|---|---|---|---|
+| start_preparing | queued | to preparing | S |
+| start_preparing | any other non-terminal | InvalidTransition | S (single path) |
+| start_preparing | terminal | InvalidTransition | I |
+| start_preparing | unobserved (resumed queued) | CandidateNotObserved | I (resume reobserves before mutating) |
+| observe_candidate | queued, not resumed | InvalidTransition (no candidate exists before preparation) | I |
+| observe_candidate (first) | preparing | to verifying, candidate set | S |
+| observe_candidate, same identity | verifying / repairing | legal; state and receipt statuses unchanged | S ("on the current candidate") |
+| observe_candidate, same identity | ready_for_review | legal; state and receipt statuses unchanged | I (explicit by implication) |
+| observe_candidate, new identity | verifying / repairing | legal; every receipt becomes stale; state unchanged | S (invalidate all code-check results) |
+| observe_candidate, new identity | ready_for_review | legal; every receipt becomes stale; to verifying | S for staleness; I for the state return (A19) |
+| observe_candidate | terminal, not resumed | InvalidTransition | I |
+| observe_candidate | unobserved, any state incl. terminal | legal; clears the observation guard; state unchanged except the two rules above | S (resume reobserves) |
+| record_receipt, valid | verifying | legal; stored current; state unchanged | S (CheckResult attaches to the checked candidate) |
+| record_receipt, valid | ready_for_review | legal; stored current; state unchanged | I (fresh evidence at completion) |
+| record_receipt, exit code absent | verifying / ready_for_review | ReceiptMissingExitCode, no mutation | S (X1) |
+| record_receipt, claim_supported false | verifying / ready_for_review | ReceiptUnsupported, no mutation | S (A18, R35) |
+| record_receipt, other candidate | verifying / ready_for_review | ReceiptForOtherCandidate, no mutation | S (X2) |
+| record_receipt, unknown criterion | verifying / ready_for_review | UnknownCriterion, no mutation | S (check must exist in the registry) |
+| record_receipt | queued / preparing / repairing | InvalidTransition | I (evidence is gathered while verifying) |
+| record_receipt | terminal | InvalidTransition | I |
+| record_receipt | unobserved | CandidateNotObserved | I (conservative) |
+| record_worker_claim | any state, observed | legal; appended to the rejected-claims log; state, receipts, findings unchanged | S (A18: never counts) |
+| record_worker_claim | unobserved | CandidateNotObserved | I (conservative; contract silent) |
+| raise_finding | any non-terminal, observed | legal; finding stored open; state unchanged | I |
+| raise_finding | terminal | InvalidTransition | I |
+| raise_finding | unobserved | CandidateNotObserved | I (conservative) |
+| resolve_finding, known id | any non-terminal, observed | legal; disposition becomes resolved; state unchanged | I |
+| resolve_finding, unknown id | any non-terminal, observed | UnknownFinding, no mutation | I |
+| resolve_finding | terminal | InvalidTransition | I |
+| resolve_finding | unobserved | CandidateNotObserved | I (conservative) |
+| findings and candidate change | any | findings are NOT invalidated by a candidate change | I (section 9 invalidates "code-check results"; findings are reviewer judgments) |
+| request_repair, budget available | verifying | to repairing; consumed + 1 | S |
+| request_repair, budget exhausted | verifying | RepairBudgetExhausted; to budget_exhausted; consumed, receipts, findings preserved (**the named exception**) | S (budget_exhausted; R23) |
+| request_repair, budget available | ready_for_review | to repairing; consumed + 1 | I (bounded repair from review) |
+| request_repair, budget exhausted | ready_for_review | as the verifying row (the named exception) | I |
+| request_repair | queued / preparing / repairing | InvalidTransition | S (single path; one repair round at a time) |
+| request_repair | terminal | InvalidTransition | I |
+| request_repair | unobserved | CandidateNotObserved | I |
+| finish_repair | repairing | to verifying | S |
+| finish_repair | any other non-terminal | InvalidTransition | S (single path) |
+| finish_repair | terminal | InvalidTransition | I |
+| finish_repair | unobserved | CandidateNotObserved | I |
+| try_accept, every mandatory criterion has a current exit-0 receipt, changes in scope, no open high/critical finding | verifying | to ready_for_review | S |
+| try_accept, a mandatory receipt missing | verifying | MissingReceipt, no mutation | S (A18) |
+| try_accept, a mandatory receipt stale | verifying | StaleReceipt, no mutation | S (A19) |
+| try_accept, a mandatory receipt non-zero | verifying | FailingReceipt, no mutation | S (R26) |
+| try_accept, optional criterion missing or failing | verifying | legal; optional criteria never block | I ("all mandatory checks") |
+| try_accept, changed path outside scope | verifying | OutOfScope, no mutation | S (C4, R28) |
+| try_accept, open high or critical finding | verifying | OpenFinding, no mutation | I |
+| try_accept, open low or medium finding only | verifying | legal | I |
+| try_accept | any other non-terminal incl. ready_for_review | InvalidTransition | S (single path) |
+| try_accept | terminal | InvalidTransition | I |
+| try_accept | unobserved | CandidateNotObserved | S (resume reobserves before mutating) |
+| complete, acceptance conditions hold | ready_for_review | to completed | R |
+| complete, acceptance conditions fail (receipts absent after resume, or a high finding raised during review) | ready_for_review | the same typed error as try_accept; state stays ready_for_review; no mutation | I (evidence before acceptance) |
+| complete | any other non-terminal | InvalidTransition | R |
+| complete | terminal | InvalidTransition | R |
+| complete | unobserved | CandidateNotObserved | I |
+| block / fail / cancel | any non-terminal, observed or unobserved | to blocked / failed / cancelled; reason stored as next_action (cancel: empty); receipts, findings, consumed rounds preserved | S for the states; I for "from any non-terminal" and for "without re-observation" (A20, `on_block: checkpoint_and_report`) |
+| block / fail / cancel | terminal | InvalidTransition | I |
+
+Declared gap, not implemented here: `blocked` as a paused state with an explicit un-block transition. The core treats it as terminal.
+
+### Tests added in this pass (test-only; `src/lib.rs` unchanged, confirmed by `git diff --stat src/` being empty)
+
+| Test | Covers |
+|---|---|
+| `review_high_finding_repaired_resolved_then_completed` | item 1: High finding in review, repair, resolve, fresh receipts, accept, complete; `open_findings()` non-empty after raise and empty after resolve (the public API has no per-finding disposition getter, so Resolved is asserted through `open_findings()`) |
+| `matrix_start_preparing`, `matrix_observe_candidate_same`, `matrix_observe_candidate_new`, `matrix_record_receipt`, `matrix_record_worker_claim`, `matrix_raise_finding`, `matrix_resolve_finding`, `matrix_request_repair`, `matrix_finish_repair`, `matrix_try_accept`, `matrix_complete`, `matrix_block`, `matrix_fail`, `matrix_cancel` | one test per event; each iterates the fixtures for every state (queued, preparing, verifying, ready_for_review, repairing, and the five terminal states) plus the guard fixtures the table names: observed versus unobserved (resumed) for every event with an unobserved row; fresh versus stale evidence; missing, failing, out-of-scope; open High/Critical versus open Low/Medium versus resolved High findings; budget available versus exhausted from both verifying and ready_for_review; optional criterion missing and failing; the four receipt-rejection reasons in both receipt-accepting states; unknown finding id; findings surviving a candidate change |
+
+Every error outcome is asserted with its exact `GateError` variant and followed by a snapshot comparison of state, candidate identity, receipt statuses for C1 to C4, open findings and consumed repair rounds. The repair-cap exhaustion rows assert the named exception: state becomes `budget_exhausted` and everything else equals the snapshot.
+
+Cells and limits not directly covered: a NEW identity observed on a non-resumed terminal task (the same state guard as the same-identity cell, which is tested); `start_preparing` after resume is tested only from queued; findings of the same id raised twice; a receipt for a non-mandatory criterion with a missing exit code. No table cell disagreed with the implementation, so the stop rule was not triggered and no source change was needed.
+
+### Verification (chair, Terminal Commander, `CARGO_TARGET_DIR=C:\Target\coding-supervisor\main\target`, rustc 1.99.1)
+
+| Command | Exit code | Evidence |
+|---|---|---|
+| `cargo test` | 0 | `test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out` |
+| `cargo fmt --check` | 0 | no diff |
+| `cargo clippy --all-targets -- -D warnings` | 0 | `Finished dev profile` |
+| `cargo tree -e normal,build,dev --target all` | 0 | single line, the project itself |
+| `grep -nE 'panic!|unwrap\(|expect\(|unreachable!|todo!|unimplemented!|assert!|assert_eq!' src/lib.rs` | no match | zero explicit panic sites in production source (a check, not a proof) |
+| `grep -nE 'dependencies' Cargo.toml` | no match | zero dependency sections |
+
+Worker: Codex session `session-mvs9atsw-egjv5voq`, background, high reasoning, about 10 minutes; the chair wrote the matrix first, reviewed the diff, re-ran every check.
+
+### What T2 covers after this pass
+
+T2 now covers the declared transition matrix above and the selected guard conditions it names, under fake providers and synthetic candidate identities. It does not prove the state machine correct: the matrix itself is a chair-written reading of Duet section 9 plus labelled interpretations, the guard precedence is recorded as implemented rather than specified, candidate identity is caller-supplied, and nothing here exercises a real repository, a real check runner or a live harness. Blocked-state semantics (a paused state with an explicit un-block transition) are a declared gap for a separate change and are not implemented.

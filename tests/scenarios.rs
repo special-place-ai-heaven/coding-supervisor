@@ -67,6 +67,653 @@ fn finding() -> Finding {
     }
 }
 
+#[derive(Debug, PartialEq, Clone)]
+struct Snap {
+    state: TaskState,
+    candidate: Option<CandidateId>,
+    receipts: Vec<Option<ReceiptStatus>>,
+    findings: Vec<Finding>,
+    rounds: u32,
+}
+fn snap(t: &Task) -> Snap {
+    Snap {
+        state: t.state(),
+        candidate: t.candidate().cloned(),
+        receipts: ["C1", "C2", "C3", "C4"]
+            .iter()
+            .map(|id| t.receipt_status(&CriterionId((*id).into())))
+            .collect(),
+        findings: t.open_findings(),
+        rounds: t.consumed_repair_rounds(),
+    }
+}
+fn assert_unchanged(before: &Snap, t: &Task) {
+    assert_eq!(before, &snap(t));
+}
+fn in_queued() -> Task {
+    Task::new(contract())
+}
+fn in_preparing() -> Task {
+    let mut t = in_queued();
+    t.start_preparing().unwrap();
+    t
+}
+fn in_verifying() -> Task {
+    task()
+}
+fn in_verifying_passed() -> Task {
+    let mut t = task();
+    for c in ["C1", "C2", "C3", "C4"] {
+        pass(&mut t, c);
+    }
+    t
+}
+fn in_ready() -> Task {
+    let mut t = in_verifying_passed();
+    t.try_accept().unwrap();
+    t
+}
+fn in_repairing() -> Task {
+    let mut t = task();
+    t.request_repair().unwrap();
+    t
+}
+fn in_terminal(state: TaskState) -> Task {
+    let mut t = if state == TaskState::Completed {
+        in_ready()
+    } else {
+        task()
+    };
+    match state {
+        TaskState::Blocked => t.block("reason").unwrap(),
+        TaskState::Failed => t.fail("reason").unwrap(),
+        TaskState::Cancelled => t.cancel().unwrap(),
+        TaskState::Completed => t.complete().unwrap(),
+        TaskState::BudgetExhausted => {
+            for _ in 0..2 {
+                t.request_repair().unwrap();
+                t.finish_repair().unwrap();
+            }
+            assert_eq!(
+                t.request_repair(),
+                Err(GateError::RepairBudgetExhausted { max: 2 })
+            );
+        }
+        _ => panic!("not terminal"),
+    }
+    t
+}
+fn resumed_unobserved(t: Task) -> Task {
+    Task::resume(contract(), t.checkpoint())
+}
+fn all_states() -> Vec<Task> {
+    let mut tasks = vec![
+        in_queued(),
+        in_preparing(),
+        in_verifying(),
+        in_ready(),
+        in_repairing(),
+    ];
+    for s in [
+        TaskState::Blocked,
+        TaskState::BudgetExhausted,
+        TaskState::Failed,
+        TaskState::Cancelled,
+        TaskState::Completed,
+    ] {
+        tasks.push(in_terminal(s));
+    }
+    tasks
+}
+fn invalid(t: &Task, event: &'static str) -> GateError {
+    GateError::InvalidTransition {
+        from: t.state(),
+        event,
+    }
+}
+fn receipt(t: &Task) -> VerificationReceipt {
+    FakeRunner::receipt(
+        "C1",
+        &t.candidate().cloned().unwrap_or(candidate("one").id),
+        Some(0),
+    )
+}
+fn low_finding() -> Finding {
+    let mut f = finding();
+    f.severity = Severity::Low;
+    f
+}
+fn exhausted_ready() -> Task {
+    let mut t = in_verifying_passed();
+    for _ in 0..2 {
+        t.request_repair().unwrap();
+        t.finish_repair().unwrap();
+    }
+    t.try_accept().unwrap();
+    t
+}
+#[test]
+fn review_high_finding_repaired_resolved_then_completed() {
+    let mut t = in_ready();
+    t.raise_finding(finding()).unwrap();
+    assert_eq!(t.open_findings(), vec![finding()]);
+    assert_eq!(t.request_repair(), Ok(()));
+    assert_eq!(t.state(), TaskState::Repairing);
+    assert_eq!(t.consumed_repair_rounds(), 1);
+    assert_eq!(t.finish_repair(), Ok(()));
+    assert_eq!(t.state(), TaskState::Verifying);
+    assert_eq!(t.resolve_finding(&finding().id), Ok(()));
+    assert!(t.open_findings().is_empty());
+    for c in ["C1", "C2", "C3", "C4"] {
+        pass(&mut t, c);
+    }
+    assert_eq!(t.try_accept(), Ok(()));
+    assert_eq!(t.complete(), Ok(()));
+    assert_eq!(t.state(), TaskState::Completed);
+    assert!(t.open_findings().is_empty());
+}
+#[test]
+fn matrix_start_preparing() {
+    for mut t in all_states() {
+        let before = snap(&t);
+        let expected = if t.state() == TaskState::Queued {
+            Ok(())
+        } else {
+            Err(invalid(&t, "start_preparing"))
+        };
+        assert_eq!(t.start_preparing(), expected);
+        if expected.is_ok() {
+            assert_eq!(t.state(), TaskState::Preparing);
+        } else {
+            assert_unchanged(&before, &t);
+        }
+    }
+    let mut t = resumed_unobserved(in_queued());
+    let before = snap(&t);
+    assert_eq!(t.start_preparing(), Err(GateError::CandidateNotObserved));
+    assert_unchanged(&before, &t);
+}
+#[test]
+fn matrix_observe_candidate_same() {
+    for mut t in [
+        in_verifying_passed(),
+        {
+            let mut t = in_verifying_passed();
+            t.request_repair().unwrap();
+            t
+        },
+        in_ready(),
+    ] {
+        let before = snap(&t);
+        assert_eq!(t.observe_candidate(candidate("one")), Ok(()));
+        assert_unchanged(&before, &t);
+    }
+    let mut t = in_queued();
+    let before = snap(&t);
+    assert_eq!(
+        t.observe_candidate(candidate("one")),
+        Err(invalid(&t, "observe_candidate"))
+    );
+    assert_unchanged(&before, &t);
+    let mut t = in_preparing();
+    assert_eq!(t.observe_candidate(candidate("one")), Ok(()));
+    assert_eq!(t.state(), TaskState::Verifying);
+    assert_eq!(t.candidate(), Some(&candidate("one").id));
+    for mut t in all_states().into_iter().filter(|t| t.state().is_terminal()) {
+        let before = snap(&t);
+        assert_eq!(
+            t.observe_candidate(candidate("one")),
+            Err(invalid(&t, "observe_candidate"))
+        );
+        assert_unchanged(&before, &t);
+    }
+    for t in all_states() {
+        let mut t = resumed_unobserved(t);
+        let old = t.state();
+        assert_eq!(t.observe_candidate(candidate("one")), Ok(()));
+        assert_eq!(
+            t.state(),
+            if old == TaskState::Preparing {
+                TaskState::Verifying
+            } else {
+                old
+            }
+        );
+        assert_eq!(t.candidate(), Some(&candidate("one").id));
+        assert_eq!(t.record_worker_claim("observed"), Ok(()));
+    }
+}
+#[test]
+fn matrix_observe_candidate_new() {
+    for mut t in [
+        in_verifying_passed(),
+        {
+            let mut t = in_verifying_passed();
+            t.request_repair().unwrap();
+            t
+        },
+        in_ready(),
+    ] {
+        let old = t.state();
+        assert_eq!(t.observe_candidate(candidate("two")), Ok(()));
+        assert_eq!(
+            t.state(),
+            if old == TaskState::ReadyForReview {
+                TaskState::Verifying
+            } else {
+                old
+            }
+        );
+        assert_eq!(t.candidate(), Some(&candidate("two").id));
+        assert_eq!(snap(&t).receipts, vec![Some(ReceiptStatus::Stale); 4]);
+    }
+    for t in all_states() {
+        let mut t = resumed_unobserved(t);
+        let old = t.state();
+        assert_eq!(t.observe_candidate(candidate("two")), Ok(()));
+        assert_eq!(
+            t.state(),
+            if matches!(old, TaskState::Preparing | TaskState::ReadyForReview) {
+                TaskState::Verifying
+            } else {
+                old
+            }
+        );
+        assert_eq!(t.candidate(), Some(&candidate("two").id));
+        assert_eq!(t.record_worker_claim("observed"), Ok(()));
+    }
+    let mut t = task();
+    t.raise_finding(low_finding()).unwrap();
+    assert_eq!(t.observe_candidate(candidate("two")), Ok(()));
+    assert_eq!(t.open_findings(), vec![low_finding()]);
+}
+#[test]
+fn matrix_record_receipt() {
+    for mut t in all_states() {
+        let before = snap(&t);
+        let r = receipt(&t);
+        let legal = matches!(t.state(), TaskState::Verifying | TaskState::ReadyForReview);
+        let expected = if legal {
+            Ok(())
+        } else {
+            Err(invalid(&t, "record_receipt"))
+        };
+        assert_eq!(t.record_receipt(r), expected);
+        if legal {
+            assert_eq!(t.state(), before.state);
+            assert_eq!(
+                t.receipt_status(&CriterionId("C1".into())),
+                Some(ReceiptStatus::Current)
+            );
+        } else {
+            assert_unchanged(&before, &t);
+        }
+    }
+    for make in [in_verifying as fn() -> Task, in_ready] {
+        for n in 0..4 {
+            let mut t = make();
+            let before = snap(&t);
+            let mut r = receipt(&t);
+            let error = match n {
+                0 => {
+                    r.exit_code = None;
+                    GateError::ReceiptMissingExitCode
+                }
+                1 => {
+                    r.claim_supported = false;
+                    GateError::ReceiptUnsupported
+                }
+                2 => {
+                    r.candidate = candidate("two").id;
+                    GateError::ReceiptForOtherCandidate {
+                        expected: candidate("one").id,
+                        got: candidate("two").id,
+                    }
+                }
+                _ => {
+                    r.criterion = CriterionId("C9".into());
+                    GateError::UnknownCriterion(CriterionId("C9".into()))
+                }
+            };
+            assert_eq!(t.record_receipt(r), Err(error));
+            assert_unchanged(&before, &t);
+        }
+    }
+    for t in all_states() {
+        let mut t = resumed_unobserved(t);
+        let before = snap(&t);
+        let r = receipt(&t);
+        assert_eq!(t.record_receipt(r), Err(GateError::CandidateNotObserved));
+        assert_unchanged(&before, &t);
+    }
+}
+#[test]
+fn matrix_record_worker_claim() {
+    for mut t in all_states() {
+        let before = snap(&t);
+        assert_eq!(t.record_worker_claim("claim"), Ok(()));
+        assert_unchanged(&before, &t);
+        assert_eq!(t.rejected_claims(), &["claim"]);
+    }
+    for t in all_states() {
+        let mut t = resumed_unobserved(t);
+        let before = snap(&t);
+        assert_eq!(
+            t.record_worker_claim("claim"),
+            Err(GateError::CandidateNotObserved)
+        );
+        assert_unchanged(&before, &t);
+        assert!(t.rejected_claims().is_empty());
+    }
+}
+#[test]
+fn matrix_raise_finding() {
+    for mut t in all_states() {
+        let before = snap(&t);
+        let expected = if t.state().is_terminal() {
+            Err(invalid(&t, "raise_finding"))
+        } else {
+            Ok(())
+        };
+        assert_eq!(t.raise_finding(finding()), expected);
+        if expected.is_ok() {
+            assert_eq!(t.state(), before.state);
+            assert_eq!(t.open_findings(), vec![finding()]);
+        } else {
+            assert_unchanged(&before, &t);
+        }
+    }
+    for t in all_states() {
+        let mut t = resumed_unobserved(t);
+        let before = snap(&t);
+        assert_eq!(
+            t.raise_finding(finding()),
+            Err(GateError::CandidateNotObserved)
+        );
+        assert_unchanged(&before, &t);
+    }
+}
+#[test]
+fn matrix_resolve_finding() {
+    for mut t in all_states() {
+        if !t.state().is_terminal() {
+            let before = snap(&t);
+            assert_eq!(
+                t.resolve_finding(&finding().id),
+                Err(GateError::UnknownFinding(finding().id))
+            );
+            assert_unchanged(&before, &t);
+            t.raise_finding(finding()).unwrap();
+            assert_eq!(t.resolve_finding(&finding().id), Ok(()));
+            assert_eq!(t.state(), before.state);
+            assert!(t.open_findings().is_empty());
+        } else {
+            let before = snap(&t);
+            assert_eq!(
+                t.resolve_finding(&finding().id),
+                Err(invalid(&t, "resolve_finding"))
+            );
+            assert_unchanged(&before, &t);
+        }
+    }
+    for t in all_states() {
+        let mut t = resumed_unobserved(t);
+        let before = snap(&t);
+        assert_eq!(
+            t.resolve_finding(&finding().id),
+            Err(GateError::CandidateNotObserved)
+        );
+        assert_unchanged(&before, &t);
+    }
+}
+#[test]
+fn matrix_request_repair() {
+    for mut t in all_states() {
+        let before = snap(&t);
+        let legal = matches!(t.state(), TaskState::Verifying | TaskState::ReadyForReview);
+        let expected = if legal {
+            Ok(())
+        } else {
+            Err(invalid(&t, "request_repair"))
+        };
+        assert_eq!(t.request_repair(), expected);
+        if legal {
+            assert_eq!(t.state(), TaskState::Repairing);
+            assert_eq!(t.consumed_repair_rounds(), before.rounds + 1);
+        } else {
+            assert_unchanged(&before, &t);
+        }
+    }
+    let ready = exhausted_ready();
+    let mut verifying = exhausted_ready();
+    verifying.observe_candidate(candidate("two")).unwrap();
+    for mut t in [verifying, ready] {
+        t.raise_finding(low_finding()).unwrap();
+        let before = snap(&t);
+        assert_eq!(
+            t.request_repair(),
+            Err(GateError::RepairBudgetExhausted { max: 2 })
+        );
+        let mut expected = before;
+        expected.state = TaskState::BudgetExhausted;
+        assert_unchanged(&expected, &t);
+    }
+    for t in all_states() {
+        let mut t = resumed_unobserved(t);
+        let before = snap(&t);
+        assert_eq!(t.request_repair(), Err(GateError::CandidateNotObserved));
+        assert_unchanged(&before, &t);
+    }
+}
+#[test]
+fn matrix_finish_repair() {
+    for mut t in all_states() {
+        let before = snap(&t);
+        let expected = if t.state() == TaskState::Repairing {
+            Ok(())
+        } else {
+            Err(invalid(&t, "finish_repair"))
+        };
+        assert_eq!(t.finish_repair(), expected);
+        if expected.is_ok() {
+            assert_eq!(t.state(), TaskState::Verifying);
+        } else {
+            assert_unchanged(&before, &t);
+        }
+    }
+    for t in all_states() {
+        let mut t = resumed_unobserved(t);
+        let before = snap(&t);
+        assert_eq!(t.finish_repair(), Err(GateError::CandidateNotObserved));
+        assert_unchanged(&before, &t);
+    }
+}
+#[test]
+fn matrix_try_accept() {
+    for mut t in all_states()
+        .into_iter()
+        .filter(|t| t.state() != TaskState::Verifying)
+    {
+        let before = snap(&t);
+        assert_eq!(t.try_accept(), Err(invalid(&t, "try_accept")));
+        assert_unchanged(&before, &t);
+    }
+    for t in all_states() {
+        let mut t = resumed_unobserved(t);
+        let before = snap(&t);
+        assert_eq!(t.try_accept(), Err(GateError::CandidateNotObserved));
+        assert_unchanged(&before, &t);
+    }
+    let mut t = in_verifying_passed();
+    assert_eq!(t.try_accept(), Ok(()));
+    assert_eq!(t.state(), TaskState::ReadyForReview);
+    let mut t = task();
+    let before = snap(&t);
+    assert_eq!(
+        t.try_accept(),
+        Err(GateError::MissingReceipt(CriterionId("C1".into())))
+    );
+    assert_unchanged(&before, &t);
+    let mut t = in_verifying_passed();
+    t.observe_candidate(candidate("two")).unwrap();
+    let before = snap(&t);
+    assert_eq!(
+        t.try_accept(),
+        Err(GateError::StaleReceipt(CriterionId("C1".into())))
+    );
+    assert_unchanged(&before, &t);
+    let mut t = in_verifying_passed();
+    let r = FakeRunner::receipt("C1", &candidate("one").id, Some(1));
+    t.record_receipt(r).unwrap();
+    let before = snap(&t);
+    assert_eq!(
+        t.try_accept(),
+        Err(GateError::FailingReceipt {
+            criterion: CriterionId("C1".into()),
+            exit_code: 1
+        })
+    );
+    assert_unchanged(&before, &t);
+    let mut t = in_verifying_passed();
+    let mut c = candidate("one");
+    c.changed_paths = vec!["other".into()];
+    t.observe_candidate(c).unwrap();
+    let before = snap(&t);
+    assert_eq!(
+        t.try_accept(),
+        Err(GateError::OutOfScope(vec!["other".into()]))
+    );
+    assert_unchanged(&before, &t);
+    for severity in [
+        Severity::High,
+        Severity::Critical,
+        Severity::Low,
+        Severity::Medium,
+    ] {
+        let mut t = in_verifying_passed();
+        let mut f = finding();
+        f.severity = severity;
+        t.raise_finding(f.clone()).unwrap();
+        let before = snap(&t);
+        let expected = if matches!(severity, Severity::High | Severity::Critical) {
+            Err(GateError::OpenFinding(f.id))
+        } else {
+            Ok(())
+        };
+        assert_eq!(t.try_accept(), expected);
+        if expected.is_err() {
+            assert_unchanged(&before, &t);
+        } else {
+            assert_eq!(t.state(), TaskState::ReadyForReview);
+        }
+    }
+    let mut t = in_verifying_passed();
+    t.raise_finding(finding()).unwrap();
+    t.resolve_finding(&finding().id).unwrap();
+    assert_eq!(t.try_accept(), Ok(()));
+    assert_eq!(t.state(), TaskState::ReadyForReview);
+    let mut c = contract();
+    c.criteria.push(Criterion {
+        id: CriterionId("C5".into()),
+        check: CheckName("C5".into()),
+        mandatory: false,
+    });
+    for optional_failure in [false, true] {
+        let mut t = Task::new(c.clone());
+        t.start_preparing().unwrap();
+        t.observe_candidate(candidate("one")).unwrap();
+        for c in ["C1", "C2", "C3", "C4"] {
+            pass(&mut t, c);
+        }
+        if optional_failure {
+            t.record_receipt(FakeRunner::receipt("C5", &candidate("one").id, Some(1)))
+                .unwrap();
+        }
+        assert_eq!(t.try_accept(), Ok(()));
+        assert_eq!(t.state(), TaskState::ReadyForReview);
+    }
+}
+#[test]
+fn matrix_complete() {
+    for mut t in all_states()
+        .into_iter()
+        .filter(|t| t.state() != TaskState::ReadyForReview)
+    {
+        let before = snap(&t);
+        assert_eq!(t.complete(), Err(invalid(&t, "complete")));
+        assert_unchanged(&before, &t);
+    }
+    for t in all_states() {
+        let mut t = resumed_unobserved(t);
+        let before = snap(&t);
+        assert_eq!(t.complete(), Err(GateError::CandidateNotObserved));
+        assert_unchanged(&before, &t);
+    }
+    let mut t = in_ready();
+    assert_eq!(t.complete(), Ok(()));
+    assert_eq!(t.state(), TaskState::Completed);
+    let mut t = resumed_unobserved(in_ready());
+    t.observe_candidate(candidate("one")).unwrap();
+    let before = snap(&t);
+    assert_eq!(
+        t.complete(),
+        Err(GateError::MissingReceipt(CriterionId("C1".into())))
+    );
+    assert_unchanged(&before, &t);
+    let mut t = in_ready();
+    t.raise_finding(finding()).unwrap();
+    let before = snap(&t);
+    assert_eq!(t.complete(), Err(GateError::OpenFinding(finding().id)));
+    assert_unchanged(&before, &t);
+    for resolved in [false, true] {
+        let mut t = in_ready();
+        let f = if resolved { finding() } else { low_finding() };
+        t.raise_finding(f.clone()).unwrap();
+        if resolved {
+            t.resolve_finding(&f.id).unwrap();
+        }
+        assert_eq!(t.complete(), Ok(()));
+        assert_eq!(t.state(), TaskState::Completed);
+    }
+}
+fn matrix_stop(
+    event: &'static str,
+    target: TaskState,
+    action: fn(&mut Task) -> Result<(), GateError>,
+    reason: &str,
+) {
+    let mut states = all_states();
+    let mut evidence = in_verifying_passed();
+    evidence.raise_finding(low_finding()).unwrap();
+    states.push(evidence);
+    let resumed: Vec<_> = all_states().into_iter().map(resumed_unobserved).collect();
+    for mut t in states.into_iter().chain(resumed) {
+        let before = snap(&t);
+        if t.state().is_terminal() {
+            assert_eq!(action(&mut t), Err(invalid(&t, event)));
+            assert_unchanged(&before, &t);
+        } else {
+            assert_eq!(action(&mut t), Ok(()));
+            let mut expected = before;
+            expected.state = target;
+            assert_unchanged(&expected, &t);
+            assert_eq!(t.checkpoint().next_action, reason);
+        }
+    }
+}
+#[test]
+fn matrix_block() {
+    matrix_stop("block", TaskState::Blocked, |t| t.block("reason"), "reason");
+}
+#[test]
+fn matrix_fail() {
+    matrix_stop("fail", TaskState::Failed, |t| t.fail("reason"), "reason");
+}
+#[test]
+fn matrix_cancel() {
+    matrix_stop("cancel", TaskState::Cancelled, Task::cancel, "");
+}
+
 #[test]
 fn a18_self_reported_pass_is_not_accepted() {
     let mut t = task();
