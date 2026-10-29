@@ -93,3 +93,17 @@ To re-run once quota returns (expected about 2026-10-31): from Terminal Commande
 - `fixtures/cursor-enforcement/candidate.txt`, `gate-state.json`
 - `fixtures/cursor-enforcement/captures/probe-notrust.result.json` (trust refusal), `captures/probe.result.json` (quota refusal)
 - this file
+
+## Installed configuration check (2026-10-29)
+
+Without a model turn, so the weekly quota did not apply. Throwaway project `C:\temp\sup-throwaway-cursor\proj` (git, one commit), `supervisor init` and `supervisor install --harness cursor` run with `SUPERVISOR_STATE_DIR` set and `--home` pointed at a throwaway home; `cursor-agent` 2026.10.14-0f9edde was started with `USERPROFILE` and `HOME` pointed at that throwaway home, so the real `~/.cursor` was not touched. Captures: `fixtures/cursor-enforcement/captures/installed/`.
+
+| Step | Result |
+|---|---|
+| `cursor-agent mcp list` as installed | `supervisor: not loaded (needs approval)`: the project `.cursor/mcp.json` written by install is read |
+| `cursor-agent mcp list-tools supervisor` as installed | refused: `MCP server "supervisor" has not been approved` |
+| `cursor-agent mcp enable supervisor` (the manual step install prints) | `Enabled and approved MCP server: supervisor`; the approval is stored under the home directory in `.cursor/projects/<project>/mcp-approvals.json`, not in the project |
+| `cursor-agent mcp list` | `supervisor: ready` |
+| `cursor-agent mcp list-tools supervisor` | all eight gate tools with their argument names (`accept_try`, `candidate_observe`, `finding_raise`, `receipt_record`, `repair_request`, `task_complete`, `task_start`, `task_state`) |
+
+Verdict: the installed registration loads, the server starts under Cursor and exposes the eight tools; whether the chair skill under `.cursor/skills` is read, and whether a model drives the tools, stays unmeasured until the quota resets. The mode line is unchanged: advisory via MCP only, with no hook receipt.

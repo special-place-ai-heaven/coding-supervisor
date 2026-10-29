@@ -1,0 +1,22 @@
+# cursor-agent 2026.10.14-0f9edde, 2026-10-29, project C:\temp\sup-throwaway-cursor\proj,
+# USERPROFILE and HOME pointed at C:\temp\sup-throwaway-cursor\home (real home untouched).
+# Terminal Commander jobs job_01a18754e161706f9c7374a350f0bfa4 (exit 1) and job_01a187550edb757ca75c1788b05269b9 (exit 0).
+$ cursor-agent mcp list
+supervisor: not loaded (needs approval)
+$ cursor-agent mcp list-tools supervisor
+Failed to list tools: Failed to load MCP 'supervisor': MCP server "supervisor" has not been approved
+$ cursor-agent mcp enable supervisor
+✓ Enabled and approved MCP server: supervisor
+$ cursor-agent mcp list
+supervisor: ready
+$ cursor-agent mcp list-tools supervisor
+Tools for supervisor (8):
+- accept_try ()
+- candidate_observe (base_commit, changed_paths, dirty_digest, provenance)
+- finding_raise (evidence_ref, id, location, severity)
+- receipt_record (claim_supported, command, criterion, cwd, exit_code, output_ref)
+- repair_request ()
+- task_complete ()
+- task_start (criteria, forbidden_effects, goal, id, max_repair_rounds, scope)
+- task_state ()
+# files written under the throwaway home: .cursor/cli-config.json, .cursor/projects/C-temp-sup-throwaway-cursor-proj/mcp-approvals.json
