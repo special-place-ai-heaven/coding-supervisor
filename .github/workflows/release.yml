@@ -96,6 +96,19 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+      # The raw binaries, for the npm platform packages.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bin-${{ matrix.target }}
+          path: |
+            target/release/supervisor
+            target/release/supervisor-mcp
+            target/release/supervisor-claude-code
+            target/release/supervisor.exe
+            target/release/supervisor-mcp.exe
+            target/release/supervisor-claude-code.exe
+          if-no-files-found: error
+
   release:
     name: Publish GitHub release
     needs: build
@@ -121,3 +134,138 @@ jobs:
           generate_release_notes: true
           # A tag with a hyphen (v0.1.0-rc1) is a pre-release.
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+  # npm packaging follows symforge's build-npm-package and npm-publish jobs.
+  npm-package:
+    name: Build npm packages
+    needs: build
+    runs-on: [self-hosted, Linux, X64, fresh]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Synchronize npm package versions from the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const version = process.env.TAG.replace(/^v/, '');
+          const platformPackages = {
+            'linux-x64': 'coding-supervisor-linux-x64',
+            'windows-x64': 'coding-supervisor-windows-x64',
+          };
+
+          const rootPath = 'npm/package.json';
+          const root = JSON.parse(fs.readFileSync(rootPath, 'utf8'));
+          root.version = version;
+          root.optionalDependencies = Object.fromEntries(
+            Object.values(platformPackages).map((name) => [name, version]),
+          );
+          fs.writeFileSync(rootPath, JSON.stringify(root, null, 2) + '\n');
+
+          for (const [dir, name] of Object.entries(platformPackages)) {
+            const packagePath = `npm/platforms/${dir}/package.json`;
+            const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+            pkg.name = name;
+            pkg.version = version;
+            fs.writeFileSync(packagePath, JSON.stringify(pkg, null, 2) + '\n');
+          }
+          NODE
+
+      - name: Test npm package
+        working-directory: npm
+        run: npm test
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: bin-*
+          path: dist-binaries
+
+      - name: Prepare platform npm packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          copy_bins() {
+            local from="$1" to="$2" ext="$3"
+            mkdir -p "$to"
+            for bin in supervisor supervisor-mcp supervisor-claude-code; do
+              cp "$from/${bin}${ext}" "$to/${bin}${ext}"
+              chmod 755 "$to/${bin}${ext}"
+            done
+          }
+          copy_bins dist-binaries/bin-x86_64-pc-windows-msvc npm/platforms/windows-x64/bin .exe
+          copy_bins dist-binaries/bin-x86_64-unknown-linux-gnu npm/platforms/linux-x64/bin ""
+          for dir in npm npm/platforms/*; do
+            cp LICENSE "$dir/LICENSE"
+          done
+
+      - name: Build npm tarballs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-npm
+          npm pack ./npm --pack-destination dist-npm
+          for dir in npm/platforms/*; do
+            npm pack "$dir" --pack-destination dist-npm
+          done
+          ls -l dist-npm
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-package
+          path: dist-npm/*.tgz
+          if-no-files-found: error
+
+  npm-publish:
+    name: Publish npm packages
+    needs: [npm-package, release]
+    runs-on: [self-hosted, Linux, X64, fresh]
+    steps:
+      # A missing secret must fail here, visibly, rather than publish nothing.
+      - name: Require the NPM_TOKEN secret
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::The NPM_TOKEN secret is not set for this repository; nothing was published to npm. Add it (organisation or repository secret) and push a new tag."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-package
+          path: dist
+
+      # Pre-release tags (with a hyphen) go to the npm dist-tag "next", release tags to "latest".
+      # Platform packages first, the wrapper last, so the wrapper never points at a missing version.
+      - name: Publish to npm
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          case "$TAG" in *-*) dist_tag=next ;; *) dist_tag=latest ;; esac
+          for package in \
+            coding-supervisor-windows-x64 \
+            coding-supervisor-linux-x64 \
+            coding-supervisor
+          do
+            tarball="./dist/${package}-${version}.tgz"
+            test -f "$tarball"
+            if npm view "${package}@${version}" version > /dev/null 2>&1; then
+              echo "${package}@${version} already exists on npm; skipping publish."
+            else
+              npm publish "$tarball" --access public --tag "$dist_tag"
+            fi
+          done

@@ -79,3 +79,22 @@ fn init_writes_the_starting_contract_and_never_overwrites_it() {
     assert!(again.contains("contract exists, left unchanged"), "{again}");
     assert_eq!(fs::read_to_string(&path).unwrap(), "edited by hand");
 }
+
+#[test]
+fn help_prints_the_usage_to_stdout_and_exits_zero() {
+    for flag in ["--help", "-h"] {
+        let out = Command::new(BIN).arg(flag).output().unwrap();
+        assert!(out.status.success(), "{flag}: {:?}", out.status);
+        assert!(String::from_utf8_lossy(&out.stdout).starts_with("usage: supervisor mcp"));
+    }
+    // Anything unknown is still a usage error.
+    assert_eq!(
+        Command::new(BIN)
+            .arg("--nope")
+            .output()
+            .unwrap()
+            .status
+            .code(),
+        Some(2)
+    );
+}

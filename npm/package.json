@@ -1,0 +1,36 @@
+{
+  "name": "coding-supervisor",
+  "version": "0.1.0",
+  "description": "Completion gate for coding agents: a task is done only when every mandatory check has a current, observed receipt",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/special-place-ai-heaven/coding-supervisor"
+  },
+  "bin": {
+    "supervisor": "bin/supervisor.js"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "optionalDependencies": {
+    "coding-supervisor-linux-x64": "0.1.0",
+    "coding-supervisor-windows-x64": "0.1.0"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "claude-code",
+    "codex",
+    "coding-agents",
+    "verification",
+    "hooks"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

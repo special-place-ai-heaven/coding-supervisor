@@ -20,6 +20,11 @@ fn main() -> ExitCode {
     let result = match args.split_first() {
         Some((command, rest)) if command == "mcp" => return supervisor_mcp::run_stdio(rest),
         Some((command, rest)) if command == "hook" && rest.is_empty() => return hook(),
+        // Asked-for help is not a usage error (the npm launcher passes the exit code through).
+        Some((command, [])) if command == "--help" || command == "-h" => {
+            let _ = writeln!(io::stdout(), "{USAGE}");
+            return ExitCode::SUCCESS;
+        }
         Some((command, rest)) if command == "init" => {
             parse_flags(rest, &["--project"], &[]).and_then(|f| init::run(&f))
         }

@@ -1,0 +1,20 @@
+{
+  "name": "coding-supervisor-windows-x64",
+  "version": "0.1.0",
+  "description": "Windows x64 native binaries for coding-supervisor (supervisor, supervisor-mcp, supervisor-claude-code)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/special-place-ai-heaven/coding-supervisor"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/",
+    "LICENSE"
+  ]
+}

@@ -36,3 +36,7 @@ fixtures/**/out.txt
 # T4 fixture: gate state is per run; the contract is committed, the journals are not
 fixtures/**/.supervisor/*
 !fixtures/**/.supervisor/contract.json
+
+# npm: platform binaries are copied in by the release workflow; tarballs are build output
+npm/platforms/*/bin/
+npm/**/*.tgz
