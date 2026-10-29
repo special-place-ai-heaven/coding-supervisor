@@ -505,7 +505,15 @@ impl Session {
             reasons.push("verdict is not PASS; journaled, not judged".to_owned());
             return Ok(Decision::None);
         }
-        match self.task.try_accept() {
+        self.note_asserted(reasons);
+        let completed = self.task.state() == TaskState::Completed;
+        let accepted = if completed {
+            self.observed_evidence()
+        } else {
+            self.task.try_accept()
+        };
+        match accepted {
+            Ok(()) if completed => reasons.push("completed: observed receipts current".to_owned()),
             Ok(()) => reasons.push("accepted: ready_for_review".to_owned()),
             Err(
                 e @ (GateError::MissingReceipt(_)
@@ -547,8 +555,9 @@ impl Session {
             reasons.push("no completion claim".to_owned());
             return Decision::None;
         }
+        self.note_asserted(reasons);
         let result = match self.task.state() {
-            TaskState::Completed => Ok(()),
+            TaskState::Completed => self.observed_evidence(),
             TaskState::ReadyForReview => self.task.complete(),
             _ => self.task.try_accept().and_then(|()| self.task.complete()),
         };
@@ -615,6 +624,56 @@ impl Session {
         }
     }
 
+    /// Journal the caller-asserted receipts bound to the current candidate as unlinked CHECKs;
+    /// called only where an acceptance decision is made, so `measure` counts each once there.
+    fn note_asserted(&self, reasons: &mut Vec<String>) {
+        let current = self.task.candidate();
+        for r in &self.gate.receipts {
+            if r.output_ref.starts_with(MCP_ASSERTED) && Some(&r.candidate) == current {
+                let exit = r.exit_code.map_or("none".to_owned(), |c| c.to_string());
+                reasons.push(format!(
+                    "unlinked CHECK {} | {} | exit {exit} (mcp-asserted receipt; no hook observed the run)",
+                    r.criterion.0, r.command
+                ));
+            }
+        }
+    }
+
+    /// The core does not judge a task again once it is completed, and a task completed through
+    /// MCP may rest on caller-asserted receipts. Check here, as `try_accept` would, that every
+    /// mandatory criterion has a current, hook-observed receipt with exit 0.
+    fn observed_evidence(&self) -> Result<(), GateError> {
+        let current = self
+            .task
+            .candidate()
+            .ok_or(GateError::CandidateNotObserved)?;
+        for criterion in self.criteria.iter().filter(|c| c.mandatory) {
+            let observed: Vec<&VerificationReceipt> = self
+                .gate
+                .receipts
+                .iter()
+                .filter(|r| r.criterion == criterion.id && !r.output_ref.starts_with(MCP_ASSERTED))
+                .collect();
+            match observed.iter().rev().find(|r| &r.candidate == current) {
+                Some(r) => match r.exit_code {
+                    Some(0) => {}
+                    Some(exit_code) => {
+                        return Err(GateError::FailingReceipt {
+                            criterion: criterion.id.clone(),
+                            exit_code,
+                        });
+                    }
+                    None => return Err(GateError::ReceiptMissingExitCode),
+                },
+                None if !observed.is_empty() => {
+                    return Err(GateError::StaleReceipt(criterion.id.clone()));
+                }
+                None => return Err(GateError::MissingReceipt(criterion.id.clone())),
+            }
+        }
+        Ok(())
+    }
+
     /// Receipt status per criterion, read without any transition.
     fn summary(&self) -> String {
         let (mut current, mut stale, mut missing) = (Vec::new(), Vec::new(), Vec::new());
@@ -654,8 +713,8 @@ impl Session {
 /// candidate the core itself reports `StaleReceipt` for evidence from an older candidate
 /// instead of `MissingReceipt` (the L4 live run showed the difference).
 ///
-/// Unless `honour_asserted`, a caller-asserted MCP receipt is left out of the replay and
-/// journaled as an unlinked CHECK: no hook observed its command run.
+/// Unless `honour_asserted`, a caller-asserted MCP receipt is left out of the replay: no hook
+/// observed its command run. Stop and SubagentStop journal it (`Session::note_asserted`).
 fn restore(
     task: &mut Task,
     gate: &Gate,
@@ -669,13 +728,6 @@ fn restore(
             Vec::new();
         for receipt in &gate.receipts {
             if !honour_asserted && receipt.output_ref.starts_with(MCP_ASSERTED) {
-                let exit = receipt
-                    .exit_code
-                    .map_or("none".to_owned(), |c| c.to_string());
-                reasons.push(format!(
-                    "unlinked CHECK {} | {} | exit {exit} (mcp-asserted receipt; no hook observed the run)",
-                    receipt.criterion.0, receipt.command
-                ));
                 continue;
             }
             match groups.iter_mut().find(|(id, _)| *id == receipt.candidate) {
