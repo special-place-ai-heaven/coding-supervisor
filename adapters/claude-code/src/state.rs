@@ -166,6 +166,8 @@ pub(crate) struct Run {
     /// The tool_use_id, or `runs.jsonl:<line>` when there is none.
     pub reference: String,
     pub t: u64,
+    /// The candidate observed at the run; `None` for a record written before it was journaled.
+    pub candidate: Option<CandidateId>,
 }
 
 fn field<'a>(v: &'a Value, key: &str) -> Result<&'a Value, String> {
@@ -423,6 +425,7 @@ pub(crate) fn read_runs(dir: &Path) -> Result<Vec<Run>, String> {
                     .filter(|s| !s.is_empty())
                     .map_or(line_ref, str::to_owned),
                 t: v.get("t").and_then(Value::as_u64).unwrap_or(0),
+                candidate: v.get("candidate").and_then(|c| candidate_from(c).ok()),
             })
         })
         .collect())

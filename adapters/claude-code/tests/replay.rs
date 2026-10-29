@@ -864,3 +864,62 @@ fn chair_stop_after_mcp_completion_counts_its_own_runs() {
     assert_eq!(g["state"], "completed");
     assert_eq!(g["receipts"].as_array().unwrap().len(), 2);
 }
+
+const C1_HANDBACK: &str = "VERDICT: PASS\nCHECKS RUN: 1\nCHECK C1 | cargo test | exit 0";
+
+#[test]
+fn gap2_run_before_the_last_change_is_refused_and_a_new_run_is_accepted() {
+    let d = dir("gap2-rerun");
+    let mut env = env(
+        &d,
+        Some(contract(&[("C1", true)], &["src/"])),
+        fake("one", &["src/lib.rs"]),
+    );
+    assert_eq!(
+        handle(&bash("w1", "cargo test", 0), &mut env),
+        Decision::None
+    );
+    let line = fs::read_to_string(env.state_dir.join("runs.jsonl")).unwrap();
+    let run: Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(
+        run["candidate"],
+        json!({"base_commit": "base", "dirty_digest": "one"})
+    );
+    // The worker edits a file after the run: the candidate changes.
+    env.candidate = fake("two", &["src/lib.rs"]);
+    let r = handle(&handback("w1", C1_HANDBACK, false), &mut env);
+    let text = blocked(&r);
+    assert!(
+        text.contains("C1 `cargo test` ran before your last change; run it again"),
+        "{text}"
+    );
+    assert!(!text.contains("re-cite"), "{text}");
+    assert!(gate(&env)["receipts"].as_array().unwrap().is_empty());
+    assert_eq!(gate(&env)["state"], "verifying");
+    // Run again on the current candidate, then hand back: accepted.
+    let mut again = bash("w1", "cargo test", 0);
+    again["tool_use_id"] = json!("toolu_w1_rerun");
+    assert_eq!(handle(&again, &mut env), Decision::None);
+    assert_eq!(
+        handle(&handback("w1", C1_HANDBACK, false), &mut env),
+        Decision::None
+    );
+    assert_eq!(gate(&env)["state"], "ready_for_review");
+}
+
+#[test]
+fn gap2_run_record_without_a_candidate_never_links() {
+    let d = dir("gap2-legacy");
+    let mut env = env(
+        &d,
+        Some(contract(&[("C1", true)], &["src/"])),
+        fake("one", &["src/lib.rs"]),
+    );
+    // A record written before runs carried the candidate.
+    let legacy = json!({"agent_id": "w1", "tool": "Bash", "command": "cargo test",
+        "cwd": "x", "exit_code": 0, "tool_use_id": "toolu_legacy", "t": 1});
+    fs::write(env.state_dir.join("runs.jsonl"), format!("{legacy}\n")).unwrap();
+    let r = handle(&handback("w1", C1_HANDBACK, false), &mut env);
+    assert!(blocked(&r).contains("run it again"), "{r:?}");
+    assert!(gate(&env)["receipts"].as_array().unwrap().is_empty());
+}

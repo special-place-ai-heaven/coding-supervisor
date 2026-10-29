@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use coding_supervisor::{
-    Candidate, Criterion, CriterionId, GateError, ReceiptStatus, Task, TaskContract, TaskState,
-    VerificationReceipt,
+    Candidate, CandidateId, Criterion, CriterionId, GateError, ReceiptStatus, Task, TaskContract,
+    TaskState, VerificationReceipt,
 };
 use serde_json::Value;
 
@@ -156,7 +156,10 @@ fn process(
         return Ok(denial);
     }
     let now = (env.clock)();
-    if let Some(run) = observed_run(payload, event, agent, now) {
+    // Observed before journaling so each run record carries the candidate it ran against.
+    let observed = env.candidate.observe();
+    let ran_on = observed.as_ref().ok().map(|c| &c.id);
+    if let Some(run) = observed_run(payload, event, agent, ran_on, now) {
         state::append_line(&env.state_dir.join("runs.jsonl"), &run)?;
         reasons.push("command run journaled".to_owned());
     }
@@ -177,7 +180,6 @@ fn process(
         return Ok(no_contract(payload, event));
     };
     trace.state_before = stored.as_ref().map(|g| g.checkpoint.state);
-    let observed = env.candidate.observe();
     trace.candidate = observed.as_ref().ok().map(|c| c.id.clone());
     if let Err(why) = &observed {
         reasons.push(format!("candidate not observed: {why}"));
@@ -261,7 +263,14 @@ fn no_contract(payload: &Value, event: &str) -> Decision {
 }
 
 /// A command run worth journaling: Bash/PowerShell results and Terminal Commander calls.
-fn observed_run(payload: &Value, event: &str, agent: &str, now: u64) -> Option<Value> {
+/// `candidate` is the candidate observed at the run (null when it could not be observed).
+fn observed_run(
+    payload: &Value,
+    event: &str,
+    agent: &str,
+    candidate: Option<&CandidateId>,
+    now: u64,
+) -> Option<Value> {
     let tool = text(payload, "tool_name")?;
     let input = payload.get("tool_input");
     let shell = matches!(tool, "Bash" | "PowerShell");
@@ -288,6 +297,7 @@ fn observed_run(payload: &Value, event: &str, agent: &str, now: u64) -> Option<V
         ("exit_code", exit_code.into()),
         ("tool_use_id", text(payload, "tool_use_id").into()),
         ("t", now.into()),
+        ("candidate", candidate.map(state::candidate_json).into()),
     ]))
 }
 
@@ -554,13 +564,20 @@ impl Session {
                 .criteria
                 .iter()
                 .find(|c| c.id.0 == line.criterion && !c.accepts(&line.command));
-            let run = runs.iter().find(|r| {
+            let current_id = self.observed.as_ref().ok().map(|c| &c.id);
+            let matches = |r: &&state::Run| {
                 wrong.is_none()
                     && r.agent_id == agent
                     && r.command.trim() == line.command.trim()
                     && r.exit_code == Some(line.exit_code)
                     && !used.contains(&r.reference)
-            });
+            };
+            // A run records the candidate it ran against; one from an older candidate (or an
+            // old record without one) never links.
+            let run = runs
+                .iter()
+                .find(|r| matches(r) && current_id.is_some() && r.candidate.as_ref() == current_id);
+            let earlier = run.is_none() && runs.iter().any(|r| matches(&r));
             let (output_ref, at) = match (run, wrong) {
                 (Some(r), _) => {
                     used.insert(r.reference.clone());
@@ -580,6 +597,18 @@ impl Session {
                     instructions.push(format!(
                         "Run that command in this session and cite it as CHECK {} | {first} | exit 0.",
                         c.id.0
+                    ));
+                    (String::new(), now)
+                }
+                (None, None) if earlier => {
+                    let command = line.command.trim();
+                    problems.push(format!(
+                        "{} `{command}` ran before your last change; run it again",
+                        line.criterion
+                    ));
+                    instructions.push(format!(
+                        "Run `{command}` again in this session, then cite the new run as CHECK {} | {command} | exit <code>.",
+                        line.criterion
                     ));
                     (String::new(), now)
                 }
