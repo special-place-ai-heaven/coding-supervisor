@@ -21,28 +21,46 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.best_effort }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Self-hosted runners (org level, as of 2026-10-29): five Linux x64
+          # labelled fresh, one Windows x64 labelled windows-host-interim. No
+          # self-hosted macOS exists and hosted runners are billing-blocked, so
+          # the macOS entries are best effort and never block the release.
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
+            os: [self-hosted, Windows, X64, windows-host-interim]
+            best_effort: false
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: [self-hosted, Linux, X64, fresh]
+            best_effort: false
           - target: aarch64-apple-darwin
             os: macos-latest
+            best_effort: true
           - target: x86_64-apple-darwin
             os: macos-15-intel
+            best_effort: true
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install the pinned Rust toolchain
-        run: rustup toolchain install
+      # A fresh Linux runner may have no rustup; the Windows runner is expected
+      # to have it (and the MSVC build tools) already.
+      - name: Install rustup if missing, then the pinned Rust toolchain
+        run: |
+          if ! command -v rustup > /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
 
       # The build is native, so the runner must already be the target.
       - name: Check the runner matches the target
@@ -90,7 +108,7 @@ jobs:
   release:
     name: Publish GitHub release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, fresh]
     permissions:
       contents: write
     steps:

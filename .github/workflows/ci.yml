@@ -16,17 +16,28 @@ env:
 jobs:
   check:
     name: Format, lint, test, core dependency check
-    runs-on: ubuntu-latest
+    # Self-hosted Linux runners labelled fresh (five, org level); hosted runners
+    # are billing-blocked for this organisation as of 2026-10-29.
+    runs-on: [self-hosted, Linux, X64, fresh]
     steps:
       - uses: actions/checkout@v7
 
       # dtolnay/rust-toolchain requires an explicit version and cannot read
       # rust-toolchain.toml. With no arguments, rustup installs the channel
       # and components that the file names (1.99.1, rustfmt, clippy).
-      - name: Install the pinned Rust toolchain
-        run: rustup toolchain install
+      # A fresh runner may have no rustup at all; install it with no default
+      # toolchain, then let rustup read rust-toolchain.toml.
+      - name: Install rustup if missing, then the pinned Rust toolchain
+        run: |
+          if ! command -v rustup > /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
 
       - name: Check formatting
         run: cargo fmt --all -- --check
