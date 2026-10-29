@@ -72,7 +72,9 @@ jobs:
       - name: Check the runner matches the target
         run: |
           rustc -vV
-          rustc -vV | grep -qx "host: ${{ matrix.target }}"
+          # grep without -q reads the whole input: with -q it closed the pipe
+          # early and rustc died of SIGPIPE under pipefail (exit 141 on macOS).
+          rustc -vV | grep -x "host: ${{ matrix.target }}" > /dev/null
 
       - name: Build release binaries
         run: cargo build --release --workspace
