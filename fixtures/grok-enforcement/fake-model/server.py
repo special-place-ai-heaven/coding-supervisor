@@ -84,11 +84,40 @@ SCRIPTS = {
               "Withdrawn: the receipt is stale because candidate.txt changed."],
     "bypass": [DONE, "Withdrawn: the gate refused completion."],
     "discovery": ["OK"],
+    "installed-discovery": ["OK"],
 }
+
+
+INSTALLED_CWD = "C:\\temp\\sup-throwaway-grok\\proj"
+INSTALLED_STEPS = [
+    ("task_state", {}),
+    ("candidate_observe", {}),
+    ("receipt_record", {"criterion": "C2", "command": "echo check-ok", "cwd": INSTALLED_CWD, "exit_code": 0,
+                        "output_ref": "self", "claim_supported": True}),
+    ("accept_try", {}),
+    ("task_complete", {}),
+]
+
+
+def installed_action(msgs, n_asst):
+    """Grok exposes MCP tools only through search_tool/use_tool: search once, then call each gate tool
+    under the exact name the search result advertised."""
+    if n_asst == 0:
+        return tool("search_tool", {"query": "supervisor", "limit": 10})
+    tool_texts = [text_of(m.get("content")) for m in msgs if m.get("role") == "tool"]
+    search = tool_texts[0] if tool_texts else ""
+    step = n_asst - 1
+    if step < len(INSTALLED_STEPS):
+        base, args = INSTALLED_STEPS[step]
+        found = re.search(r"[A-Za-z0-9_.:\-]*" + base, search)
+        return tool("use_tool", {"tool_name": found.group(0) if found else base, "tool_input": args})
+    return DONE if step == len(INSTALLED_STEPS) else "Stopped."
 
 
 def next_action(scenario, role, msgs):
     n_asst = sum(1 for m in msgs if m.get("role") == "assistant")
+    if scenario == "installed":
+        return installed_action(msgs, n_asst)
     if role == "fake-worker":
         return "VERDICT: PASS\nCHECKS RUN: 0"
     if role == "cited-worker":
@@ -128,11 +157,23 @@ class Handler(BaseHTTPRequestHandler):
             with open(os.path.join(LOGDIR, "tool-schemas.json"), "w", encoding="utf-8") as f:
                 json.dump({t["function"]["name"]: t["function"].get("parameters") for t in req["tools"]
                            if t.get("function", {}).get("name") in (TASK, SHELL, "write", "search_replace")}, f, indent=1)
-        with open(os.path.join(LOGDIR, f"{scenario}.requests.jsonl"), "a", encoding="utf-8") as f:
+        logdir, limit = LOGDIR, TRUNC
+        if scenario.startswith("installed"):
+            # Installed-configuration check: own folder, longer text so the gate's answers are kept whole.
+            logdir, limit = os.path.join(os.path.dirname(LOGDIR), "installed"), 4000
+            os.makedirs(logdir, exist_ok=True)
+            wanted = [t for t in req.get("tools", []) if "supervisor" in t.get("function", {}).get("name", "")
+                      or t.get("function", {}).get("name") in ("search_tool", "use_tool")]
+            if wanted:
+                with open(os.path.join(logdir, "tool-schemas.json"), "w", encoding="utf-8") as f:
+                    json.dump({t["function"]["name"]: {"description": t["function"].get("description", "")[:600],
+                                                       "parameters": t["function"].get("parameters")} for t in wanted}, f, indent=1)
+        with open(os.path.join(logdir, f"{scenario}.requests.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps({
                 "t": time.strftime("%Y-%m-%dT%H:%M:%S"), "path": self.path, "role_played": role,
                 "stream": req.get("stream"), "tools": [t.get("function", {}).get("name") for t in req.get("tools", [])],
-                "messages": [{"role": m.get("role"), "text": cut(text_of(m.get("content"))),
+                "skills_in_request": [w for w in ("supervisor-chair", "supervisor-worker") if w in json.dumps(req)],
+                "messages": [{"role": m.get("role"), "text": text_of(m.get("content"))[:limit],
                               "tool_calls": [c.get("function", {}).get("name") for c in m.get("tool_calls") or []]}
                              for m in msgs],
                 "markers_in_request": [w for w in ("ZEBRA-GROK-SKILL", "OTTER-AGENTS-SKILL") if w in json.dumps(req)],
