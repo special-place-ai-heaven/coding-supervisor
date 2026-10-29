@@ -198,6 +198,13 @@ fn tampered(payload: &Value, event: &str, what: &str) -> Decision {
         )
     };
     let tool = text(payload, "tool_name").unwrap_or_default();
+    // The refusal counter lives in gate.json, which must stay untouched here, so the cap is
+    // the harness's own continuation flag: block once per prompt, then release visibly
+    // (the M2b live run otherwise ran to the turn limit).
+    let continuing = payload
+        .get("stop_hook_active")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     match event {
         "PreToolUse"
             if matches!(
@@ -207,6 +214,11 @@ fn tampered(payload: &Value, event: &str, what: &str) -> Decision {
         {
             Decision::Deny(refusal(tool))
         }
+        "Stop" | "SubagentStop" if continuing => Decision::System(refusal(if event == "Stop" {
+            "completion"
+        } else {
+            "handback"
+        })),
         "Stop" => Decision::Block(refusal("completion")),
         "SubagentStop" => Decision::Block(refusal("handback")),
         "PostToolUse" if tool == "Agent" => Decision::Context {

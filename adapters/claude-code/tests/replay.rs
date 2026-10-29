@@ -465,6 +465,13 @@ fn tampered_receipt_refuses_and_leaves_gate_untouched() {
     let r = handle(&pre("Agent"), &mut env);
     assert!(matches!(r, Decision::Deny(ref m) if m.contains("tampered (receipt 0)")));
     assert!(last_reasons(&env).contains("state tampered: receipt 0"));
+    // One block per prompt: when the harness is already continuing, release visibly.
+    let r = handle(&stop("Done.", true), &mut env);
+    assert!(
+        matches!(r, Decision::System(ref m) if m.contains("tampered (receipt 0)")),
+        "{r:?}"
+    );
+    assert_eq!(fs::read(env.state_dir.join("gate.json")).unwrap(), edited);
 }
 
 #[test]
