@@ -13,4 +13,4 @@ pub mod journal;
 pub mod location;
 pub mod measure;
 pub mod sha256;
-mod state;
+pub mod state;

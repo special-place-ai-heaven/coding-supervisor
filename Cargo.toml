@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["adapters/claude-code"]
+members = ["adapters/claude-code", "adapters/mcp", "cli"]
 resolver = "3"

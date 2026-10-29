@@ -52,17 +52,17 @@ fn lookup<T: Copy>(table: &[(T, &str)], text: &str) -> Result<T, String> {
         .ok_or_else(|| format!("unknown value {text}"))
 }
 
-pub(crate) fn state_name(state: TaskState) -> &'static str {
+pub fn state_name(state: TaskState) -> &'static str {
     name(&STATES, state)
 }
 
 /// A JSON object from key/value pairs. Used instead of `json!`, which unwraps internally.
-pub(crate) fn obj<const N: usize>(pairs: [(&str, Value); N]) -> Value {
+pub fn obj<const N: usize>(pairs: [(&str, Value); N]) -> Value {
     Value::Object(pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
 }
 
 /// `gate.json`: the core checkpoint plus what the adapter needs across hook calls.
-pub(crate) struct Gate {
+pub struct Gate {
     pub contract_id: String,
     pub prompt_id: Option<String>,
     pub checkpoint: Checkpoint,
@@ -202,7 +202,7 @@ fn strings(v: &Value, key: &str) -> Result<Vec<String>, String> {
         .collect()
 }
 
-pub(crate) fn candidate_json(c: &CandidateId) -> Value {
+pub fn candidate_json(c: &CandidateId) -> Value {
     obj([
         ("base_commit", c.base_commit.clone().into()),
         ("dirty_digest", c.dirty_digest.clone().into()),
@@ -252,7 +252,7 @@ fn receipt_from(v: &Value) -> Result<VerificationReceipt, String> {
     })
 }
 
-fn finding_json(f: &Finding) -> Value {
+pub fn finding_json(f: &Finding) -> Value {
     obj([
         ("id", f.id.0.clone().into()),
         ("candidate", candidate_json(&f.candidate)),
@@ -273,7 +273,7 @@ fn finding_from(v: &Value) -> Result<Finding, String> {
     })
 }
 
-fn contract_from(v: &Value) -> Result<TaskContract, String> {
+pub fn contract_from(v: &Value) -> Result<TaskContract, String> {
     let criteria = array(v, "criteria")?
         .iter()
         .map(|c| {
@@ -307,7 +307,7 @@ fn read_optional(path: &Path) -> Result<Option<String>, String> {
 }
 
 /// The contract (if present) and the SHA-256 of contract.json's bytes (of nothing when absent).
-pub(crate) fn read_contract(dir: &Path) -> Result<(Option<TaskContract>, String), String> {
+pub fn read_contract(dir: &Path) -> Result<(Option<TaskContract>, String), String> {
     let path = dir.join("contract.json");
     let Some(text) = read_optional(&path)? else {
         return Ok((None, sha256::hex(b"")));
@@ -319,7 +319,7 @@ pub(crate) fn read_contract(dir: &Path) -> Result<(Option<TaskContract>, String)
 }
 
 /// What gate.json holds after its hash chain was checked.
-pub(crate) enum Stored {
+pub enum Stored {
     Absent,
     Valid(Gate),
     /// Names the broken link: `receipt <index>` or `checkpoint`.
@@ -328,7 +328,7 @@ pub(crate) enum Stored {
 
 /// gate.json is only ever written whole by `save_gate` (temp file then rename), so a file that
 /// does not parse or does not match its chain was edited by something else.
-pub(crate) fn load_gate(dir: &Path, contract_sha256: &str) -> Result<Stored, String> {
+pub fn load_gate(dir: &Path, contract_sha256: &str) -> Result<Stored, String> {
     let Some(text) = read_optional(&dir.join("gate.json"))? else {
         return Ok(Stored::Absent);
     };
@@ -342,7 +342,7 @@ pub(crate) fn load_gate(dir: &Path, contract_sha256: &str) -> Result<Stored, Str
         .map_or_else(|_| Stored::Tampered("checkpoint".to_owned()), Stored::Valid))
 }
 
-pub(crate) fn save_gate(dir: &Path, gate: &Gate, contract_sha256: &str) -> Result<(), String> {
+pub fn save_gate(dir: &Path, gate: &Gate, contract_sha256: &str) -> Result<(), String> {
     // shortcut: no lock around gate.json, so two overlapping hook calls can lose one update; add a lock file once overlapping calls show up in events.jsonl
     let path = dir.join("gate.json");
     let tmp = dir.join("gate.json.tmp");
@@ -359,7 +359,7 @@ pub(crate) fn save_gate(dir: &Path, gate: &Gate, contract_sha256: &str) -> Resul
     fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-pub(crate) fn append_line(path: &Path, line: &Value) -> Result<(), String> {
+pub fn append_line(path: &Path, line: &Value) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }

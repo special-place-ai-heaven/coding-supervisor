@@ -42,7 +42,7 @@ impl Env {
     }
 }
 
-fn now() -> u64 {
+pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
@@ -329,7 +329,7 @@ fn tc_exit(response: &Value) -> Option<i32> {
     after.get(..end)?.parse().ok()
 }
 
-fn render(error: &GateError) -> String {
+pub fn render(error: &GateError) -> String {
     match error {
         GateError::MissingReceipt(c) => format!("missing {}", c.0),
         GateError::StaleReceipt(c) => format!("stale {}", c.0),
@@ -357,15 +357,16 @@ fn render(error: &GateError) -> String {
     }
 }
 
-struct Session {
-    task: Task,
-    gate: Gate,
+/// The core task and gate.json for one call, rebuilt from contract.json, gate.json and the observed candidate.
+pub struct Session {
+    pub task: Task,
+    pub gate: Gate,
     criteria: Vec<Criterion>,
     observed: Result<Candidate, String>,
 }
 
 impl Session {
-    fn open(
+    pub fn open(
         contract: TaskContract,
         stored: Option<Gate>,
         observed: Result<Candidate, String>,
