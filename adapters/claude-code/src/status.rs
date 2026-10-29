@@ -34,24 +34,29 @@ pub fn render(state_dir: &Path, config_dir: Option<&Path>) -> Result<String, Str
     };
     match gate {
         Ok(Stored::Valid(gate)) => {
-            let degraded: Vec<String> = gate
+            let failures: Vec<String> = gate
                 .sessions
                 .iter()
-                .filter_map(|(id, s)| {
-                    let why = s.degraded.as_ref()?;
-                    Some(format!("degraded: session {id} runs at lite: {why}"))
+                .flat_map(|(sid, s)| {
+                    s.baseline_failures.iter().map(move |(id, why)| {
+                        format!("baseline failure: session {sid}, {id}: {why}")
+                    })
                 })
                 .collect();
-            if degraded.is_empty() {
-                out.push("degraded: no".to_owned());
+            if failures.is_empty() {
+                out.push("baseline failures: none".to_owned());
             }
-            out.extend(degraded);
+            out.extend(failures);
         }
-        Ok(Stored::Absent) => out.push("degraded: no (no gate state yet)".to_owned()),
+        Ok(Stored::Absent) => out.push("baseline failures: none (no gate state yet)".to_owned()),
         Ok(Stored::Tampered(what)) => {
-            out.push(format!("degraded: unknown, gate state tampered ({what})"));
+            out.push(format!(
+                "baseline failures: unknown, gate state tampered ({what})"
+            ));
         }
-        Err(e) => out.push(format!("degraded: unknown, gate state unreadable ({e})")),
+        Err(e) => out.push(format!(
+            "baseline failures: unknown, gate state unreadable ({e})"
+        )),
     }
     match contract {
         None if digest.is_empty() => {}

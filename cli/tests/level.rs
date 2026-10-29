@@ -224,7 +224,7 @@ fn status_counts_completions_and_names_the_refusal_reasons() {
     let reason = "state verifying; missing C1; run `cargo test`: never ran; or report the task as not complete";
     for want in [
         "level: full (default)".to_owned(),
-        "degraded: no (no gate state yet)".to_owned(),
+        "baseline failures: none (no gate state yet)".to_owned(),
         "  C1 | `cargo test` | quick | yes | yes".to_owned(),
         "  C2 | `cargo test --workspace` or `cargo nextest run` | full | yes | no".to_owned(),
         "  C3 | `cargo clippy` | quick | no | no".to_owned(),

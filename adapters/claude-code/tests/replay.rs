@@ -1315,31 +1315,82 @@ fn ultra_denies_a_write_outside_the_contract_scope() {
     assert_eq!(handle(&write_to(&outside), &mut env), Decision::None);
 }
 
+/// A failing check on the untouched tree is recorded, never a demotion (owner's ruling).
 #[test]
-fn a_failing_check_on_the_untouched_tree_degrades_the_session_to_lite() {
-    let d = dir("degraded");
+fn a_baseline_failure_fixed_in_the_session_is_accepted_at_full() {
+    let d = dir("baseline-fixed");
     let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
     assert_eq!(handle(&prompt(), &mut env), Decision::None);
     assert_eq!(
         handle(&bash("main", "cargo test", 101), &mut env),
         Decision::None
     );
+    // The agent fixes it and runs the check green.
+    env.candidate = fake("two", &["src/lib.rs"]);
     assert_eq!(
-        handle(&stop("Done.", false), &mut env),
-        Decision::System("GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: exited 101 on your latest run; or report the task as not complete.".into())
+        handle(&bash("main", "cargo test", 0), &mut env),
+        Decision::None
     );
+    assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+    let line: Value = serde_json::from_str(&last_reasons(&env)).unwrap();
+    assert_eq!(line["accepted"], true);
+    assert!(!line.to_string().contains("level lite"), "{line}");
     let session = prompt()["session_id"].as_str().unwrap().to_owned();
     let text = status::render(&env.state_dir, None).unwrap();
-    println!("{text}");
     assert!(
-        text.contains(&format!("degraded: session {session} runs at lite: `cargo test` exited 101 on the untouched tree at session start")),
+        text.contains(&format!("baseline failure: session {session}, C1: `cargo test` exited 101 on the untouched tree at session start")),
         "{text}"
     );
+    assert!(text.contains("completions accepted: 1"), "{text}");
     assert!(
-        text.contains("completions reported, not blocked (lite): 1"),
+        text.contains("completions reported, not blocked (lite): 0"),
         "{text}"
     );
-    assert!(text.contains("completions refused: 0"), "{text}");
+}
+
+const BASELINE_NOTE: &str = "(this check already failed before your changes)";
+
+#[test]
+fn a_baseline_failure_never_fixed_is_refused_with_the_note_until_the_release() {
+    let d = dir("baseline-red");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    assert_eq!(handle(&prompt(), &mut env), Decision::None);
+    for agent in ["main", "w1"] {
+        handle(&bash(agent, "cargo test", 101), &mut env);
+    }
+    // A change, and the check is still red.
+    env.candidate = fake("two", &["src/lib.rs"]);
+    for agent in ["main", "w1"] {
+        let mut again = bash(agent, "cargo test", 101);
+        again["tool_use_id"] = json!(format!("toolu_{agent}_again"));
+        handle(&again, &mut env);
+    }
+    for k in 1..=3 {
+        assert_eq!(
+            blocked(&handle(&handback("w1", "Done.", k > 1), &mut env)),
+            format!(
+                "GATE: handback refused (refusal {k} of 3): missing C1. run `cargo test`: exited 101 on your latest run {BASELINE_NOTE}."
+            )
+        );
+    }
+    assert_eq!(
+        handle(&handback("w1", "Done.", true), &mut env),
+        Decision::None
+    );
+    assert!(last_reasons(&env).contains("UNVERIFIED after 3 refusals"));
+    for k in 1..=3 {
+        assert_eq!(
+            blocked(&handle(&stop("Done.", k > 1), &mut env)),
+            format!(
+                "GATE refuses completion (refusal {k} of 3, harness cap 8): state verifying; missing C1; run `cargo test`: exited 101 on your latest run {BASELINE_NOTE}; or report the task as not complete."
+            )
+        );
+    }
+    assert_eq!(
+        handle(&stop("Done.", true), &mut env),
+        Decision::System("GATE: refusal cap reached; task remains verifying".into())
+    );
 }
 
 #[test]

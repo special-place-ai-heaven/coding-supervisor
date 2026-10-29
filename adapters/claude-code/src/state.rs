@@ -84,8 +84,9 @@ pub struct Gate {
 pub struct SessionRecord {
     /// The first candidate observed in the session.
     pub baseline: Option<CandidateId>,
-    /// Why the session runs at lite at most: a mandatory check failed on the baseline.
-    pub degraded: Option<String>,
+    /// Per criterion id, how its command failed on the baseline (the untouched starting tree).
+    /// Noted on refusals and in `supervisor status`; the level is never lowered for it.
+    pub baseline_failures: BTreeMap<String, String>,
     /// A lite-level notice for the next UserPromptSubmit, injected once.
     pub notice: Option<String>,
 }
@@ -139,7 +140,15 @@ impl Gate {
                         .map(|(k, s)| {
                             let record = obj([
                                 ("baseline", s.baseline.as_ref().map(candidate_json).into()),
-                                ("degraded", s.degraded.clone().into()),
+                                (
+                                    "baseline_failures",
+                                    Value::Object(
+                                        s.baseline_failures
+                                            .iter()
+                                            .map(|(id, why)| (id.clone(), why.clone().into()))
+                                            .collect(),
+                                    ),
+                                ),
                                 ("notice", s.notice.clone().into()),
                             ]);
                             (k.clone(), record)
@@ -222,7 +231,19 @@ fn optional_string(v: &Value, key: &str) -> Result<Option<String>, String> {
 fn session_from(v: &Value) -> Result<SessionRecord, String> {
     Ok(SessionRecord {
         baseline: optional_candidate(v.get("baseline"))?,
-        degraded: optional_string(v, "degraded")?,
+        baseline_failures: match v.get("baseline_failures") {
+            None => BTreeMap::new(),
+            Some(map) => map
+                .as_object()
+                .ok_or("baseline_failures is not an object")?
+                .iter()
+                .map(|(id, why)| {
+                    why.as_str()
+                        .map(|w| (id.clone(), w.to_owned()))
+                        .ok_or_else(|| format!("baseline_failures.{id} is not a string"))
+                })
+                .collect::<Result<_, String>>()?,
+        },
         notice: optional_string(v, "notice")?,
     })
 }

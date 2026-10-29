@@ -30,7 +30,7 @@ pub struct Env {
     pub candidate: Box<dyn CandidateProvider>,
     /// Seconds since the Unix epoch.
     pub clock: fn() -> u64,
-    /// From the level files (`level::effective`); a degraded session lowers it to lite.
+    /// From the level files (`level::effective`).
     pub level: Level,
     /// Why the level files could not be read; the call then runs at full and journals this.
     pub level_error: Option<String>,
@@ -225,17 +225,7 @@ fn process(
         return Ok(no_contract(payload, event));
     };
     let sid = text(payload, "session_id").unwrap_or_default();
-    let degraded = stored
-        .as_ref()
-        .and_then(|g| g.sessions.get(sid))
-        .and_then(|s| s.degraded.as_deref());
-    let level = match degraded {
-        Some(why) => {
-            reasons.push(format!("session degraded, running at lite at most: {why}"));
-            env.level.min(Level::Lite)
-        }
-        None => env.level,
-    };
+    let level = env.level;
     if level < Level::Ultra {
         // A full-tier criterion is required at ultra only.
         for c in &mut contract.criteria {
@@ -521,6 +511,8 @@ pub struct Session {
     criteria: Vec<Criterion>,
     scope: Vec<String>,
     observed: Result<Candidate, String>,
+    /// The payload's `session_id`, set by `track_session`.
+    sid: String,
 }
 
 impl Session {
@@ -568,12 +560,14 @@ impl Session {
             criteria,
             scope,
             observed,
+            sid: String::new(),
         })
     }
 
     /// The session's baseline is the candidate at its first UserPromptSubmit (Claude Code sends
-    /// it before any tool call). A run of a mandatory criterion's command that exits nonzero on
-    /// that baseline marks the session degraded: it then runs at lite at most.
+    /// it before any tool call). A run of a criterion's command that exits nonzero on that
+    /// baseline is recorded as a baseline failure: refusals naming that check say so, and the
+    /// level stays as configured (owner's ruling; the three-refusal release is the only escape).
     fn track_session(
         &mut self,
         sid: &str,
@@ -581,32 +575,37 @@ impl Session {
         run: Option<&Value>,
         reasons: &mut Vec<String>,
     ) {
+        sid.clone_into(&mut self.sid);
         let current = self.observed.as_ref().ok().map(|c| c.id.clone());
         let record = self.gate.sessions.entry(sid.to_owned()).or_default();
         if event == "UserPromptSubmit" && record.baseline.is_none() {
             record.baseline.clone_from(&current);
         }
         let Some(run) = run else { return };
-        if record.degraded.is_some() || record.baseline.is_none() || current != record.baseline {
+        if record.baseline.is_none() || current != record.baseline {
             return;
         }
         let command = run
             .get("command")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let exit = run.get("exit_code").and_then(Value::as_i64);
-        if let Some(code) = exit.filter(|c| *c != 0)
-            && self
-                .criteria
-                .iter()
-                .any(|c| c.mandatory && c.accepts(command))
-        {
+        let Some(code) = run
+            .get("exit_code")
+            .and_then(Value::as_i64)
+            .filter(|c| *c != 0)
+        else {
+            return;
+        };
+        for c in self.criteria.iter().filter(|c| c.accepts(command)) {
+            if record.baseline_failures.contains_key(&c.id.0) {
+                continue;
+            }
             let why = format!(
                 "`{}` exited {code} on the untouched tree at session start",
                 command.trim()
             );
-            reasons.push(format!("session degraded: {why}"));
-            record.degraded = Some(why);
+            reasons.push(format!("baseline failure recorded for {}: {why}", c.id.0));
+            record.baseline_failures.insert(c.id.0.clone(), why);
         }
     }
 
@@ -1027,7 +1026,17 @@ impl Session {
                 }
                 None => "never ran".to_owned(),
             };
-            to_run.push(format!("run `{first}`: {why}"));
+            let before = self
+                .gate
+                .sessions
+                .get(&self.sid)
+                .is_some_and(|s| s.baseline_failures.contains_key(&c.id.0));
+            let note = if before {
+                " (this check already failed before your changes)"
+            } else {
+                ""
+            };
+            to_run.push(format!("run `{first}`: {why}{note}"));
         }
         reasons.push(format!(
             "header derived from observed runs of agent {agent}: {} CHECK lines",
