@@ -71,6 +71,19 @@ fn forward(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+/// The `[mcp_servers.supervisor]` section install writes for a TOML harness.
+fn toml_section(harness: &str, project: &Path) -> String {
+    let codex = if harness == "codex" {
+        "default_tools_approval_mode = \"approve\"\nenv_vars = [\"SUPERVISOR_STATE_DIR\"]\n"
+    } else {
+        ""
+    };
+    format!(
+        "[mcp_servers.supervisor]\ncommand = \"{FAKE_BINARY}\"\nargs = [\"mcp\", \"--project\", \"{}\"]\n{codex}",
+        forward(project)
+    )
+}
+
 fn read_json(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
 }
@@ -97,13 +110,7 @@ fn every_harness_gets_its_documented_files_and_a_second_run_changes_nothing() {
         let registration = project.join(mcp);
         if mcp.ends_with(".toml") {
             let text = fs::read_to_string(&registration).unwrap();
-            assert_eq!(
-                text,
-                format!(
-                    "[mcp_servers.supervisor]\ncommand = \"{FAKE_BINARY}\"\nargs = [\"mcp\", \"--project\", \"{}\"]\n",
-                    forward(&project)
-                )
-            );
+            assert_eq!(text, toml_section(harness, &project));
         } else {
             assert_eq!(
                 read_json(&registration)["mcpServers"]["supervisor"],
@@ -242,14 +249,13 @@ fn a_toml_config_keeps_other_sections_and_replaces_only_ours() {
         let tail = "\n# about the profile\n[profile]\nmodel = \"m\"\n";
         fs::write(
             &config,
-            format!("{foreign}[mcp_servers.supervisor]\ncommand = \"old\"\nargs = []\n{tail}"),
+            format!(
+                "{foreign}[mcp_servers.supervisor]\ncommand = \"old\"\nargs = []\nenabled = false\n{tail}"
+            ),
         )
         .unwrap();
         install(&project, &home, harness, &[]);
-        let ours = format!(
-            "[mcp_servers.supervisor]\ncommand = \"{FAKE_BINARY}\"\nargs = [\"mcp\", \"--project\", \"{}\"]\n",
-            forward(&project)
-        );
+        let ours = toml_section(harness, &project);
         assert_eq!(
             fs::read_to_string(&config).unwrap(),
             format!("{foreign}{ours}{tail}")

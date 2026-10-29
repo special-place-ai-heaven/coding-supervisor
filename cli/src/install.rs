@@ -61,9 +61,12 @@ also see your tool calls and your stop, so a refusal can arrive from a hook.",
         mcp_note: "In Codex CLI the gate's tools (`candidate_observe`, `receipt_record`,\n\
 `accept_try`, `task_complete`) come from the MCP server named `supervisor`,\n\
 which `supervisor install` registered in `.codex/config.toml` at the project\n\
-root (`[mcp_servers.supervisor]`). Codex reads that file only for a trusted\n\
-project; if the tools are missing, check the project's `trust_level` in\n\
-`~/.codex/config.toml` and run `codex mcp list`.",
+root (`[mcp_servers.supervisor]`). Codex names them `mcp__supervisor__<tool>`.\n\
+In code mode they are deferred: the `exec` tool's description does not list\n\
+them, so look them up in `ALL_TOOLS` inside a code cell and call them there.\n\
+Codex reads that file only for a trusted project; if the tools are missing,\n\
+check the project's `trust_level` in `~/.codex/config.toml` and run\n\
+`codex mcp list`.",
         manual: "Trust the project so Codex loads .codex/config.toml: add these lines to {HOME}/.codex/config.toml\n    [projects.'{PROJECT}']\n    trust_level = \"trusted\"\n  (section 2, row 3; the Windows spelling of that key follows this machine's config, not a documented rule: gap G3).",
         notes: &[
             "User-level skills directory, not written: {HOME}/.agents/skills (section 2, row 1); {HOME}/.codex/skills is not in the current Codex docs (gap G2).",
@@ -81,7 +84,8 @@ project; if the tools are missing, check the project's `trust_level` in\n\
         mcp_note: "In Cursor the gate's tools (`candidate_observe`, `receipt_record`,\n\
 `accept_try`, `task_complete`) come from the MCP server named `supervisor`,\n\
 which `supervisor install` registered in `.cursor/mcp.json` at the project\n\
-root. Cursor keeps a list of approved servers; if the tools are missing, run\n\
+root. Call them under the names Cursor's MCP tool list shows; how Cursor\n\
+names them has not been measured. Cursor keeps a list of approved servers; if the tools are missing, run\n\
 `cursor-agent mcp enable supervisor` (or pass `--approve-mcps` in a scripted\n\
 run) and check `cursor-agent mcp list`.",
         manual: "Approve the server once: run `cursor-agent mcp enable supervisor` in the project, or pass `--approve-mcps` in scripted runs (section 3, row 3; whether this covers project servers only is gap G4a). On this machine the bare `agent` command is not Cursor; use `cursor-agent`.",
@@ -101,6 +105,8 @@ run) and check `cursor-agent mcp list`.",
         mcp_note: "In OMP the gate's tools (`candidate_observe`, `receipt_record`,\n\
 `accept_try`, `task_complete`) come from the MCP server named `supervisor`,\n\
 which `supervisor install` registered in `.omp/mcp.json` at the project root.\n\
+OMP mounts each tool as a device `xd://mcp__supervisor_<tool>`: read the\n\
+device for its arguments, then write the JSON arguments to it to call it.\n\
 OMP loads project servers without an approval step; if the tools are missing,\n\
 run `/mcp list` and `/mcp test supervisor`.",
         manual: "None: OMP loads project MCP servers without approval (section 4, row 3).",
@@ -120,14 +126,16 @@ run `/mcp list` and `/mcp test supervisor`.",
         mcp_note: "In Grok Build the gate's tools (`candidate_observe`, `receipt_record`,\n\
 `accept_try`, `task_complete`) come from the MCP server named `supervisor`,\n\
 which `supervisor install` registered in `.grok/config.toml` at the project\n\
-root (`[mcp_servers.supervisor]`). Grok loads project servers only in a\n\
+root (`[mcp_servers.supervisor]`). Grok does not list them among its own\n\
+tools: find them with `search_tool` (query `supervisor`) and call\n\
+`supervisor__<tool>` through `use_tool`. Grok loads project servers only in a\n\
 trusted folder; if the tools are missing, start once with `--trust` or run\n\
 `/hooks-trust`, then check `grok mcp list`.",
         manual: "Trust the folder once so Grok loads project MCP servers: start `grok --trust` in the project or run `/hooks-trust` (section 5, row 3; `--trust` is missing from the CLI reference: gap G5).",
         notes: &[
             "User-level skills directory, not written: {HOME}/.grok/skills (section 5, row 1); project .agents/skills is not documented for Grok (gap G5).",
             "Grok also reads Claude Code skills, .mcp.json and .cursor/mcp.json (section 5, rows 1 and 3).",
-            "Grok hooks cannot refuse completion (section 5, row 4), so no hook is written.",
+            "No hooks are written for Grok yet. Grok 1.0.60 can refuse at PreToolUse, Stop and SubagentStop (grok-T3-RESULTS.md), so a Grok hook adapter is possible future work.",
         ],
     },
 ];
@@ -199,8 +207,15 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
     // directory the harness starts it in.
     let project_arg = project.to_string_lossy().replace('\\', "/");
     changes.push(if harness.mcp_file.ends_with(".toml") {
+        // Codex refuses every tool call under its non-interactive approval policy unless the
+        // server approves them, and passes no environment variable it is not told to.
+        let extra = if harness.id == "codex" {
+            "default_tools_approval_mode = \"approve\"\nenv_vars = [\"SUPERVISOR_STATE_DIR\"]\n"
+        } else {
+            ""
+        };
         change(mcp_path, |before| {
-            Ok(merge_mcp_toml(before, &binary, &project_arg))
+            Ok(merge_mcp_toml(before, &binary, &project_arg, extra))
         })?
     } else {
         change(mcp_path, |before| {
@@ -420,10 +435,10 @@ fn merge_settings(before: Option<&str>, command: &str) -> Result<String, String>
 // shortcut: only the plain header line `[mcp_servers.supervisor]` is recognised; a quoted key,
 // a trailing comment on the header, dotted keys or an inline table are not. Use a TOML parser
 // if a user's config is written that way.
-fn merge_mcp_toml(before: Option<&str>, binary: &str, project: &str) -> String {
+fn merge_mcp_toml(before: Option<&str>, binary: &str, project: &str, extra: &str) -> String {
     let quoted = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
     let section = format!(
-        "[mcp_servers.supervisor]\ncommand = {}\nargs = [\"mcp\", \"--project\", {}]\n",
+        "[mcp_servers.supervisor]\ncommand = {}\nargs = [\"mcp\", \"--project\", {}]\n{extra}",
         quoted(binary),
         quoted(project)
     );
