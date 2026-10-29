@@ -2,3 +2,7 @@
 name = "coding-supervisor"
 version = "0.1.0"
 edition = "2024"
+
+[workspace]
+members = ["adapters/claude-code"]
+resolver = "3"

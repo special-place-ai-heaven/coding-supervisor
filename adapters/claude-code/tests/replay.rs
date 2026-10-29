@@ -1,0 +1,410 @@
+//! T2 scenarios replayed through the adapter. Payloads are the captured T3 payloads with fields edited.
+//!
+//! R23 (repair cap) is not expressible through adapter v1: no hook event maps to
+//! `request_repair`/`finish_repair`, so the adapter never consumes a repair round. It stays
+//! covered by the core suite (tests/scenarios.rs) only; it is not faked here.
+
+use std::fs;
+use std::path::PathBuf;
+
+use coding_supervisor::{Candidate, CandidateId};
+use serde_json::{Value, json};
+use supervisor_claude_code::adapter::{Decision, Env, handle};
+use supervisor_claude_code::candidate::CandidateProvider;
+
+const CAPTURES: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/claude-code-enforcement/captures/"
+);
+const FOREGROUND: &str = "41280c28-a6af-4be4-9963-92e677e85d4f.events.jsonl";
+const BACKGROUND: &str = "bb8444b7-3db5-4d0f-9b53-d60ebe903e20.events.jsonl";
+
+struct FakeCandidate {
+    id: CandidateId,
+    changed_paths: Vec<String>,
+}
+impl CandidateProvider for FakeCandidate {
+    fn observe(&self) -> Result<Candidate, String> {
+        Ok(Candidate {
+            id: self.id.clone(),
+            provenance: "fake".into(),
+            changed_paths: self.changed_paths.clone(),
+        })
+    }
+}
+fn fake(digest: &str, paths: &[&str]) -> Box<FakeCandidate> {
+    Box::new(FakeCandidate {
+        id: CandidateId {
+            base_commit: "base".into(),
+            dirty_digest: digest.into(),
+        },
+        changed_paths: paths.iter().map(|p| p.to_string()).collect(),
+    })
+}
+
+struct Unobservable;
+impl CandidateProvider for Unobservable {
+    fn observe(&self) -> Result<Candidate, String> {
+        Err("git rev-parse HEAD failed".into())
+    }
+}
+
+/// A temp directory removed when the test ends.
+struct Dir(PathBuf);
+impl Drop for Dir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+fn dir(name: &str) -> Dir {
+    let path = std::env::temp_dir().join(format!("supervisor-cc-{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&path);
+    fs::create_dir_all(&path).unwrap();
+    Dir(path)
+}
+
+fn contract(criteria: &[(&str, bool)], scope: &[&str]) -> Value {
+    json!({
+        "id": "t4-test",
+        "goal": "replay",
+        "criteria": criteria.iter().map(|(id, m)| json!({"id": id, "check": id, "mandatory": m})).collect::<Vec<_>>(),
+        "forbidden_effects": [],
+        "scope": scope,
+        "max_repair_rounds": 2
+    })
+}
+fn four() -> Value {
+    contract(
+        &[("C1", true), ("C2", true), ("C3", true), ("C4", true)],
+        &["src/", "tests/"],
+    )
+}
+
+fn env_at(d: &Dir, candidate: Box<dyn CandidateProvider>) -> Env {
+    Env {
+        state_dir: d.0.join(".supervisor"),
+        candidate,
+        clock: || 1_000,
+    }
+}
+fn env(d: &Dir, contract: Option<Value>, candidate: Box<dyn CandidateProvider>) -> Env {
+    let env = env_at(d, candidate);
+    fs::create_dir_all(&env.state_dir).unwrap();
+    if let Some(c) = contract {
+        fs::write(env.state_dir.join("contract.json"), c.to_string()).unwrap();
+    }
+    env
+}
+fn gate(env: &Env) -> Value {
+    serde_json::from_str(&fs::read_to_string(env.state_dir.join("gate.json")).unwrap()).unwrap()
+}
+
+fn captured(file: &str) -> Vec<Value> {
+    fs::read_to_string(format!("{CAPTURES}{file}"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap()["payload"].clone())
+        .collect()
+}
+fn template(file: &str, event: &str, tool: Option<&str>) -> Value {
+    captured(file)
+        .into_iter()
+        .find(|p| p["hook_event_name"] == event && tool.is_none_or(|t| p["tool_name"] == t))
+        .unwrap()
+}
+
+fn bash(agent: &str, command: &str, exit: i32) -> Value {
+    let mut p = template(FOREGROUND, "PostToolUse", Some("Write"));
+    p["tool_name"] = json!("Bash");
+    p["tool_input"] = json!({ "command": command });
+    p["tool_use_id"] = json!(format!("toolu_{agent}_{command}_{exit}"));
+    p["agent_id"] = json!(agent);
+    if exit == 0 {
+        p["tool_response"] = json!({"stdout": "ok", "stderr": "", "interrupted": false});
+    } else {
+        p["hook_event_name"] = json!("PostToolUseFailure");
+        p.as_object_mut().unwrap().remove("tool_response");
+        p["error"] = json!(format!("Exit code {exit}\nfailed"));
+    }
+    p
+}
+fn handback(agent: &str, message: &str, active: bool) -> Value {
+    let mut p = template(FOREGROUND, "SubagentStop", None);
+    p["agent_id"] = json!(agent);
+    p["last_assistant_message"] = json!(message);
+    p["stop_hook_active"] = json!(active);
+    p
+}
+fn stop(message: &str, active: bool) -> Value {
+    let mut p = template(FOREGROUND, "Stop", None);
+    p["last_assistant_message"] = json!(message);
+    p["stop_hook_active"] = json!(active);
+    p
+}
+fn pre(tool: &str) -> Value {
+    let mut p = template(FOREGROUND, "PreToolUse", Some("Write"));
+    p["tool_name"] = json!(tool);
+    p
+}
+
+/// Each line runs as a real command by `agent`, then the worker hands back citing all of them.
+fn worker(env: &mut Env, agent: &str, verdict: &str, lines: &[(&str, &str, i32)]) -> Decision {
+    for (_, command, exit) in lines {
+        assert_eq!(handle(&bash(agent, command, *exit), env), Decision::None);
+    }
+    let cited: Vec<String> = lines
+        .iter()
+        .map(|(id, command, exit)| format!("CHECK {id} | {command} | exit {exit}"))
+        .collect();
+    let message = format!(
+        "VERDICT: {verdict}\nCHECKS RUN: {}\n{}",
+        lines.len(),
+        cited.join("\n")
+    );
+    handle(&handback(agent, &message, false), env)
+}
+const ALL4: [(&str, &str, i32); 4] = [
+    ("C1", "cargo test c1", 0),
+    ("C2", "cargo test c2", 0),
+    ("C3", "cargo test c3", 0),
+    ("C4", "cargo test c4", 0),
+];
+
+fn blocked(d: &Decision) -> &str {
+    match d {
+        Decision::Block(reason) => reason,
+        other => panic!("expected a block, got {other:?}"),
+    }
+}
+fn context(d: &Decision) -> &str {
+    match d {
+        Decision::Context { text, .. } => text,
+        other => panic!("expected additionalContext, got {other:?}"),
+    }
+}
+
+#[test]
+fn replay_a18_self_reported_checks_cannot_mark_ready() {
+    let d = dir("a18");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    let r = handle(
+        &handback("w1", "VERDICT: PASS\nCHECKS RUN: 0", false),
+        &mut env,
+    );
+    assert!(blocked(&r).contains("refusal 1 of 3"));
+    assert!(blocked(&r).contains("missing C1"));
+    let r = handle(&stop("Done, the task is complete.", false), &mut env);
+    assert!(blocked(&r).contains("missing"), "{r:?}");
+    assert_eq!(gate(&env)["state"], "verifying");
+}
+
+#[test]
+fn replay_a19_changed_candidate_makes_receipts_stale() {
+    let d = dir("a19");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    assert_eq!(worker(&mut env, "w1", "PASS", &ALL4), Decision::None);
+    assert_eq!(gate(&env)["state"], "ready_for_review");
+    env.candidate = fake("two", &["src/lib.rs"]);
+    let r = handle(&stop("Done.", false), &mut env);
+    assert!(blocked(&r).contains("stale C1"), "{r:?}");
+    let g = gate(&env);
+    assert_eq!(g["state"], "verifying");
+    assert_eq!(g["candidate"]["dirty_digest"], "two");
+    assert_eq!(g["receipts"].as_array().unwrap().len(), 4);
+}
+
+#[test]
+fn replay_a20_resume_keeps_state_continuations_candidate_and_receipts() {
+    let d = dir("a20");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    let r = worker(&mut env, "w1", "PASS", &ALL4[..3]);
+    assert!(blocked(&r).contains("missing C4"));
+    let r = handle(&stop("Done.", false), &mut env);
+    assert!(blocked(&r).contains("refusal 1 of 3"));
+    drop(env);
+
+    let mut env = env_at(&d, fake("one", &["src/lib.rs"]));
+    let r = handle(
+        &template(FOREGROUND, "PostToolUse", Some("Agent")),
+        &mut env,
+    );
+    assert_eq!(
+        context(&r),
+        "GATE: state verifying; current receipts: [C1, C2, C3]; missing: [C4]; stale: []; decision: not accepted (missing C4)"
+    );
+    let g = gate(&env);
+    assert_eq!(g["state"], "verifying");
+    assert_eq!(g["continuations"], 1);
+    assert_eq!(
+        g["candidate"],
+        json!({"base_commit": "base", "dirty_digest": "one"})
+    );
+    assert_eq!(g["receipts"].as_array().unwrap().len(), 3);
+    let r = handle(&stop("Done.", true), &mut env);
+    assert!(blocked(&r).contains("refusal 2 of 3"));
+}
+
+#[test]
+fn replay_c1_c4_all_four_checks_needed_then_completion_allowed() {
+    let d = dir("c1c4");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    let r = worker(&mut env, "w1", "PASS", &ALL4[..3]);
+    assert!(blocked(&r).contains("C4"), "{r:?}");
+    assert_eq!(worker(&mut env, "w2", "PASS", &ALL4), Decision::None);
+    let r = handle(
+        &stop("All checks pass and the task is complete.", false),
+        &mut env,
+    );
+    assert_eq!(r, Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+    let r = handle(&pre("Write"), &mut env);
+    assert_eq!(
+        r.to_json().unwrap(),
+        json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "GATE: Write refused: task is completed"}})
+    );
+}
+
+#[test]
+fn replay_r26_failing_mandatory_check_refuses_completion() {
+    let d = dir("r26");
+    let mut env = env(
+        &d,
+        Some(contract(&[("C1", true), ("C2", false)], &["src/"])),
+        fake("one", &["src/lib.rs"]),
+    );
+    let r = worker(&mut env, "w1", "FAIL", &[("C1", "cargo test", 1)]);
+    assert_eq!(r, Decision::None);
+    let r = handle(&stop("Done.", false), &mut env);
+    assert!(blocked(&r).contains("failing C1 exit 1"), "{r:?}");
+}
+
+#[test]
+fn replay_r28_out_of_scope_path_refuses() {
+    let d = dir("r28");
+    let mut env = env(
+        &d,
+        Some(four()),
+        fake("one", &["src/lib.rs", "docs/out.md"]),
+    );
+    let r = worker(&mut env, "w1", "PASS", &ALL4);
+    assert!(blocked(&r).contains("out of scope docs/out.md"), "{r:?}");
+    let r = handle(&stop("Done.", false), &mut env);
+    assert!(blocked(&r).contains("out of scope"), "{r:?}");
+}
+
+#[test]
+fn replay_r35_would_run_is_not_run() {
+    let d = dir("r35");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    let message = "VERDICT: PASS\nCHECKS RUN: 0\nI would run cargo test.";
+    let r = handle(&handback("w1", message, false), &mut env);
+    assert!(blocked(&r).contains("missing C1"), "{r:?}");
+    let r = handle(&stop(message, false), &mut env);
+    assert!(blocked(&r).contains("missing C1"), "{r:?}");
+}
+
+#[test]
+fn replay_x1_check_line_without_exit_is_a_parse_failure() {
+    let d = dir("x1");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    handle(&bash("w1", "cargo test", 0), &mut env);
+    let r = handle(
+        &handback(
+            "w1",
+            "VERDICT: PASS\nCHECKS RUN: 1\nCHECK C1 | cargo test",
+            false,
+        ),
+        &mut env,
+    );
+    assert!(
+        blocked(&r).contains("CHECKS RUN 1 but has 0 well-formed CHECK lines"),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn replay_x2_run_by_another_agent_does_not_link() {
+    let d = dir("x2");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    handle(&bash("A", "cargo test", 0), &mut env);
+    let r = handle(
+        &handback(
+            "B",
+            "VERDICT: PASS\nCHECKS RUN: 1\nCHECK C1 | cargo test | exit 0",
+            false,
+        ),
+        &mut env,
+    );
+    assert!(blocked(&r).contains("unlinked CHECK C1"), "{r:?}");
+    assert!(gate(&env)["receipts"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn handback_refusals_release_after_three() {
+    let d = dir("cap");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    let message = "VERDICT: PASS\nCHECKS RUN: 0";
+    for k in 1..=3 {
+        let r = handle(&handback("w1", message, k > 1), &mut env);
+        assert!(blocked(&r).contains(&format!("refusal {k} of 3")));
+    }
+    let r = handle(&handback("w1", message, true), &mut env);
+    assert!(context(&r).contains("UNVERIFIED"));
+}
+
+#[test]
+fn unobserved_candidate_denies_writes() {
+    let d = dir("unobserved");
+    let mut env = env(&d, Some(four()), Box::new(Unobservable));
+    let r = handle(&pre("Edit"), &mut env);
+    assert_eq!(
+        r,
+        Decision::Deny(
+            "GATE: Edit refused: candidate identity could not be observed (git rev-parse HEAD failed)"
+                .into()
+        )
+    );
+}
+
+#[test]
+fn no_contract_is_advisory_only() {
+    let d = dir("nocontract");
+    let mut env = env(&d, None, fake("one", &[]));
+    assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
+    let r = handle(
+        &template(BACKGROUND, "PostToolUse", Some("Agent")),
+        &mut env,
+    );
+    assert!(context(&r).starts_with("GATE (no contract):"));
+    assert!(!env.state_dir.join("gate.json").exists());
+}
+
+#[test]
+fn journal_has_one_line_per_handled_event() {
+    let d = dir("journal");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    let mut decisions = Vec::new();
+    for file in [FOREGROUND, BACKGROUND] {
+        for payload in captured(file) {
+            decisions.push(handle(&payload, &mut env).to_json());
+        }
+    }
+    let journal = fs::read_to_string(env.state_dir.join("events.jsonl")).unwrap();
+    let lines: Vec<Value> = journal
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), decisions.len());
+    for (line, decision) in lines.iter().zip(&decisions) {
+        assert_eq!(line["decision"], decision.clone().unwrap_or(Value::Null));
+        assert!(line["event"].is_string() && line["t"] == 1_000);
+    }
+    let async_line = &lines[decisions.len() - 6];
+    assert_eq!(async_line["event"], "PostToolUse");
+    assert!(
+        async_line["decision"]["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains("background dispatch")
+    );
+}

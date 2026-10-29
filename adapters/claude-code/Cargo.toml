@@ -1,0 +1,8 @@
+[package]
+name = "supervisor-claude-code"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+coding-supervisor = { path = "../.." }
+serde_json = "1"

@@ -1,0 +1,10 @@
+{
+  "id": "fixture-t4",
+  "goal": "Prove the candidate file carries the fix",
+  "criteria": [
+    {"id": "C2", "check": "candidate_passes_reported_test", "mandatory": true}
+  ],
+  "forbidden_effects": [],
+  "scope": ["candidate.txt"],
+  "max_repair_rounds": 2
+}
