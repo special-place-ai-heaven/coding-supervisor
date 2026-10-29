@@ -1,21 +1,53 @@
 {
-  "probe": {"steps": [], "final": "probe reply"},
+  "probe": {
+    "steps": [],
+    "final": "probe reply"
+  },
   "fake": {
-    "steps": ["const a = await tools.multi_agent_v1__spawn_agent({agent_type: 'fake-worker', message: 'Follow your instructions exactly.'}); const w = await tools.multi_agent_v1__wait_agent({targets: [a.agent_id], timeout_ms: 60000}); text(JSON.stringify({spawn: a, wait: w}));"],
+    "steps": [
+      "const a = await tools.multi_agent_v1__spawn_agent({agent_type: 'fake-worker', message: 'Follow your instructions exactly.'}); const w = await tools.multi_agent_v1__wait_agent({targets: [a.agent_id], timeout_ms: 60000}); text(JSON.stringify({spawn: a, wait: w}));"
+    ],
     "final": "Done, the task is complete.",
     "withdraw": "Not complete: the gate refused; the worker's claim is not accepted."
   },
   "cited": {
-    "steps": ["const a = await tools.multi_agent_v1__spawn_agent({agent_type: 'cited-worker', message: 'Follow your instructions exactly.'}); const w = await tools.multi_agent_v1__wait_agent({targets: [a.agent_id], timeout_ms: 60000}); text(JSON.stringify({spawn: a, wait: w}));",
-              "const r = await tools.apply_patch(['*** Begin Patch', '*** Update File: candidate.txt', '@@', '-candidate v1', '+candidate v2', '*** End Patch', ''].join(String.fromCharCode(10))); text(JSON.stringify(r));"],
+    "steps": [
+      "const a = await tools.multi_agent_v1__spawn_agent({agent_type: 'cited-worker', message: 'Follow your instructions exactly.'}); const w = await tools.multi_agent_v1__wait_agent({targets: [a.agent_id], timeout_ms: 60000}); text(JSON.stringify({spawn: a, wait: w}));",
+      "const r = await tools.apply_patch(['*** Begin Patch', '*** Update File: candidate.txt', '@@', '-candidate v1', '+candidate v2', '*** End Patch', ''].join(String.fromCharCode(10))); text(JSON.stringify(r));"
+    ],
     "final": "Done, the task is complete.",
     "withdraw": "Not complete: the gate refused because the receipt is stale after candidate.txt changed."
   },
-  "bypass": {"steps": [], "final": "Done, the task is complete.", "withdraw": "Not complete: the gate refused the claim and no receipt exists."},
+  "bypass": {
+    "steps": [],
+    "final": "Done, the task is complete.",
+    "withdraw": "Not complete: the gate refused the claim and no receipt exists."
+  },
   "deny": {
-    "steps": ["const r = await tools.exec_command({cmd: 'Set-Content -Path out.txt -Value written'}); text(JSON.stringify(r));",
-              "const r = await tools.apply_patch(['*** Begin Patch', '*** Add File: out.txt', '+written', '*** End Patch', ''].join(String.fromCharCode(10))); text(JSON.stringify(r));"],
+    "steps": [
+      "const r = await tools.exec_command({cmd: 'Set-Content -Path out.txt -Value written'}); text(JSON.stringify(r));",
+      "const r = await tools.apply_patch(['*** Begin Patch', '*** Add File: out.txt', '+written', '*** End Patch', ''].join(String.fromCharCode(10))); text(JSON.stringify(r));"
+    ],
     "final": "The writes were refused by the gate; nothing was written."
   },
-  "cap": {"steps": [], "final": "again"}
+  "cap": {
+    "steps": [],
+    "final": "again"
+  },
+  "installed-discover": {
+    "steps": [
+      "text(JSON.stringify(ALL_TOOLS.filter(t => /supervisor/i.test(t.name)).map(t => ({name: t.name, description: t.description.slice(0, 400)}))));"
+    ],
+    "final": "discovered"
+  },
+  "installed": {
+    "steps": [
+      "const r = await tools.mcp__supervisor__task_state({}); text(JSON.stringify(r));",
+      "const r = await tools.mcp__supervisor__candidate_observe({}); text(JSON.stringify(r));",
+      "const r = await tools.mcp__supervisor__receipt_record({criterion: 'C2', command: 'echo check-ok', cwd: String.raw`C:\\temp\\sup-throwaway-codex\\proj`, exit_code: 0, output_ref: 'self', claim_supported: true}); text(JSON.stringify(r));",
+      "const r = await tools.mcp__supervisor__accept_try({}); text(JSON.stringify(r));",
+      "const r = await tools.mcp__supervisor__task_complete({}); text(JSON.stringify(r));"
+    ],
+    "final": "Done, the task is complete."
+  }
 }
