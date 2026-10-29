@@ -3,15 +3,23 @@
 # so that file is the only place the version is written.
 #
 # Runner policy (owner, 2026-10-29): pushes run on the organisation's five
-# self-hosted Linux runners labelled fresh; pull requests run on a hosted
-# ubuntu-latest runner so a fork's code never executes on a self-hosted
-# machine; a hosted windows-latest job runs for both, because the first user
-# and the adapter's path handling are Windows.
+# self-hosted Linux runners labelled fresh (one dynamic pool on the owner's
+# machine, about 72 GB RAM and 26 cores, so no job caps or serialisation);
+# organisation settings already restrict those runners to verified committers,
+# and the hosted ubuntu-latest job for pull requests is a second layer so a
+# fork's code never executes on a self-hosted machine; a hosted windows-latest
+# job runs for both, because the first user and the adapter's path handling
+# are Windows.
 name: CI
 
 on:
   push:
   pull_request:
+
+# A new push cancels the superseded run of the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
