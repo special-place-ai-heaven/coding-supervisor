@@ -61,7 +61,7 @@ jobs:
       - name: Check the runner matches the target
         run: |
           rustc -vV
-          rustc -vV | grep -qx "host: ${{ matrix.target }}"
+          rustc -vV | grep -x "host: ${{ matrix.target }}" > /dev/null
 
       - name: Build release binaries
         run: cargo build --release --workspace
