@@ -12,6 +12,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # The fresh runners export RUSTC_WRAPPER=sccache without sccache installed;
+  # an empty value turns the wrapper off.
+  RUSTC_WRAPPER: ""
 
 jobs:
   check:
