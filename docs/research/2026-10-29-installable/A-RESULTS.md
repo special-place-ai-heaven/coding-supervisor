@@ -62,16 +62,34 @@ Same prompt, one difference: `--allowedTools mcp__supervisor` on the command lin
 
 So the advisory path reached `completed` and the enforcing Stop hook still refused the claim, with the missing-receipt wording.
 
-## Measure (`supervisor-claude-code measure fixtures/claude-code-install/captures`, exit 0; rerun after the measure fix, TC job `job_01a1871d422e77a0b0d23b1d8522e431`)
+### S3c MCP bypass, rerun with the installed configuration alone after `6a6f129` (session `d030b6e5-c928-4b15-b884-b26574aa1d16`): tool call denied again, expectation not met
+
+Changes before the run:
+- Binary rebuilt from `6a6f129` with `cargo build -p supervisor` (TC job `job_01a1871e6b3b709ab8b95267a40a9a88`, exit 0).
+- `supervisor install --harness claude-code` rerun on the throwaway (TC job `job_01a1871e91097249944601e1e8dc8c4a`, exit 0). Its diff added `"permissions": { "allow": [ "mcp__supervisor" ] }` to `.claude/settings.json` and the new step 1 to the chair skill.
+- Both files were committed in the throwaway repository (`d051603`), so the tree stayed clean.
+- State reset as the script does. No `--allowedTools` flag.
+- Prompt as in S3, except step 2 calls `candidate_observe` with no arguments (no identity fields, no `changed_paths`).
+
+What happened (runner TC job `job_01a1871ed08c7217b30755c04b3f51d9`, exit 0, 16 s; `claude -p` exit 0):
+- On stderr, Claude Code printed: `Ignoring 1 permissions.allow entry from .claude/settings.json: this workspace has not been trusted. Run Claude Code interactively here once and accept the trust dialog, or set projects["C:/temp/sup-throwaway/proj"].hasTrustDialogAccepted: true in C:\Users\rakovnik\.claude.json.` The debug log says `Dropped 1 project-scoped permissions.allow entry — workspace not yet trusted`.
+- The server still loaded: `MCP server "supervisor": Successfully connected (transport: stdio) in 479ms`.
+- `S3c.result.json` `permission_denials`: `[{"tool_name":"mcp__supervisor__task_state", ...}]`. No tool ran, so no receipt and no `mcp:` journal line exist. The gate stayed `verifying`.
+- Journal: UserPromptSubmit and Stop, both with no decision. The hooks from the same untrusted `settings.json` ran.
+- The chair said "The task isn't complete, and nothing was recorded or accepted." That is not a completion claim, so the Stop hook had nothing to refuse and no Stop refusal text exists for S3c.
+
+Not done: trusting the workspace. Both routes the message names write to the user's real Claude Code state, either the interactive trust dialog or `hasTrustDialogAccepted` in `C:\Users\rakovnik\.claude.json`, and this check may not write into the real home directory. The S3c expectations therefore stay unverified. The candidate derivation without identity fields, the mcp-asserted receipt and the refusal after an MCP completion were not exercised by S3c.
+
+## Measure (`supervisor-claude-code measure fixtures/claude-code-install/captures`, exit 0; rerun after S3c, TC job `job_01a1871f49587317b10eefb691195a98`)
 
 # Gate-derived measures
 Every number is gate-derived: read from gate journals and hook captures only, never from transcripts. Hook payloads carry no USD cost, so none is reported.
-Files read: 4. Unrecognized lines: 0. Duplicate lines dropped: 0. Cells are n/d where a denominator applies.
+Files read: 5. Unrecognized lines: 0. Duplicate lines dropped: 0. Cells are n/d where a denominator applies.
 
 | measure | gate-v1 |
 |---|---|
-| gate-derived lines | 26 |
-| gate-derived sessions | 4 |
+| gate-derived lines | 28 |
+| gate-derived sessions | 5 |
 | gate-derived tool-server lines (no session) | 6 |
 | gate-derived judge dispatches (SubagentStop) | 5 |
 | gate-derived dispatches, agent_type cited-worker | 1/5 |
@@ -99,14 +117,14 @@ Files read: 4. Unrecognized lines: 0. Duplicate lines dropped: 0. Cells are n/d 
 | gate-derived refusals: unobserved | 0/4 |
 | gate-derived refusals: other | 0/4 |
 | gate-derived tamper refusals | 0/4 |
-| gate-derived accepted tasks | 1/4 |
+| gate-derived accepted tasks | 1/5 |
 | gate-derived accepted via MCP (advisory) | 1 |
 | gate-derived worker tokens (final request only) | 8079/1 = 8079 (2 usage lines) |
 
 How to read three of these numbers:
 
-- "sessions 4": the four Claude sessions. The MCP server's six journal lines carry no `session_id` and are counted on their own row, "tool-server lines (no session) 6". The first run of this measure counted them as a fifth session.
-- "accepted tasks 1/4": S2 only, decided at the Stop hook. The `mcp:task_complete` line of S3b, whose `accepted: true` is the advisory path's own answer, is counted on its own row, "accepted via MCP (advisory) 1"; the Stop hook refused the completion claim after it. The first run of this measure counted it as a second accepted task (2/5), and worker tokens per accepted task were 4039 instead of 8079.
+- "sessions 5": the five Claude sessions (S1, S2, S3a, S3b, S3c). S3c adds two lines (UserPromptSubmit and Stop) and no tool-server line. The MCP server's six journal lines, all from S3b, carry no `session_id` and are counted on their own row, "tool-server lines (no session) 6". The first run of this measure counted them as a fifth session.
+- "accepted tasks 1/5": S2 only, decided at the Stop hook. The `mcp:task_complete` line of S3b, whose `accepted: true` is the advisory path's own answer, is counted on its own row, "accepted via MCP (advisory) 1"; the Stop hook refused the completion claim after it. The first run of this measure counted it as a second accepted task (2/5), and worker tokens per accepted task were 4039 instead of 8079.
 - "refusals 4": the three S1 handback refusals plus the S3b Stop refusal. "linked receipts 2/2" counts the S2 receipt and the S3b MCP receipt line.
 
 ## Compared with the fixture (`docs/research/2026-10-28-completion-gate-first-slice/T4-T5-RESULTS.md`, run 5)
@@ -124,12 +142,14 @@ How to read three of these numbers:
 2. Candidate identity differs between the two paths. The prompt's "empty dirty digest" (`""`) is not the adapter's digest of a clean tree (SHA-256 of nothing, `e3b0c442…`). After the Stop hook re-observed the candidate, `task_state` reported `candidate_observed: false` and C2 missing. The chair skill asks for "a digest of the uncommitted changes" without defining how it is computed. In S3b the refusal holds either way, because the receipt was MCP-asserted and no hook observed the command. From this one run I cannot tell which of the two caused the "missing" wording.
 3. The `accepted tasks` measure counts the MCP path's `accepted: true` (see above).
 
-Items 1 to 3 were fixed in the commit "Phase A: install allows the gate's tools, candidate identity derived by the server, measure separates advisory acceptance": install adds `mcp__supervisor` to `permissions.allow`; `candidate_observe` without identity fields derives the candidate from git with the hooks' code; the measure counts hook acceptances and MCP acceptances apart and sessions from session ids only (table above rerun). The live sessions above were not rerun with the fixed binary.
+Items 1 to 3 were fixed in the commit "Phase A: install allows the gate's tools, candidate identity derived by the server, measure separates advisory acceptance": install adds `mcp__supervisor` to `permissions.allow`; `candidate_observe` without identity fields derives the candidate from git with the hooks' code; the measure counts hook acceptances and MCP acceptances apart and sessions from session ids only (table above rerun). S3c reran the MCP path with the fixed binary and the installed configuration alone. Item 2 (identity derived by the server) and item 3 (measure) are confirmed only by the commit's tests and by the measure rerun above. Item 1 is not resolved for a `claude -p` run in an untrusted workspace (finding 4).
+
+4. Claude Code drops a project-scoped `permissions.allow` entry while the workspace is untrusted (S3c), even under `-p`. The hooks in the same file still run. So the allow rule install writes only takes effect after the interactive trust dialog has been accepted for the project, or after `hasTrustDialogAccepted` is set in the user's `~/.claude.json`. Install writes neither, and should print this as a manual step for claude-code. Not changed here; this is for the coordinator.
 
 ## Limits
 
 - One session per case, on sonnet with haiku workers. No repetition, so nothing here separates the model's wording from the gate's behaviour beyond the journaled decisions.
-- S3 needed a command-line permission flag that install does not write. The MCP bypass result (S3b) is therefore for "installed configuration plus `--allowedTools mcp__supervisor`".
+- The command-line permission flag is not resolved. With the allow rule that install now writes, an untrusted workspace still denies the tools (S3c). The only MCP bypass result that reached the Stop refusal (S3b) is for "installed configuration plus `--allowedTools mcp__supervisor`". An installed-only run needs a trusted workspace, which was not set up because doing so writes to the real home directory.
 - The MCP server loading under `-p` was observed once per attempt (connected, no prompt). Interactive approval was not tested.
 - Only the Claude Code harness was run live. The codex, cursor, omp and grok registrations were written but not loaded by their harnesses.
 - Debug logs are local only (gitignored), so the debug-log quotes above cannot be re-checked from the repository.
