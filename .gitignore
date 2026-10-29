@@ -28,3 +28,7 @@ venv/
 target/
 node_modules/
 dist/
+
+# T3 fixture: large debug logs and scratch outputs stay local; event captures are committed
+fixtures/**/captures/*.debug.txt
+fixtures/**/out.txt

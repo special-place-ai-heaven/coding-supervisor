@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": ["Read", "Write", "Edit", "Glob", "Grep", "Agent"],
+    "defaultMode": "acceptEdits"
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "python E:/project/coding-supervisor/fixtures/claude-code-enforcement/hooks/capture.py" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Agent|Write|Edit|Bash|PowerShell", "hooks": [ { "type": "command", "command": "python E:/project/coding-supervisor/fixtures/claude-code-enforcement/hooks/capture.py" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Agent|Write|Edit|Bash|PowerShell", "hooks": [ { "type": "command", "command": "python E:/project/coding-supervisor/fixtures/claude-code-enforcement/hooks/capture.py" } ] }
+    ],
+    "SubagentStart": [
+      { "hooks": [ { "type": "command", "command": "python E:/project/coding-supervisor/fixtures/claude-code-enforcement/hooks/capture.py" } ] }
+    ],
+    "SubagentStop": [
+      { "hooks": [ { "type": "command", "command": "python E:/project/coding-supervisor/fixtures/claude-code-enforcement/hooks/capture.py" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "python E:/project/coding-supervisor/fixtures/claude-code-enforcement/hooks/capture.py" } ] }
+    ]
+  }
+}

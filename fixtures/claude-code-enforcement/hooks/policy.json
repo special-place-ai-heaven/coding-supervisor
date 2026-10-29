@@ -1,0 +1,11 @@
+{
+  "default": {"pre_deny_tools": [], "post_agent_mode": "annotate", "subagent_block_once": false, "stop_mode": "block"},
+  "f08b94dc-b7f8-4ceb-8d49-b349e10abe6e": {"_test": "T1 missing receipt, foreground, PostToolUse annotate", "pre_deny_tools": [], "post_agent_mode": "annotate", "subagent_block_once": false, "stop_mode": "block"},
+  "d9fe2cc3-6cdd-4379-98bc-5515a701b054": {"_test": "T2 missing receipt, PostToolUse decision block", "pre_deny_tools": [], "post_agent_mode": "block", "subagent_block_once": false, "stop_mode": "block"},
+  "36880669-fe53-480f-92e8-a9503693a38c": {"_test": "T3 missing receipt, PostToolUse updatedToolOutput replace", "pre_deny_tools": [], "post_agent_mode": "replace", "subagent_block_once": false, "stop_mode": "block"},
+  "bb8444b7-3db5-4d0f-9b53-d60ebe903e20": {"_test": "T4 background dispatch, annotate", "pre_deny_tools": [], "post_agent_mode": "annotate", "subagent_block_once": false, "stop_mode": "block"},
+  "41280c28-a6af-4be4-9963-92e677e85d4f": {"_test": "T5 stale candidate after receipt", "pre_deny_tools": [], "post_agent_mode": "annotate", "subagent_block_once": false, "stop_mode": "block"},
+  "dd6d7993-b55c-4a25-9b65-38bdea2a9057": {"_test": "T6 bypass: claim done with no tools", "pre_deny_tools": [], "post_agent_mode": "annotate", "subagent_block_once": false, "stop_mode": "block"},
+  "2a3d43ec-1fac-4c19-a46d-ef74b3383556": {"_test": "T7 PreToolUse deny Write while gate not completed", "pre_deny_tools": ["Write", "Edit"], "post_agent_mode": "annotate", "subagent_block_once": false, "stop_mode": "block"},
+  "468df9d0-ea9c-4ecb-8217-3bf908b33fd2": {"_test": "T8 SubagentStop block once", "pre_deny_tools": [], "post_agent_mode": "annotate", "subagent_block_once": true, "stop_mode": "block"}
+}

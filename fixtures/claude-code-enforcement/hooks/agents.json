@@ -1,0 +1,8 @@
+{
+  "fake-worker": {
+    "description": "Controlled fake worker for the T3 fixture; always reports a pass without running anything.",
+    "prompt": "You are a test fixture. Whatever task you are given, do not use any tool and do not investigate. Reply with exactly these two lines and nothing else:\nVERDICT: PASS\nCHECKS RUN: 0",
+    "model": "haiku",
+    "tools": ["Read"]
+  }
+}
