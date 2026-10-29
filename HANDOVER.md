@@ -160,3 +160,55 @@ Get-FileHash C:\Users\rakovnik\.agents\jev\policies\claude.yaml -Algorithm SHA25
 ## 10. What the next session should do first
 
 Read `CLAUDE.md`, then `docs/research/2026-10-28-completion-gate-first-slice/PLAN.md`, run section 9, confirm `rustc --version` and set `CARGO_TARGET_DIR=C:\Target\coding-supervisor\main\target`, then start PLAN T1 and T2 (Rust core records, state machine, `cargo test` scenarios with fake providers). Do not touch the live harness, the Jev policy, the agent briefs or the running cohort. Delegate execution to Codex workers in background mode with Terminal Commander for any long command; keep the chair for decisions and verification.
+
+## Phase A (2026-10-29)
+
+Sections 1 to 10 above were written on 2026-10-28. Where they disagree with `CLAUDE.md` (for example section 10, which starts at PLAN T1 and T2), `CLAUDE.md` is current. This section records Phase A, "installable".
+
+**Branch:** `phase-a-installable`, local commits only (no remote-tracking ref exists locally), based on `9cff50c` (the README commit). Working tree at the time of writing: untracked `fixtures/codex-enforcement/`, `fixtures/cursor-enforcement/`, `fixtures/grok-enforcement/`, `fixtures/omp-enforcement/` belonging to the Phase B investigations in progress (not committed, not part of Phase A).
+
+**Commits** (`git log --oneline 9cff50c..HEAD`, oldest first):
+
+| Commit | What it did |
+|---|---|
+| `96322bc` | Research: harness capability survey for Codex CLI, Cursor, OMP and Grok Build (`docs/research/2026-10-29-harness-capability-survey/SURVEY.md`) |
+| `8eaf0c8` | A1: the `supervisor-mcp` advisory server over the core, and the first `supervisor` CLI skeleton |
+| `c170ea8` | A4: `ci.yml` (checks on push) and `release.yml` (binaries on tag), plus `HARNESS-LOCATIONS.md` |
+| `293c83a` | A1: the enforcing hook adapter ignores caller-asserted MCP receipts when deciding acceptance |
+| `0ff9dc7` | A1: `Stop` re-checks observed receipts on a task that was completed through MCP |
+| `0cafd04` | A2-A3: `supervisor init` and `supervisor install` render the two skills and register the gate per harness |
+| `6528a92` | A3: the MCP registration pins `--project`; LF for Rust and TOML sources |
+| `b482a51` | A: first live Claude Code sessions through the installed configuration (`A-RESULTS.md`, S1 to S3b) |
+| `6a6f129` | A: install writes `permissions.allow` `mcp__supervisor`; `candidate_observe` derives the candidate from git when given no identity; `measure` separates advisory MCP acceptance from hook acceptance |
+| `a882ec4` | A: live rerun of the MCP path through the installed configuration alone (S3c) |
+| `60234ff` | A3: install prints the folder-trust prerequisite for Claude Code as its manual step |
+
+**Verified (seen, with the evidence file):**
+
+- Claude Code 2.1.312, throwaway project, installed configuration only (no `--settings`, no `--mcp-config`): S1 fake worker and S2 cited worker reproduce the fixture's decision texts and gate states exactly; S3b (MCP completion, then a completion claim) is refused at `Stop` with `--allowedTools mcp__supervisor` added on the command line. `docs/research/2026-10-29-installable/A-RESULTS.md`.
+- `supervisor init` and `supervisor install --dry-run` for all five harnesses ran on 2026-10-29 against the throwaway project with exit 0; their printed output is quoted in the README section "Install and use". Claude Code reports `no changes`; Codex, Cursor, OMP and Grok show the chair-skill update as a diff because they were installed before `6a6f129`.
+- The core has no dependencies; `serde_json` is the only dependency of the adapter, the server and the CLI (read from the `Cargo.toml` files).
+
+**Not verified:**
+
+- The CI and release workflows have never run. Nothing was pushed and no tag exists.
+- S3c: with the installed configuration alone, Claude Code denied the gate's tool call because the folder was untrusted. The same run in a trusted folder, without `--allowedTools`, has not been done; trusting the folder writes to the real Claude Code user state, which this work did not do.
+- Codex CLI, Cursor, OMP and Grok Build: the files install writes follow their documentation (`HARNESS-LOCATIONS.md`); no harness has been recorded loading them. Phase B in progress.
+- Fixture cases L2b, L3, L4 and L6 were not rerun through the installed configuration; interactive approval of the project MCP server was not tested.
+- The test counts in the README come from `#[test]` attributes; `cargo test --workspace` was not rerun for the documentation edit that added them.
+
+**Throwaway location:** `C:\temp\sup-throwaway` (`proj` is a git repository with the installed files for all five harnesses, `home` is empty, `state` holds the gate state). `C:\temp` is cleared by the owner; delete the folder by hand when it is no longer needed. Its Claude Code session transcripts are under `C:\Users\rakovnik\.claude\projects\C--temp-sup-throwaway-proj\`; like the fixture transcripts in section 6, they are neither before nor after cohort and must be excluded from any after-cohort run.
+
+**Rule:** nothing was written into the live harness configuration on this machine. Install writes only under the project directory (checked in `cli/src/install.rs`), the installs went to the throwaway project, the throwaway `home` directory is empty, and the folder-trust check in S3c was deliberately not performed because it writes to `~/.claude.json`. Claude Code itself still writes its ordinary session records under `~/.claude/projects` for every `claude -p` run. Keep to the rule: every manual step `install` prints is for the person who owns the machine to perform.
+
+**Open gaps** (numbering as in `docs/research/2026-10-29-installable/HARNESS-LOCATIONS.md`, as of 2026-10-29):
+
+- G1. Grok Build's current version and release dates come from secondary trackers; the official changelog page returned HTTP 403.
+- G2. Codex documents `$HOME/.agents/skills` and `/etc/codex/skills`, not `~/.codex/skills`; no Codex page read says Codex scans the latter.
+- G3. Codex project trust: the config key `projects.<path>.trust_level` is documented, but the interactive dialog was not read and the Windows path spelling follows this machine's config, not a documented rule.
+- G4. Cursor: (a) the MCP approval step is documented only through `mcp enable` and `--approve-mcps`, not its scope or the headless behaviour; (b) `CURSOR_CONFIG_DIR` is documented only for `cli-config.json`; (c) the docs call the command `agent`, which is shadowed on this machine; (d) the hooks page is shared with the editor; (e) the headless page contradicts itself on whether `-p` writes files without `--force`.
+- G5. Grok: `--trust` is on the hooks page but not in the CLI reference; project `.agents/skills` is undocumented; the role of `description` in skill loading is implied; Stop and SubagentStop cannot block; a second `agent.exe` reporting `grok 0.1.210` is on `PATH` and was not investigated.
+- G6. OMP: documentation was read from the repository, not a site; the context-file merge order was not read to the end; no blocking subagent-completion event was found; whether `~/.agents/skills` loads without opting the `agents` provider in is unclear; hooks are code modules, so install cannot write a declarative hook file.
+- G7. Claude Code: the hand-written shape of user-scope servers in `~/.claude.json` is not documented (use `claude mcp add --scope user`); no `--cwd` flag; under `-p` project `.mcp.json` servers and settings-file hooks load without a trust prompt unless `--bare`.
+- G8. Windows: the binary must resolve as `supervisor` on `PATH`, or each file must carry an absolute path (install writes the absolute path of the running binary); none of the five docs promises `.cmd` or `.bat` resolution for stdio MCP commands; not tested.
+- G9. Enterprise and managed layers of each harness that can override or disable all of the above were not read.
