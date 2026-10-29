@@ -250,3 +250,25 @@ A crash between write and rename is not simulated. What is shown is the mechanis
 | `npm test` in `npm/` | `job_01a187e0ab467474bdeec1a08674a476` | 0 | 34 tests: 31 pass, 3 skipped (symlinks unavailable on this Windows account) |
 
 The Unix-only symlink test runs on the Linux CI job, not on this machine.
+
+## Autonomous gate, phase 1: run-time candidate (gap 2)
+
+Branch `feat/autonomous-gate`, commit `2f662d4`. Every run record in `runs.jsonl` now carries `"candidate":{"base_commit","dirty_digest"}`, observed by the same `GitCandidate` call the hook uses for its decision (once per hook call, before the run is written; `null` when it cannot be observed). `Session::link_checks` links a CHECK line only to a run whose recorded candidate equals the current one. A run that matches on everything else is refused with a "run it again" reason. A record without a candidate never links. Core unchanged.
+
+Observed refusal text (replay test):
+
+```
+GATE: handback refused (refusal 1 of 3): C1 `cargo test` ran before your last change; run it again; missing C1. Run `cargo test` again in this session, then cite the new run as CHECK C1 | cargo test | exit <code>.
+```
+
+| Check | Job or run | Exit | Evidence |
+|---|---|---|---|
+| `cargo test --workspace` before the change | `job_01a188100259720798e2819cb517ae99` | 0 | 136 passed |
+| `cargo test --workspace` after | `job_01a18812257c711aa8f8a67ca1389378` | 0 | 138 passed (replay 29 to 31), no existing assertion edited |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a18811f06177659330e60e422ae59d` | 0 | no warnings |
+| `cargo fmt --all -- --check` | `job_01a1881213b075cc81789405ee7b22c6` | 0 | no diff |
+| Branch CI | run 40892299747 | success | Linux fresh and hosted Windows |
+
+New tests: `gap2_run_before_the_last_change_is_refused_and_a_new_run_is_accepted`, `gap2_run_record_without_a_candidate_never_links`.
+
+Open: the candidate stays scoped to the hook's cwd (`git status -- .`), so a change outside that directory does not make a run stale. It is observed at PostToolUse, so a command that itself edits files is recorded against the tree after it ran. Stop with an old run has no dedicated test (same `link_checks` path). Not run live in Claude Code.
