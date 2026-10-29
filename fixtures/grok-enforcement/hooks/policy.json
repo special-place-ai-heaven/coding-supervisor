@@ -1,0 +1,107 @@
+{
+ "default": {
+  "pre_deny_regex": "(?!)",
+  "subagent_block": false,
+  "stop_mode": "off",
+  "_test": "observe only; each run's policy is recorded under its session id"
+ },
+ "9981dcbe-38fd-4b39-8a18-07be95e64e5f": {
+  "pre_deny_regex": "run_terminal_command",
+  "subagent_block": false,
+  "stop_mode": "off",
+  "_test": "DISCARDED (port 18765 shared with another stand-in before 11:13): P1 PreToolUse deny of a shell command"
+ },
+ "6fe9ee49-ce54-4893-a78d-b8c65a4dcd5c": {
+  "pre_sleep_seconds": 15,
+  "subagent_block": false,
+  "stop_mode": "off",
+  "_test": "DISCARDED (port 18765 shared with another stand-in before 11:13): P1b PreToolUse hook sleeps past its 10 s timeout then denies"
+ },
+ "407e20f8-e895-4eca-acb2-f354082bef2c": {
+  "pre_deny_regex": "(?!)",
+  "subagent_block": false,
+  "stop_mode": "block",
+  "_test": "DISCARDED (port 18765 shared with another stand-in before 11:13): T-missing: fake worker, no receipt, Stop block (spawn_subagent without background flag: ran in background)"
+ },
+ "f16e6651-2ce2-4da6-9935-fd29c60e095f": {
+  "pre_deny_regex": "(?!)",
+  "subagent_block": false,
+  "stop_mode": "block",
+  "_test": "T-missing-fg: fake worker in foreground, no receipt, Stop block"
+ },
+ "b5039f58-3f99-421e-9afd-f66df145dd6d": {
+  "pre_deny_regex": "(?!)",
+  "subagent_block": true,
+  "post_agent_mode": "annotate",
+  "stop_mode": "block",
+  "_test": "T-subblock: SubagentStop block once, PostToolUse annotate, Stop block"
+ },
+ "1907732b-b8f8-4ed9-b6b5-077e83e955f8": {
+  "pre_deny_regex": "(?!)",
+  "subagent_block": false,
+  "stop_mode": "block",
+  "_test": "T-stale: cited worker runs the check (receipt), chair then changes candidate.txt, Stop block -- void as a stale test: the PowerShell command did not change candidate.txt"
+ },
+ "f04e6e21-830c-4259-83ff-3a040b29e454": {
+  "pre_deny_regex": "(?!)",
+  "subagent_block": false,
+  "stop_mode": "block",
+  "_test": "T-stale (rerun with the write tool): cited worker runs the check (receipt), chair writes candidate.txt v2, Stop block"
+ },
+ "589444a6-f2c4-4883-9bec-111e78dc149a": {
+  "pre_deny_regex": "(?!)",
+  "subagent_block": false,
+  "stop_mode": "block",
+  "_test": "T-bypass: chair claims done with no tools, Stop block"
+ },
+ "ae1c5859-73e1-4f3f-8dd3-b5dac498a5cb": {
+  "pre_deny_regex": "(?!)",
+  "subagent_block": false,
+  "stop_mode": "block",
+  "stop_always": true,
+  "_test": "T-cap: Stop blocks every time, ignoring stopHookActive, to observe the continuation cap"
+ },
+ "543a47ec-4db2-4faf-8818-847f1f0941de": {
+  "_test": "DISCARDED (port 18765 shared with another stand-in before 11:13): discovery probe; model call failed (Responses-protocol request to the fake endpoint), default policy at the time: Stop block"
+ },
+ "8ff60688-9889-4474-9fac-5b19259cfc0f": {
+  "stop_mode": "block",
+  "_test": "DISCARDED (port 18765 shared with another stand-in before 11:13): discovery probe (05b45b89 failed like 543a47ec); Stop block of an OK reply"
+ },
+ "05b45b89-24b1-4251-8384-81c0c88391bb": {
+  "stop_mode": "block",
+  "_test": "DISCARDED (port 18765 shared with another stand-in before 11:13): discovery probe (05b45b89 failed like 543a47ec); Stop block of an OK reply"
+ },
+ "e04c7f55-787f-4cf5-b5bc-097d40057596": {
+  "stop_mode": "block",
+  "_test": "DISCARDED (port 18765 shared with another stand-in before 11:13): discovery probe (05b45b89 failed like 543a47ec); Stop block of an OK reply"
+ },
+ "4f62550e-a3e9-46ca-9e29-e4981b4a619d": {
+  "stop_mode": "off",
+  "_test": "final discovery: tool schemas and skill markers"
+ },
+ "66bd87f4-48f8-4b3f-8d66-348922139cad": {
+  "pre_deny_regex": "(?!)",
+  "subagent_block": false,
+  "stop_mode": "off",
+  "_test": "Re-run of discovery after the port collision, on 18811, without --debug-file"
+ },
+ "fbadf9f5-5cce-48ff-afbc-7160fa1a2514": {
+  "pre_deny_regex": "run_terminal_command",
+  "subagent_block": false,
+  "stop_mode": "off",
+  "_test": "Re-run of P1 PreToolUse deny after the port collision, on 18811"
+ },
+ "3ff53daf-7462-4e84-8b6e-1d413ef034e6": {
+  "pre_sleep_seconds": 15,
+  "subagent_block": false,
+  "stop_mode": "off",
+  "_test": "Re-run of P1b PreToolUse timeout after the port collision, on 18811"
+ },
+ "de5aa0be-07cd-4f70-87ce-45ad6491d156": {
+  "pre_deny_regex": "(?!)",
+  "subagent_block": false,
+  "stop_mode": "block",
+  "_test": "Re-run of T-missing (spawn_subagent without background flag) after the port collision, on 18811"
+ }
+}
