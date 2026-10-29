@@ -44,7 +44,7 @@ which `supervisor install` registered in `.mcp.json` at the project root;\n\
 Claude Code lists them as `mcp__supervisor__<tool>`. An interactive session\n\
 asks once to approve that server. The gate's hooks in `.claude/settings.json`\n\
 also see your tool calls and your stop, so a refusal can arrive from a hook.",
-        manual: "Trust the project folder once: start Claude Code interactively here and accept the trust dialog. Until then Claude Code ignores the `permissions.allow` entry for `mcp__supervisor` that install wrote, and every gate tool call is refused (seen live, A-RESULTS.md session S3c). Interactive sessions also ask once to approve the project MCP server `supervisor` from .mcp.json: approve it. `claude -p` loads it without asking (section 1, row 3).",
+        manual: "Trust the project folder once: start Claude Code interactively here and accept the trust dialog. Until then Claude Code ignores the `permissions.allow` entry for `mcp__supervisor` that install wrote, and every gate tool call is refused (seen live, A-RESULTS.md session S3c). To run an isolated session without trusting the folder in your live config, set `CLAUDE_CONFIG_DIR` to a separate directory that holds your login and a `.claude.json` marking this project with `hasTrustDialogAccepted: true` (seen live, session S3d). Interactive sessions also ask once to approve the project MCP server `supervisor` from .mcp.json: approve it. `claude -p` loads it without asking (section 1, row 3).",
         notes: &[
             "User-level skills directory, not written: {HOME}/.claude/skills/<name>/SKILL.md (section 1, row 1).",
             "User-scope MCP is documented only as `claude mcp add --scope user supervisor -- {BINARY} mcp` (gap G7); not run.",

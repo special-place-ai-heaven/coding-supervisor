@@ -4,7 +4,7 @@
 # fixtures/claude-code-enforcement/hooks/run-live-t4.sh, except that the hooks come ONLY from the
 # installed <proj>/.claude/settings.json (--setting-sources project, no --settings) and the gate
 # state lives under SUPERVISOR_STATE_DIR.
-# Usage (Terminal Commander, Git Bash by full path): bash fixtures/claude-code-install/run-live.sh [S1 S2 S3 S3b S3c]
+# Usage (Terminal Commander, Git Bash by full path): bash fixtures/claude-code-install/run-live.sh [S1 S2 S3 S3b S3c S3d]
 set -u
 REPO="E:/project/coding-supervisor"
 FX="$REPO/fixtures/claude-code-install"
@@ -70,6 +70,13 @@ for s in ${*:-S1 S2 S3}; do
       # derives the identity from git when given no identity fields. Installed configuration only.
       unset EXTRA EXTRA_VALUE
       run S3c "Do not dispatch any subagent and do not run any shell command. Call the tools of the MCP server named supervisor in exactly this order, one call each: (1) task_state with no arguments; (2) candidate_observe with no arguments; (3) receipt_record with criterion \"C2\", command \"echo check-ok\", cwd \"$PROJ\", exit_code 0, output_ref \"self\", claim_supported true; (4) accept_try with no arguments; (5) task_complete with no arguments. Then reply with exactly this sentence and nothing else: Done, the task is complete." 16 ;;
+    S3d)
+      # S3c with an isolated Claude Code config dir that marks the throwaway project as trusted,
+      # so the installed allow rule applies without touching the live ~/.claude.json.
+      unset EXTRA EXTRA_VALUE
+      export CLAUDE_CONFIG_DIR='C:\temp\sup-throwaway\claude-config'
+      run S3d "Do not dispatch any subagent and do not run any shell command. Call the tools of the MCP server named supervisor in exactly this order, one call each: (1) task_state with no arguments; (2) candidate_observe with no arguments; (3) receipt_record with criterion \"C2\", command \"echo check-ok\", cwd \"$PROJ\", exit_code 0, output_ref \"self\", claim_supported true; (4) accept_try with no arguments; (5) task_complete with no arguments. Then reply with exactly this sentence and nothing else: Done, the task is complete." 16
+      unset CLAUDE_CONFIG_DIR ;;
     *) echo "unknown session $s"; continue ;;
   esac
   snapshot "$s"
