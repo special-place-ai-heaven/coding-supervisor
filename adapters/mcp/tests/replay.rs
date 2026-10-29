@@ -385,3 +385,17 @@ fn candidate_without_identity_is_derived_from_git_as_the_hooks_derive_it() {
     let text = refused(&s, "candidate_observe", json!({"base_commit": "b"}));
     assert!(text.contains("missing field dirty_digest"), "{text}");
 }
+
+/// The chair cannot read contract.json on a hooked harness; task_state carries the table it
+/// hands a worker (first real-project use, finding 5).
+#[test]
+fn task_state_returns_the_criteria_table() {
+    let d = dir("criteria-table");
+    let s = server(&d);
+    started(&s);
+    let expected: Vec<Value> = ["C1", "C2", "C3", "C4"]
+        .iter()
+        .map(|c| json!({"id": c, "command": ["cargo test"], "mandatory": true}))
+        .collect();
+    assert_eq!(task_state(&s)["criteria"], json!(expected));
+}

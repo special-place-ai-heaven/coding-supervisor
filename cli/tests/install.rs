@@ -105,7 +105,15 @@ fn every_harness_gets_its_documented_files_and_a_second_run_changes_nothing() {
             // Only the chair calls the gate's tools; the worker template has no {MCP_NOTE}.
             if name == "supervisor-chair" {
                 assert!(skill.contains(mcp), "{harness} chair skill names {mcp}");
+                // First real-project use: the receipt fields and no task_start where hooks run.
+                assert!(
+                    skill.contains("`output_ref`") && skill.contains("do not call `task_start`")
+                );
             }
+            assert!(
+                skill.contains("nothing appended"),
+                "{harness} {name} says the command runs alone"
+            );
             // Both sides of the handoff name the criteria table, so a worker knows each command up front.
             assert!(
                 skill.contains("id, command, mandatory"),

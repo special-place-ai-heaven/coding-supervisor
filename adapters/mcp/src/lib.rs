@@ -472,6 +472,21 @@ fn describe(
             ]),
         ),
         ("candidate_observed", candidate_known.into()),
+        // The chair cannot read contract.json (the hooks deny the state directory), so the
+        // table it hands a worker comes from here.
+        (
+            "criteria",
+            criteria
+                .iter()
+                .map(|c| {
+                    obj([
+                        ("id", c.id.0.clone().into()),
+                        ("command", c.command.clone().into()),
+                        ("mandatory", c.mandatory.into()),
+                    ])
+                })
+                .collect(),
+        ),
         ("receipts", Value::Object(receipts)),
         ("rejected_claims", rejected_claims.into()),
     ])

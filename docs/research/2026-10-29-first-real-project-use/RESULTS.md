@@ -129,3 +129,24 @@ All through Terminal Commander, cwd `E:\project\coding-supervisor`, `CARGO_TARGE
 | `cargo test --workspace` | `job_01a1879654ff7491bf284b1edf5599f1` | 0 | 128 passed, 0 failed (replay 25 to 29; total 124 to 128) |
 
 Not run: no live Claude Code session has exercised the new Stop path.
+
+## Corrections for findings 2 to 5 and 7: skills and MCP
+
+| File | Change | Finding |
+|---|---|---|
+| `skills/supervisor-chair.SKILL.template.md` | "Before you say done": read the criteria from `task_state`. Do not call `task_start` where the hooks are installed (the task exists once the contract is in the state directory); call it once on a harness without hooks. Run each command bare. With hooks, end with the CHECK header in the final message instead of MCP receipts. Without hooks, call in order, with no command in between: `candidate_observe`, `receipt_record` per check, `accept_try`, `task_complete`. Names the six `receipt_record` fields. "When you delegate": the table comes from `task_state`; with hooks the gate reads the worker's header itself. | 2, 3, 4, 5, 7 |
+| `skills/supervisor-worker.SKILL.template.md` | New rule "The command runs alone": nothing appended, piped or redirected, or the run does not link. | 7 |
+| `adapters/mcp/src/tools.json` | `task_start`: do not call it once hooks have created the task. `receipt_record`: call `candidate_observe` first, no command in between. `task_state`: returns the criteria. | 3, 4, 5 |
+| `adapters/mcp/src/lib.rs` | `describe` adds `criteria` (`id`, `command` as a list, `mandatory`) to every answer, `task_state` included. This is code outside "templates and tools.json only": a description cannot make `task_state` return the contract. | 5 |
+| `adapters/mcp/tests/replay.rs` | `task_state_returns_the_criteria_table` | 5 |
+| `cli/tests/install.rs` | for all five harnesses: the chair skill names `` `output_ref` `` and says "do not call `task_start`"; both skills say "nothing appended" | 2, 4, 7 |
+
+Hooks are written for Claude Code only, so the skills tell the two cases apart by naming that ("`supervisor install` writes them for Claude Code only") rather than by per-harness text in `cli/src/install.rs`, which is unchanged.
+
+| Command | Job | Exit | Evidence |
+|---|---|---|---|
+| `cargo fmt --all -- --check` | `job_01a18799255b732791457494c6efd42a` | 0 | no diff |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a18798c8cc71549719237526230b6c` | 0 | no warning or error lines |
+| `cargo test --workspace` | `job_01a18798d84c70c4995cf1362a753f7f` | 0 | 129 passed, 0 failed (MCP replay 14 to 15; total 128 to 129) |
+
+Not run: no chair session has used the corrected skills.

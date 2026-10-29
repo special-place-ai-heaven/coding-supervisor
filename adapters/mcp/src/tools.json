@@ -1,7 +1,7 @@
 [
   {
     "name": "task_start",
-    "description": "Start a task from a contract: write contract.json to the gate's state directory, create the task and move it to preparing. Refused when the state directory already holds a contract.",
+    "description": "Start a task from a contract: write contract.json to the gate's state directory, create the task and move it to preparing. Refused when the state directory already holds a contract, which is the case once a harness's hooks have created the task: there, do not call it.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -43,7 +43,7 @@
   },
   {
     "name": "receipt_record",
-    "description": "Record one check result for a criterion, bound to the current candidate. The command must be one the contract names for that criterion (exact text after trimming); any other command is refused. Caller-asserted: the server does not observe the command, and the receipt is stored and journaled as mcp-asserted.",
+    "description": "Record one check result for a criterion, bound to the current candidate. The command must be one the contract names for that criterion (exact text after trimming); any other command is refused. Call candidate_observe first, with no command run in between, or the receipt is refused as not observed. Caller-asserted: the server does not observe the command, and the receipt is stored and journaled as mcp-asserted.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -88,7 +88,7 @@
   },
   {
     "name": "task_state",
-    "description": "Return the checkpoint, the receipt status per criterion and the receipt claims the gate rejected. No transition.",
+    "description": "Return the checkpoint, the contract's criteria (id, command, mandatory), the receipt status per criterion and the receipt claims the gate rejected. No transition.",
     "inputSchema": {"type": "object", "properties": {}}
   }
 ]

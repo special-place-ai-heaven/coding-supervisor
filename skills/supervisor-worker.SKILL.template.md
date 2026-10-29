@@ -45,6 +45,10 @@ After the header, write the rest of your report as usual.
 - **UNVERIFIED is never PASS.** If you could not run the check (tool missing,
   build broken, no time), say `VERDICT: UNVERIFIED` and `CHECKS RUN: 0`.
   A `PASS` with zero checks is refused.
+- **The command runs alone.** Run the table's command with nothing appended,
+  piped or redirected (no `; echo $?`, no `| tail`, no `> log`). Any other
+  text does not link to the criterion, and a pipeline reports the exit code
+  of its last stage, not of the check.
 - **A non-zero exit is a FAIL, not a note.** Report the exit code the command
   returned; do not round it to success because the failure looked unrelated.
 - **The candidate is what you cite.** If you edit a file after a check ran,
