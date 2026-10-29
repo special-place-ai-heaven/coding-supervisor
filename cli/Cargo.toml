@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 supervisor-mcp = { path = "../adapters/mcp" }
+supervisor-claude-code = { path = "../adapters/claude-code" }
+serde_json = "1"
