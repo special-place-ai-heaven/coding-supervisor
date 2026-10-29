@@ -11,14 +11,16 @@ use coding_supervisor::{
 use serde_json::Value;
 
 use crate::candidate::{CandidateProvider, GitCandidate};
-use crate::claim;
 use crate::header::{self, Verdict};
-use crate::state::{self, Gate, obj, state_name};
+use crate::state::{self, Gate, Stored, obj, state_name};
+use crate::{claim, guard, location};
 
 /// Everything a hook call needs besides its payload.
 pub struct Env {
-    /// `<cwd>/.supervisor/`: contract.json, gate.json, runs.jsonl, events.jsonl.
+    /// contract.json, gate.json, runs.jsonl, events.jsonl; see `location::resolve_state_dir`.
     pub state_dir: PathBuf,
+    /// Which rule chose `state_dir`; journaled on every events.jsonl line.
+    pub state_location: &'static str,
     pub candidate: Box<dyn CandidateProvider>,
     /// Seconds since the Unix epoch.
     pub clock: fn() -> u64,
@@ -26,8 +28,11 @@ pub struct Env {
 
 impl Env {
     pub fn real(cwd: &Path) -> Self {
+        let (state_dir, state_location) =
+            location::resolve_state_dir(cwd, &|name| std::env::var(name).ok());
         Self {
-            state_dir: cwd.join(".supervisor"),
+            state_dir,
+            state_location,
             candidate: Box::new(GitCandidate {
                 cwd: cwd.to_path_buf(),
             }),
@@ -121,6 +126,7 @@ pub fn handle(payload: &Value, env: &mut Env) -> Decision {
         ("agent_id", agent.into()),
         ("decision", decision.to_json().into()),
         ("reasons", reasons.into()),
+        ("state_location", env.state_location.into()),
     ]);
     match state::append_line(&env.state_dir.join("events.jsonl"), &line) {
         Ok(()) => decision,
@@ -135,12 +141,28 @@ fn process(
     agent: &str,
     reasons: &mut Vec<String>,
 ) -> Result<Decision, String> {
+    if event == "PreToolUse"
+        && let Some(denial) = guard::state_write_denial(payload, &env.state_dir)
+    {
+        reasons.push("gate state path protected".to_owned());
+        return Ok(denial);
+    }
     let now = (env.clock)();
     if let Some(run) = observed_run(payload, event, agent, now) {
         state::append_line(&env.state_dir.join("runs.jsonl"), &run)?;
         reasons.push("command run journaled".to_owned());
     }
-    let Some(contract) = state::load_contract(&env.state_dir)? else {
+    let (contract, contract_sha256) = state::read_contract(&env.state_dir)?;
+    // A removed contract with a gate.json still present fails the chain as well.
+    let stored = match state::load_gate(&env.state_dir, &contract_sha256)? {
+        Stored::Tampered(what) => {
+            reasons.push(format!("state tampered: {what}"));
+            return Ok(tampered(payload, event, &what));
+        }
+        Stored::Valid(gate) => Some(gate),
+        Stored::Absent => None,
+    };
+    let Some(contract) = contract else {
         reasons.push("no contract: advisory only".to_owned());
         return Ok(no_contract(payload, event));
     };
@@ -148,7 +170,6 @@ fn process(
     if let Err(why) = &observed {
         reasons.push(format!("candidate not observed: {why}"));
     }
-    let stored = state::load_gate(&env.state_dir)?;
     let mut session = Session::open(contract, stored, observed, reasons)?;
     let decision = match event {
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
@@ -165,8 +186,35 @@ fn process(
         _ => Decision::None,
     };
     session.gate.checkpoint = session.task.checkpoint();
-    state::save_gate(&env.state_dir, &session.gate)?;
+    state::save_gate(&env.state_dir, &session.gate, &contract_sha256)?;
     Ok(decision)
+}
+
+/// Refuse everywhere a refusal is possible; gate.json is left exactly as found.
+fn tampered(payload: &Value, event: &str, what: &str) -> Decision {
+    let refusal = |subject: &str| {
+        format!(
+            "GATE: {subject} refused: gate state tampered ({what}); restore the state from the journal or start a new task"
+        )
+    };
+    let tool = text(payload, "tool_name").unwrap_or_default();
+    match event {
+        "PreToolUse"
+            if matches!(
+                tool,
+                "Write" | "Edit" | "NotebookEdit" | "Agent" | "Bash" | "PowerShell"
+            ) =>
+        {
+            Decision::Deny(refusal(tool))
+        }
+        "Stop" => Decision::Block(refusal("completion")),
+        "SubagentStop" => Decision::Block(refusal("handback")),
+        "PostToolUse" if tool == "Agent" => Decision::Context {
+            event: "PostToolUse",
+            text: refusal("Agent result"),
+        },
+        _ => Decision::None,
+    }
 }
 
 fn no_contract(payload: &Value, event: &str) -> Decision {
@@ -182,7 +230,7 @@ fn no_contract(payload: &Value, event: &str) -> Decision {
     Decision::Context {
         event: "PostToolUse",
         text: format!(
-            "GATE (no contract): {seen} observed; there is no .supervisor/contract.json, so nothing is judged."
+            "GATE (no contract): {seen} observed; there is no contract.json in the gate's state directory, so nothing is judged."
         ),
     }
 }

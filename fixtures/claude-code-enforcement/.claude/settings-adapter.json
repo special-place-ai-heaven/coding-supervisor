@@ -1,26 +1,79 @@
 {
   "permissions": {
-    "allow": ["Read", "Write", "Edit", "Glob", "Grep", "Agent", "Bash"],
+    "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Agent",
+      "Bash"
+    ],
     "defaultMode": "acceptEdits"
   },
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "C:/Target/coding-supervisor/main/target/debug/supervisor-claude-code.exe hook" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Target/coding-supervisor/main/target/debug/supervisor-claude-code.exe hook"
+          }
+        ]
+      }
     ],
     "PreToolUse": [
-      { "matcher": "Agent|Write|Edit|Bash|PowerShell", "hooks": [ { "type": "command", "command": "C:/Target/coding-supervisor/main/target/debug/supervisor-claude-code.exe hook" } ] }
+      {
+        "matcher": "Agent|Write|Edit|NotebookEdit|Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Target/coding-supervisor/main/target/debug/supervisor-claude-code.exe hook"
+          }
+        ]
+      }
     ],
     "PostToolUse": [
-      { "matcher": "Agent|Bash|PowerShell|Write|Edit|mcp__terminal_commander__.*", "hooks": [ { "type": "command", "command": "C:/Target/coding-supervisor/main/target/debug/supervisor-claude-code.exe hook" } ] }
+      {
+        "matcher": "Agent|Bash|PowerShell|Write|Edit|mcp__terminal_commander__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Target/coding-supervisor/main/target/debug/supervisor-claude-code.exe hook"
+          }
+        ]
+      }
     ],
     "PostToolUseFailure": [
-      { "matcher": "Bash|PowerShell", "hooks": [ { "type": "command", "command": "C:/Target/coding-supervisor/main/target/debug/supervisor-claude-code.exe hook" } ] }
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Target/coding-supervisor/main/target/debug/supervisor-claude-code.exe hook"
+          }
+        ]
+      }
     ],
     "SubagentStop": [
-      { "hooks": [ { "type": "command", "command": "C:/Target/coding-supervisor/main/target/debug/supervisor-claude-code.exe hook" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Target/coding-supervisor/main/target/debug/supervisor-claude-code.exe hook"
+          }
+        ]
+      }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "C:/Target/coding-supervisor/main/target/debug/supervisor-claude-code.exe hook" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Target/coding-supervisor/main/target/debug/supervisor-claude-code.exe hook"
+          }
+        ]
+      }
     ]
   }
 }

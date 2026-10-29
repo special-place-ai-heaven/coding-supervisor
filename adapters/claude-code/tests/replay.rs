@@ -83,6 +83,7 @@ fn four() -> Value {
 fn env_at(d: &Dir, candidate: Box<dyn CandidateProvider>) -> Env {
     Env {
         state_dir: d.0.join(".supervisor"),
+        state_location: "test",
         candidate,
         clock: || 1_000,
     }
@@ -432,4 +433,74 @@ fn journal_has_one_line_per_handled_event() {
             .unwrap()
             .contains("background dispatch")
     );
+}
+
+fn edit_gate(env: &Env, change: impl FnOnce(&mut Value)) -> Vec<u8> {
+    let mut g = gate(env);
+    change(&mut g);
+    fs::write(env.state_dir.join("gate.json"), g.to_string()).unwrap();
+    fs::read(env.state_dir.join("gate.json")).unwrap()
+}
+fn last_reasons(env: &Env) -> String {
+    let journal = fs::read_to_string(env.state_dir.join("events.jsonl")).unwrap();
+    journal.lines().last().unwrap().to_owned()
+}
+
+#[test]
+fn tampered_receipt_refuses_and_leaves_gate_untouched() {
+    let d = dir("tamper-receipt");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    assert_eq!(worker(&mut env, "w1", "PASS", &ALL4), Decision::None);
+    assert_eq!(gate(&env)["state"], "ready_for_review");
+    let edited = edit_gate(&env, |g| g["receipts"][0]["exit_code"] = json!(1));
+    let r = handle(&stop("Done.", false), &mut env);
+    let reason = blocked(&r);
+    assert!(
+        reason.contains("tampered") && reason.contains("receipt 0"),
+        "{reason}"
+    );
+    assert_eq!(fs::read(env.state_dir.join("gate.json")).unwrap(), edited);
+    assert!(last_reasons(&env).contains("state tampered: receipt 0"));
+    // Every later call still sees it.
+    let r = handle(&pre("Agent"), &mut env);
+    assert!(matches!(r, Decision::Deny(ref m) if m.contains("tampered (receipt 0)")));
+    assert!(last_reasons(&env).contains("state tampered: receipt 0"));
+}
+
+#[test]
+fn tampered_checkpoint_denies_writes() {
+    let d = dir("tamper-checkpoint");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    handle(&pre("Write"), &mut env);
+    edit_gate(&env, |g| g["state"] = json!("completed"));
+    let r = handle(&pre("Write"), &mut env);
+    assert!(
+        matches!(r, Decision::Deny(ref m) if m.contains("tampered (checkpoint)")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn contract_edit_after_first_call_trips_the_chain() {
+    let d = dir("tamper-contract");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    handle(&pre("Write"), &mut env);
+    let wider = contract(
+        &[("C1", true), ("C2", true), ("C3", true), ("C4", true)],
+        &["src/", "tests/", "docs/"],
+    );
+    fs::write(env.state_dir.join("contract.json"), wider.to_string()).unwrap();
+    let r = handle(&pre("Write"), &mut env);
+    assert!(
+        matches!(r, Decision::Deny(ref m) if m.contains("tampered (checkpoint)")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn every_journal_line_names_the_state_location() {
+    let d = dir("location-journal");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    handle(&pre("Write"), &mut env);
+    assert!(last_reasons(&env).contains("\"state_location\":\"test\""));
 }

@@ -11,6 +11,8 @@ use coding_supervisor::{
 };
 use serde_json::Value;
 
+use crate::{chain, sha256};
+
 const STATES: [(TaskState, &str); 10] = [
     (TaskState::Queued, "queued"),
     (TaskState::Preparing, "preparing"),
@@ -304,32 +306,56 @@ fn read_optional(path: &Path) -> Result<Option<String>, String> {
     }
 }
 
-fn read_json(path: &Path) -> Result<Option<Value>, String> {
-    read_optional(path)?
-        .map(|text| serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display())))
-        .transpose()
-}
-
-pub(crate) fn load_contract(dir: &Path) -> Result<Option<TaskContract>, String> {
+/// The contract (if present) and the SHA-256 of contract.json's bytes (of nothing when absent).
+pub(crate) fn read_contract(dir: &Path) -> Result<(Option<TaskContract>, String), String> {
     let path = dir.join("contract.json");
-    read_json(&path)?
-        .map(|v| contract_from(&v).map_err(|e| format!("{}: {e}", path.display())))
-        .transpose()
+    let Some(text) = read_optional(&path)? else {
+        return Ok((None, sha256::hex(b"")));
+    };
+    let digest = sha256::hex(text.as_bytes());
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let contract = contract_from(&v).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok((Some(contract), digest))
 }
 
-pub(crate) fn load_gate(dir: &Path) -> Result<Option<Gate>, String> {
-    let path = dir.join("gate.json");
-    read_json(&path)?
-        .map(|v| Gate::from_json(&v).map_err(|e| format!("{}: {e}", path.display())))
-        .transpose()
+/// What gate.json holds after its hash chain was checked.
+pub(crate) enum Stored {
+    Absent,
+    Valid(Gate),
+    /// Names the broken link: `receipt <index>` or `checkpoint`.
+    Tampered(String),
 }
 
-pub(crate) fn save_gate(dir: &Path, gate: &Gate) -> Result<(), String> {
+/// gate.json is only ever written whole by `save_gate` (temp file then rename), so a file that
+/// does not parse or does not match its chain was edited by something else.
+pub(crate) fn load_gate(dir: &Path, contract_sha256: &str) -> Result<Stored, String> {
+    let Some(text) = read_optional(&dir.join("gate.json"))? else {
+        return Ok(Stored::Absent);
+    };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        return Ok(Stored::Tampered("checkpoint".to_owned()));
+    };
+    if let Err(what) = chain::verify(&v, contract_sha256) {
+        return Ok(Stored::Tampered(what));
+    }
+    Ok(Gate::from_json(&v)
+        .map_or_else(|_| Stored::Tampered("checkpoint".to_owned()), Stored::Valid))
+}
+
+pub(crate) fn save_gate(dir: &Path, gate: &Gate, contract_sha256: &str) -> Result<(), String> {
     // shortcut: no lock around gate.json, so two overlapping hook calls can lose one update; add a lock file once overlapping calls show up in events.jsonl
     let path = dir.join("gate.json");
     let tmp = dir.join("gate.json.tmp");
-    fs::write(&tmp, format!("{}\n", gate.to_json()))
-        .map_err(|e| format!("{}: {e}", tmp.display()))?;
+    let mut v = gate.to_json();
+    chain::seal(&mut v, contract_sha256);
+    fs::write(
+        &tmp,
+        format!(
+            "{v}
+"
+        ),
+    )
+    .map_err(|e| format!("{}: {e}", tmp.display()))?;
     fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
