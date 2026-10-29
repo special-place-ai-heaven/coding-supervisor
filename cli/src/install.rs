@@ -382,9 +382,25 @@ fn merge_mcp_json(before: Option<&str>, binary: &str, project: &str) -> Result<S
     pretty(root)
 }
 
-/// Appends our group to each event unless a hook with our command is already there, and
-/// adds `mcp__supervisor` to `permissions.allow` (Claude Code otherwise refuses the gate's MCP
-/// tools under acceptEdits). No other permission key is written.
+/// A hook this gate installed: `<path> hook` (path optionally quoted) where the program is
+/// `supervisor` or `supervisor-claude-code`, with or without `.exe`, at any path.
+fn is_gate_hook(command: &str) -> bool {
+    let Some(program) = command.trim().strip_suffix(" hook") else {
+        return false;
+    };
+    let program = program.trim().trim_matches('"');
+    let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    matches!(
+        name,
+        "supervisor" | "supervisor.exe" | "supervisor-claude-code" | "supervisor-claude-code.exe"
+    )
+}
+
+/// Per event, the first gate hook (any binary path) gets our command in place, further gate
+/// hooks and the groups they leave empty are removed, and our group is appended when there was
+/// none; so a moved or upgraded binary yields one entry per event. Also adds `mcp__supervisor`
+/// to `permissions.allow` (Claude Code otherwise refuses the gate's MCP tools under
+/// acceptEdits). No other permission key is written.
 fn merge_settings(before: Option<&str>, command: &str) -> Result<String, String> {
     let mut root = json_object(before)?;
     let hooks = root
@@ -398,11 +414,29 @@ fn merge_settings(before: Option<&str>, command: &str) -> Result<String, String>
             .or_insert_with(|| json!([]))
             .as_array_mut()
             .ok_or_else(|| format!("hooks.{event} is not an array"))?;
-        let present = groups.iter().any(|g| {
-            g["hooks"]
-                .as_array()
-                .is_some_and(|hs| hs.iter().any(|h| h["command"] == command))
-        });
+        let mut present = false;
+        for group in groups.iter_mut() {
+            let Some(hs) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            let before = hs.len();
+            hs.retain_mut(|h| {
+                if !h["command"].as_str().is_some_and(is_gate_hook) {
+                    return true;
+                }
+                if present {
+                    return false;
+                }
+                present = true;
+                h["command"] = command.into();
+                true
+            });
+            // Mark a group emptied here; groups that were already empty are left alone.
+            if hs.is_empty() && before > 0 {
+                *group = Value::Null;
+            }
+        }
+        groups.retain(|g| !g.is_null());
         if !present {
             let mut group = Map::new();
             if let Some(m) = matcher {

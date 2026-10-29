@@ -346,3 +346,73 @@ fn an_unknown_harness_is_a_usage_error() {
     assert_eq!(out.status.code(), Some(2));
     assert!(snapshot(&project).is_empty());
 }
+
+/// Lab repo, 2026-10-29: settings already held the gate's hooks from another binary path, and
+/// install appended a second set (12 entries). Our hooks are recognised by the `<path> hook`
+/// shape, whatever the path, and replaced.
+#[test]
+fn claude_settings_replace_our_hooks_from_another_binary_path() {
+    let (project, home) = dirs("settings-moved");
+    fs::create_dir_all(project.join(".claude")).unwrap();
+    let settings = project.join(".claude").join("settings.json");
+    let events = [
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "SubagentStop",
+        "Stop",
+    ];
+    // The broken state seen live: two old paths per event (one quoted, one an npm install),
+    // and one foreign hook that must survive.
+    let mut hooks = serde_json::Map::new();
+    for event in events {
+        hooks.insert(
+            event.into(),
+            json!([
+                { "hooks": [{ "type": "command", "command": "\"C:/Program Files/old/supervisor.exe\" hook" }] },
+                { "hooks": [{ "type": "command", "command": "/usr/lib/node_modules/coding-supervisor-linux-x64/bin/supervisor hook" }] }
+            ]),
+        );
+    }
+    hooks["Stop"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "hooks": [{ "type": "command", "command": "foreign-stop hook-like" }] }));
+    fs::write(&settings, json!({ "hooks": hooks }).to_string()).unwrap();
+    fs::write(
+        project.join(".mcp.json"),
+        r#"{"mcpServers":{"supervisor":{"type":"stdio","command":"C:/old/supervisor.exe","args":["mcp"]}}}"#,
+    )
+    .unwrap();
+
+    install(&project, &home, "claude-code", &[]);
+
+    let v = read_json(&settings);
+    for event in events {
+        let commands: Vec<&str> = v["hooks"][event]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["hooks"].as_array().unwrap())
+            .filter_map(|h| h["command"].as_str())
+            .filter(|c| c.ends_with(" hook"))
+            .collect();
+        assert_eq!(
+            commands,
+            [OUR_HOOK],
+            "{event}: exactly one gate hook, the new path"
+        );
+    }
+    let stop = v["hooks"]["Stop"].to_string();
+    assert!(stop.contains("foreign-stop hook-like"), "{stop}");
+    assert_eq!(
+        read_json(&project.join(".mcp.json"))["mcpServers"]["supervisor"]["command"],
+        FAKE_BINARY
+    );
+
+    // A second run with the same path changes nothing.
+    let before = snapshot(&project);
+    install(&project, &home, "claude-code", &[]);
+    assert_eq!(snapshot(&project), before);
+}
