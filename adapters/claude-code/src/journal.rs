@@ -48,7 +48,7 @@ pub fn decision_parts(raw: &Value) -> (&'static str, Option<String>) {
 
 /// The reason part of a refusal text: after `refused: ` / `refuses ...: `, without the
 /// trailing instruction.
-fn reason_part(text: &str) -> String {
+pub fn reason_part(text: &str) -> String {
     let rest = text
         .find("refuse")
         .and_then(|i| text.get(i..))

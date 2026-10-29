@@ -13,6 +13,7 @@ use serde_json::Value;
 use crate::candidate::{CandidateProvider, GitCandidate};
 use crate::header::{self, CheckLine, Header, Verdict};
 use crate::journal::{self, Trace};
+use crate::level::{self, Level};
 use crate::state::{self, Gate, Stored, obj, state_name};
 use crate::{claim, guard, location};
 
@@ -29,12 +30,30 @@ pub struct Env {
     pub candidate: Box<dyn CandidateProvider>,
     /// Seconds since the Unix epoch.
     pub clock: fn() -> u64,
+    /// From the level files (`level::effective`); a degraded session lowers it to lite.
+    pub level: Level,
+    /// Why the level files could not be read; the call then runs at full and journals this.
+    pub level_error: Option<String>,
 }
 
 impl Env {
     pub fn real(cwd: &Path) -> Self {
-        let (state_dir, state_location) =
-            location::resolve_state_dir(cwd, &|name| std::env::var(name).ok());
+        let lookup = |name: &str| std::env::var(name).ok();
+        // Located without creating anything: at level off nothing is written.
+        let (dir, location) = location::state_dir_path(cwd, &lookup);
+        let (level, level_error) =
+            match level::effective(&dir, level::config_dir(&lookup).as_deref()) {
+                Ok((level, _)) => (level, None),
+                Err(e) => (
+                    Level::Full,
+                    Some(format!("level not read, running at full: {e}")),
+                ),
+            };
+        let (state_dir, state_location) = if level == Level::Off {
+            (dir, location)
+        } else {
+            location::resolve_state_dir(cwd, &lookup)
+        };
         Self {
             state_dir,
             state_location,
@@ -42,6 +61,8 @@ impl Env {
                 cwd: cwd.to_path_buf(),
             }),
             clock: now,
+            level,
+            level_error,
         }
     }
 }
@@ -119,8 +140,20 @@ fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 
 pub fn handle(payload: &Value, env: &mut Env) -> Decision {
     let event = text(payload, "hook_event_name").unwrap_or_default();
+    if env.level == Level::Off {
+        // Nothing judged, nothing written; only the state-path guard still answers.
+        return match event {
+            "PreToolUse" => {
+                guard::state_write_denial(payload, &env.state_dir).unwrap_or(Decision::None)
+            }
+            _ => Decision::None,
+        };
+    }
     let agent = text(payload, "agent_id").unwrap_or("main");
     let mut reasons = Vec::new();
+    if let Some(error) = &env.level_error {
+        reasons.push(error.clone());
+    }
     let mut trace = Trace::default();
     let decision =
         process(payload, env, event, agent, &mut reasons, &mut trace).unwrap_or_else(|what| {
@@ -159,50 +192,132 @@ fn process(
     // Observed before journaling so each run record carries the candidate it ran against.
     let observed = env.candidate.observe();
     let ran_on = observed.as_ref().ok().map(|c| &c.id);
-    if let Some(run) = observed_run(payload, event, agent, ran_on, now) {
-        state::append_line(&env.state_dir.join("runs.jsonl"), &run)?;
+    let run = observed_run(payload, event, agent, ran_on, now);
+    if let Some(run) = &run {
+        state::append_line(&env.state_dir.join("runs.jsonl"), run)?;
         reasons.push("command run journaled".to_owned());
     }
-    let (contract, contract_sha256) = state::read_contract(&env.state_dir)?;
-    trace.task_id = contract.as_ref().map(|c| c.id.0.clone());
+    let (contract, contract_sha256) = state::read_contract_tiers(&env.state_dir)?;
+    trace.task_id = contract.as_ref().map(|(c, _)| c.id.0.clone());
     // A removed contract with a gate.json still present fails the chain as well.
     let stored = match state::load_gate(&env.state_dir, &contract_sha256)? {
         Stored::Tampered(what) => {
             trace.tampered = true;
             reasons.push(format!("state tampered: {what}"));
-            return Ok(tampered(payload, event, &what));
+            let refusal = tampered(payload, event, &what);
+            return Ok(if env.level == Level::Lite {
+                soften(refusal)
+            } else {
+                refusal
+            });
         }
         Stored::Valid(gate) => Some(gate),
         Stored::Absent => None,
     };
-    let Some(contract) = contract else {
+    let Some((mut contract, full_tier)) = contract else {
         reasons.push("no contract: advisory only".to_owned());
         return Ok(no_contract(payload, event));
     };
+    let sid = text(payload, "session_id").unwrap_or_default();
+    let degraded = stored
+        .as_ref()
+        .and_then(|g| g.sessions.get(sid))
+        .and_then(|s| s.degraded.as_deref());
+    let level = match degraded {
+        Some(why) => {
+            reasons.push(format!("session degraded, running at lite at most: {why}"));
+            env.level.min(Level::Lite)
+        }
+        None => env.level,
+    };
+    if level < Level::Ultra {
+        // A full-tier criterion is required at ultra only.
+        for c in &mut contract.criteria {
+            if full_tier.contains(&c.id.0) {
+                c.mandatory = false;
+            }
+        }
+    }
     trace.state_before = stored.as_ref().map(|g| g.checkpoint.state);
     trace.candidate = observed.as_ref().ok().map(|c| c.id.clone());
     if let Err(why) = &observed {
         reasons.push(format!("candidate not observed: {why}"));
     }
     let mut session = Session::open(contract, stored, observed, false, reasons)?;
+    session.track_session(sid, event, run.as_ref(), reasons);
+    let counters = (
+        session.gate.continuations,
+        session.gate.handback_refusals.clone(),
+    );
     let decision = match event {
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
-        "Stop" => session.stop(payload, &env.state_dir, agent, now, reasons)?,
-        "PreToolUse" => session.pre_tool_use(payload),
+        "Stop" => {
+            let judge_unclaimed = level == Level::Ultra && session.changed_in_session(sid);
+            session.stop(
+                payload,
+                &env.state_dir,
+                agent,
+                now,
+                judge_unclaimed,
+                reasons,
+            )?
+        }
+        "PreToolUse" => session.pre_tool_use(payload, level == Level::Ultra),
         "PostToolUse" if text(payload, "tool_name") == Some("Agent") => {
             session.agent_result(payload)
         }
         "UserPromptSubmit" => {
             session.gate.continuations = 0;
             session.gate.prompt_id = text(payload, "prompt_id").map(str::to_owned);
-            Decision::None
+            match session
+                .gate
+                .sessions
+                .get_mut(sid)
+                .and_then(|s| s.notice.take())
+            {
+                Some(text) => Decision::Context {
+                    event: "UserPromptSubmit",
+                    text,
+                },
+                None => Decision::None,
+            }
         }
         _ => Decision::None,
     };
+    let decision = match decision {
+        Decision::Block(text) | Decision::Deny(text) if level == Level::Lite => {
+            reasons.push("level lite: reported, not blocked".to_owned());
+            if matches!(event, "Stop" | "SubagentStop") {
+                // Lite counts no refusal; the model reads the notice at its next prompt.
+                (session.gate.continuations, session.gate.handback_refusals) = counters;
+                session
+                    .gate
+                    .sessions
+                    .entry(sid.to_owned())
+                    .or_default()
+                    .notice = Some(format!(
+                    "GATE (lite, not blocking) at the last stop: {text}"
+                ));
+            }
+            Decision::System(text)
+        }
+        other => other,
+    };
+    if level != Level::Full {
+        reasons.push(format!("level {}", level.name()));
+    }
     session.gate.checkpoint = session.task.checkpoint();
     trace.state_after = Some(session.task.state());
     state::save_gate(&env.state_dir, &session.gate, &contract_sha256)?;
     Ok(decision)
+}
+
+/// Lite reports what full would refuse, without blocking.
+fn soften(decision: Decision) -> Decision {
+    match decision {
+        Decision::Block(text) | Decision::Deny(text) => Decision::System(text),
+        other => other,
+    }
 }
 
 /// Refuse everywhere a refusal is possible; gate.json is left exactly as found.
@@ -398,6 +513,7 @@ pub struct Session {
     pub task: Task,
     pub gate: Gate,
     criteria: Vec<Criterion>,
+    scope: Vec<String>,
     observed: Result<Candidate, String>,
 }
 
@@ -412,6 +528,7 @@ impl Session {
         reasons: &mut Vec<String>,
     ) -> Result<Self, String> {
         let criteria = contract.criteria.clone();
+        let scope = contract.scope.clone();
         let contract_id = contract.id.0.clone();
         let (task, gate) = match stored {
             None => {
@@ -443,8 +560,62 @@ impl Session {
             task,
             gate,
             criteria,
+            scope,
             observed,
         })
+    }
+
+    /// The session's baseline is the candidate at its first UserPromptSubmit (Claude Code sends
+    /// it before any tool call). A run of a mandatory criterion's command that exits nonzero on
+    /// that baseline marks the session degraded: it then runs at lite at most.
+    fn track_session(
+        &mut self,
+        sid: &str,
+        event: &str,
+        run: Option<&Value>,
+        reasons: &mut Vec<String>,
+    ) {
+        let current = self.observed.as_ref().ok().map(|c| c.id.clone());
+        let record = self.gate.sessions.entry(sid.to_owned()).or_default();
+        if event == "UserPromptSubmit" && record.baseline.is_none() {
+            record.baseline.clone_from(&current);
+        }
+        let Some(run) = run else { return };
+        if record.degraded.is_some() || record.baseline.is_none() || current != record.baseline {
+            return;
+        }
+        let command = run
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let exit = run.get("exit_code").and_then(Value::as_i64);
+        if let Some(code) = exit.filter(|c| *c != 0)
+            && self
+                .criteria
+                .iter()
+                .any(|c| c.mandatory && c.accepts(command))
+        {
+            let why = format!(
+                "`{}` exited {code} on the untouched tree at session start",
+                command.trim()
+            );
+            reasons.push(format!("session degraded: {why}"));
+            record.degraded = Some(why);
+        }
+    }
+
+    /// The current candidate differs from the session's baseline and from the last acceptance.
+    fn changed_in_session(&self, sid: &str) -> bool {
+        let current = self.observed.as_ref().ok().map(|c| &c.id);
+        let baseline = self
+            .gate
+            .sessions
+            .get(sid)
+            .and_then(|s| s.baseline.as_ref());
+        current.is_some()
+            && baseline.is_some()
+            && current != baseline
+            && current != self.gate.accepted_candidate.as_ref()
     }
 
     fn subagent_stop(
@@ -676,12 +847,15 @@ impl Session {
         Ok((problems, instructions))
     }
 
+    /// `judge_unclaimed` (ultra, after a change in this session): judge the stop as a
+    /// completion claim whatever the message says.
     fn stop(
         &mut self,
         payload: &Value,
         dir: &Path,
         agent: &str,
         now: u64,
+        judge_unclaimed: bool,
         reasons: &mut Vec<String>,
     ) -> Result<Decision, String> {
         let message = text(payload, "last_assistant_message").unwrap_or_default();
@@ -690,8 +864,11 @@ impl Session {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         if !claim::claims_completion(message) {
-            reasons.push("no completion claim".to_owned());
-            return Ok(Decision::None);
+            if !judge_unclaimed {
+                reasons.push("no completion claim".to_owned());
+                return Ok(Decision::None);
+            }
+            reasons.push("no completion claim; judged at level ultra after a change".to_owned());
         }
         // A chair working alone cites its own runs the way a worker does; without a header
         // the citation is derived from those runs.
@@ -720,6 +897,7 @@ impl Session {
         match result {
             Ok(()) => {
                 reasons.push("completed".to_owned());
+                self.gate.accepted_candidate = self.task.candidate().cloned();
                 Ok(Decision::None)
             }
             Err(why) => {
@@ -840,25 +1018,53 @@ impl Session {
         ))
     }
 
-    fn pre_tool_use(&mut self, payload: &Value) -> Decision {
+    fn pre_tool_use(&mut self, payload: &Value, ultra: bool) -> Decision {
         self.gate.continuations = 0;
         let tool = text(payload, "tool_name").unwrap_or_default();
-        if !matches!(tool, "Write" | "Edit" | "Agent") {
-            return Decision::None;
+        if matches!(tool, "Write" | "Edit" | "Agent") {
+            let state = self.task.state();
+            if state.is_terminal() {
+                return Decision::Deny(format!(
+                    "GATE: {tool} refused: task is {}",
+                    state_name(state)
+                ));
+            }
+            if let Err(why) = &self.observed {
+                return Decision::Deny(format!(
+                    "GATE: {tool} refused: candidate identity could not be observed ({why})"
+                ));
+            }
         }
-        let state = self.task.state();
-        if state.is_terminal() {
-            return Decision::Deny(format!(
-                "GATE: {tool} refused: task is {}",
-                state_name(state)
-            ));
+        if ultra && matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit") {
+            return self.scope_denial(payload, tool).unwrap_or(Decision::None);
         }
-        match &self.observed {
-            Err(why) => Decision::Deny(format!(
-                "GATE: {tool} refused: candidate identity could not be observed ({why})"
-            )),
-            Ok(_) => Decision::None,
+        Decision::None
+    }
+
+    /// Ultra: a write outside the contract scope, matched as the core matches changed paths
+    /// (project-relative prefix). An empty scope, or one naming the whole project, allows all.
+    fn scope_denial(&self, payload: &Value, tool: &str) -> Option<Decision> {
+        if self.scope.is_empty()
+            || self
+                .scope
+                .iter()
+                .any(|p| matches!(p.trim(), "" | "." | "./" | "/"))
+        {
+            return None;
         }
+        let input = payload.get("tool_input")?;
+        let path = input
+            .get("file_path")
+            .or_else(|| input.get("notebook_path"))
+            .and_then(Value::as_str)?;
+        let relative = project_relative(path, text(payload, "cwd").unwrap_or_default());
+        if relative.is_some_and(|r| self.scope.iter().any(|p| r.starts_with(p.as_str()))) {
+            return None;
+        }
+        Some(Decision::Deny(format!(
+            "GATE: {tool} refused: {path} is out of scope; the contract scope is {} (level ultra)",
+            self.scope.join(", ")
+        )))
     }
 
     fn agent_result(&self, payload: &Value) -> Decision {
@@ -959,6 +1165,21 @@ impl Session {
             stale.join(", ")
         )
     }
+}
+
+/// `path` relative to the project `cwd`, with `/` separators; `None` when it lies outside.
+/// The cwd prefix is compared ASCII-case-insensitively (Windows drive and folder casing).
+fn project_relative(path: &str, cwd: &str) -> Option<String> {
+    let path = path.replace('\\', "/");
+    let absolute = path.starts_with('/') || path.get(1..2) == Some(":");
+    if !absolute {
+        return Some(path.trim_start_matches("./").to_owned());
+    }
+    let cwd = cwd.replace('\\', "/");
+    let cwd = cwd.trim_end_matches('/');
+    let head = path.get(..cwd.len())?;
+    let rest = path.get(cwd.len()..)?.strip_prefix('/')?;
+    (!cwd.is_empty() && head.eq_ignore_ascii_case(cwd)).then(|| rest.to_owned())
 }
 
 /// Rebuild the receipt set of a resumed task, then observe the current candidate.

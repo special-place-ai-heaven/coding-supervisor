@@ -72,6 +72,22 @@ pub struct Gate {
     pub continuations: u32,
     /// SubagentStop refusals per worker agent id.
     pub handback_refusals: BTreeMap<String, u32>,
+    /// Per payload `session_id`. Absent in a gate.json written before levels existed.
+    // shortcut: never pruned, one small entry per session; prune by age once gate.json grows noticeably
+    pub sessions: BTreeMap<String, SessionRecord>,
+    /// The candidate at the last Stop that completed or confirmed completion.
+    pub accepted_candidate: Option<CandidateId>,
+}
+
+/// What the gate remembers about one Claude Code session.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionRecord {
+    /// The first candidate observed in the session.
+    pub baseline: Option<CandidateId>,
+    /// Why the session runs at lite at most: a mandatory check failed on the baseline.
+    pub degraded: Option<String>,
+    /// A lite-level notice for the next UserPromptSubmit, injected once.
+    pub notice: Option<String>,
 }
 
 impl Gate {
@@ -83,6 +99,8 @@ impl Gate {
             receipts: Vec::new(),
             continuations: 0,
             handback_refusals: BTreeMap::new(),
+            sessions: BTreeMap::new(),
+            accepted_candidate: None,
         }
     }
 
@@ -112,6 +130,26 @@ impl Gate {
                         .map(|(k, n)| (k.clone(), (*n).into()))
                         .collect(),
                 ),
+            ),
+            (
+                "sessions",
+                Value::Object(
+                    self.sessions
+                        .iter()
+                        .map(|(k, s)| {
+                            let record = obj([
+                                ("baseline", s.baseline.as_ref().map(candidate_json).into()),
+                                ("degraded", s.degraded.clone().into()),
+                                ("notice", s.notice.clone().into()),
+                            ]);
+                            (k.clone(), record)
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                "accepted_candidate",
+                self.accepted_candidate.as_ref().map(candidate_json).into(),
             ),
         ])
     }
@@ -154,8 +192,39 @@ impl Gate {
                         .ok_or_else(|| format!("handback_refusals.{k} is not a count"))
                 })
                 .collect::<Result<_, _>>()?,
+            sessions: match v.get("sessions") {
+                None => BTreeMap::new(),
+                Some(sessions) => sessions
+                    .as_object()
+                    .ok_or("sessions is not an object")?
+                    .iter()
+                    .map(|(k, s)| Ok((k.clone(), session_from(s)?)))
+                    .collect::<Result<_, String>>()?,
+            },
+            accepted_candidate: optional_candidate(v.get("accepted_candidate"))?,
         })
     }
+}
+
+fn optional_candidate(v: Option<&Value>) -> Result<Option<CandidateId>, String> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(c) => candidate_from(c).map(Some),
+    }
+}
+fn optional_string(v: &Value, key: &str) -> Result<Option<String>, String> {
+    match v.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(format!("field {key} is not a string")),
+    }
+}
+fn session_from(v: &Value) -> Result<SessionRecord, String> {
+    Ok(SessionRecord {
+        baseline: optional_candidate(v.get("baseline"))?,
+        degraded: optional_string(v, "degraded")?,
+        notice: optional_string(v, "notice")?,
+    })
 }
 
 /// One observed command run from `runs.jsonl`.
@@ -301,11 +370,28 @@ fn commands(c: &Value, id: &str) -> Result<Vec<String>, String> {
     Ok(list)
 }
 
+/// Ids of the criteria declared `"tier": "full"`; the default tier is `quick`.
+pub fn full_tier(v: &Value) -> Vec<String> {
+    v.get("criteria")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|c| c.get("tier").and_then(Value::as_str) == Some("full"))
+        .filter_map(|c| c.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect()
+}
+
 pub fn contract_from(v: &Value) -> Result<TaskContract, String> {
     let criteria = array(v, "criteria")?
         .iter()
         .map(|c| {
             let id = string(c, "id")?;
+            if !matches!(
+                c.get("tier").map(Value::as_str),
+                None | Some(Some("quick" | "full"))
+            ) {
+                return Err(format!("criterion {id} tier is not quick or full"));
+            }
             Ok(Criterion {
                 check: CheckName(string(c, "check")?),
                 mandatory: field(c, "mandatory")?
@@ -338,6 +424,15 @@ fn read_optional(path: &Path) -> Result<Option<String>, String> {
 
 /// The contract (if present) and the SHA-256 of contract.json's bytes (of nothing when absent).
 pub fn read_contract(dir: &Path) -> Result<(Option<TaskContract>, String), String> {
+    let (contract, digest) = read_contract_tiers(dir)?;
+    Ok((contract.map(|(c, _)| c), digest))
+}
+
+/// A contract and the ids of its full-tier criteria.
+pub type Tiered = (TaskContract, Vec<String>);
+
+/// `read_contract` plus the ids of the full-tier criteria (see [`full_tier`]).
+pub fn read_contract_tiers(dir: &Path) -> Result<(Option<Tiered>, String), String> {
     let path = dir.join("contract.json");
     let Some(text) = read_optional(&path)? else {
         return Ok((None, sha256::hex(b"")));
@@ -345,10 +440,12 @@ pub fn read_contract(dir: &Path) -> Result<(Option<TaskContract>, String), Strin
     let digest = sha256::hex(text.as_bytes());
     let v: Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     let contract = contract_from(&v).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok((Some(contract), digest))
+    Ok((Some((contract, full_tier(&v))), digest))
 }
 
 /// What gate.json holds after its hash chain was checked.
+// One value per hook call, moved out at once: boxing the gate would buy nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum Stored {
     Absent,
     Valid(Gate),

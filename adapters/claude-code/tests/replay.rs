@@ -12,7 +12,10 @@ use serde_json::{Value, json};
 use supervisor_claude_code::adapter::{Decision, Env, MCP_ASSERTED, handle};
 use supervisor_claude_code::candidate::CandidateProvider;
 use supervisor_claude_code::journal::decision_parts;
+use supervisor_claude_code::level::Level;
+use supervisor_claude_code::sha256;
 use supervisor_claude_code::state::{Stored, load_gate, read_contract, save_gate};
+use supervisor_claude_code::status;
 
 const CAPTURES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -90,6 +93,8 @@ fn env_at(d: &Dir, candidate: Box<dyn CandidateProvider>) -> Env {
         state_location: "test",
         candidate,
         clock: || 1_000,
+        level: Level::Full,
+        level_error: None,
     }
 }
 fn env(d: &Dir, contract: Option<Value>, candidate: Box<dyn CandidateProvider>) -> Env {
@@ -1083,5 +1088,271 @@ fn derived_refusals_release_after_three_and_no_claim_keeps_the_header_refusal() 
     assert_eq!(
         handle(&stop("Done.", true), &mut env),
         Decision::System("GATE: refusal cap reached; task remains verifying".into())
+    );
+}
+
+fn at(
+    level: Level,
+    d: &Dir,
+    contract: Option<Value>,
+    candidate: Box<dyn CandidateProvider>,
+) -> Env {
+    let mut env = env(d, contract, candidate);
+    env.level = level;
+    env
+}
+fn prompt() -> Value {
+    template(FOREGROUND, "UserPromptSubmit", None)
+}
+const NEVER_RAN: &str = "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: never ran; or report the task as not complete.";
+
+#[test]
+fn lite_reports_a_missing_check_without_blocking_and_tells_the_next_prompt_once() {
+    let d = dir("lite");
+    let mut env = at(
+        Level::Lite,
+        &d,
+        Some(one_command()),
+        fake("one", &["src/lib.rs"]),
+    );
+    // Same text as full, never blocking and never counted: the refusal number does not advance.
+    for _ in 0..2 {
+        assert_eq!(
+            handle(&stop("Done.", false), &mut env),
+            Decision::System(NEVER_RAN.into())
+        );
+    }
+    assert_eq!(gate(&env)["continuations"], 0);
+    assert_eq!(
+        handle(&prompt(), &mut env),
+        Decision::Context {
+            event: "UserPromptSubmit",
+            text: format!("GATE (lite, not blocking) at the last stop: {NEVER_RAN}"),
+        }
+    );
+    assert_eq!(handle(&prompt(), &mut env), Decision::None);
+    assert_eq!(
+        handle(&handback("w1", "Done.", false), &mut env),
+        Decision::System(
+            "GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: never ran."
+                .into()
+        )
+    );
+    assert_eq!(gate(&env)["handback_refusals"], json!({}));
+    let line: Value = serde_json::from_str(&last_reasons(&env)).unwrap();
+    assert_eq!(line["decision"]["kind"], "system");
+}
+
+/// C1 quick (`cargo test`), C2 full tier (`cargo test --workspace`), both mandatory.
+fn tiered() -> Value {
+    json!({
+        "id": "t4-test",
+        "goal": "tiers",
+        "criteria": [
+            {"id": "C1", "check": "quick", "mandatory": true, "command": "cargo test"},
+            {"id": "C2", "check": "suite", "mandatory": true, "command": "cargo test --workspace", "tier": "full"}
+        ],
+        "forbidden_effects": [],
+        "scope": ["src/"],
+        "max_repair_rounds": 2
+    })
+}
+
+#[test]
+fn full_tier_criterion_is_required_at_ultra_and_not_at_full() {
+    let d = dir("tier-full");
+    let mut env = at(
+        Level::Full,
+        &d,
+        Some(tiered()),
+        fake("one", &["src/lib.rs"]),
+    );
+    handle(&bash("main", "cargo test", 0), &mut env);
+    assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+
+    let d = dir("tier-ultra");
+    let mut env = at(
+        Level::Ultra,
+        &d,
+        Some(tiered()),
+        fake("one", &["src/lib.rs"]),
+    );
+    handle(&bash("main", "cargo test", 0), &mut env);
+    assert_eq!(
+        blocked(&handle(&stop("Done.", false), &mut env)),
+        "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C2; run `cargo test --workspace`: never ran; or report the task as not complete."
+    );
+}
+
+#[test]
+fn level_change_between_calls_keeps_the_chain_and_judges_at_the_new_level() {
+    let d = dir("tier-switch");
+    let mut env = at(
+        Level::Full,
+        &d,
+        Some(tiered()),
+        fake("one", &["src/lib.rs"]),
+    );
+    handle(&bash("main", "cargo test", 0), &mut env);
+    assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
+    // Raised to ultra: the completed task now also needs the full-tier check.
+    env.level = Level::Ultra;
+    let r = handle(&stop("Done.", false), &mut env);
+    assert!(
+        blocked(&r)
+            .contains("state completed; missing C2; run `cargo test --workspace`: never ran"),
+        "{r:?}"
+    );
+    handle(&bash("main", "cargo test --workspace", 0), &mut env);
+    assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
+    // Back to full: nothing tampered, still completed.
+    env.level = Level::Full;
+    assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
+    let line: Value = serde_json::from_str(&last_reasons(&env)).unwrap();
+    assert_eq!(line["tampered"], false);
+    assert_eq!(gate(&env)["state"], "completed");
+}
+
+#[test]
+fn ultra_judges_a_stop_without_a_claim_after_a_change() {
+    let d = dir("ultra-stop");
+    let mut env = at(
+        Level::Ultra,
+        &d,
+        Some(one_command()),
+        fake("one", &["src/lib.rs"]),
+    );
+    let summary = "Here is what I found.";
+    assert_eq!(handle(&prompt(), &mut env), Decision::None);
+    // Nothing changed in the session yet: not judged.
+    assert_eq!(handle(&stop(summary, false), &mut env), Decision::None);
+    env.candidate = fake("two", &["src/lib.rs"]);
+    assert_eq!(blocked(&handle(&stop(summary, false), &mut env)), NEVER_RAN);
+    // At full the same stop is not judged.
+    env.level = Level::Full;
+    assert_eq!(handle(&stop(summary, false), &mut env), Decision::None);
+    // Judged and accepted once the check ran; the next stop at that candidate is free.
+    env.level = Level::Ultra;
+    handle(&bash("main", "cargo test", 0), &mut env);
+    assert_eq!(handle(&stop(summary, false), &mut env), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+    assert_eq!(handle(&stop(summary, false), &mut env), Decision::None);
+    assert!(last_reasons(&env).contains("\"no completion claim\""));
+}
+
+fn write_to(path: &str) -> Value {
+    let mut p = pre("Write");
+    p["tool_input"] = json!({ "file_path": path, "content": "x" });
+    p
+}
+
+#[test]
+fn ultra_denies_a_write_outside_the_contract_scope() {
+    let d = dir("ultra-scope");
+    let mut env = at(Level::Ultra, &d, Some(one_command()), fake("one", &[]));
+    let cwd = pre("Write")["cwd"].as_str().unwrap().to_owned();
+    let outside = format!("{cwd}\\docs\\notes.md");
+    assert_eq!(
+        handle(&write_to(&outside), &mut env),
+        Decision::Deny(format!(
+            "GATE: Write refused: {outside} is out of scope; the contract scope is src/ (level ultra)"
+        ))
+    );
+    assert_eq!(
+        handle(&write_to(&format!("{cwd}\\src\\lib.rs")), &mut env),
+        Decision::None
+    );
+    assert_eq!(handle(&write_to("src/new.rs"), &mut env), Decision::None);
+    env.level = Level::Full;
+    assert_eq!(handle(&write_to(&outside), &mut env), Decision::None);
+
+    // An empty scope allows everything at ultra.
+    let d = dir("ultra-scope-empty");
+    let mut open = one_command();
+    open["scope"] = json!([]);
+    let mut env = at(Level::Ultra, &d, Some(open), fake("one", &[]));
+    assert_eq!(handle(&write_to(&outside), &mut env), Decision::None);
+}
+
+#[test]
+fn a_failing_check_on_the_untouched_tree_degrades_the_session_to_lite() {
+    let d = dir("degraded");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    assert_eq!(handle(&prompt(), &mut env), Decision::None);
+    assert_eq!(
+        handle(&bash("main", "cargo test", 101), &mut env),
+        Decision::None
+    );
+    assert_eq!(
+        handle(&stop("Done.", false), &mut env),
+        Decision::System("GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: exited 101 on your latest run; or report the task as not complete.".into())
+    );
+    let session = prompt()["session_id"].as_str().unwrap().to_owned();
+    let text = status::render(&env.state_dir, None).unwrap();
+    println!("{text}");
+    assert!(
+        text.contains(&format!("degraded: session {session} runs at lite: `cargo test` exited 101 on the untouched tree at session start")),
+        "{text}"
+    );
+    assert!(
+        text.contains("completions reported, not blocked (lite): 1"),
+        "{text}"
+    );
+    assert!(text.contains("completions refused: 0"), "{text}");
+}
+
+#[test]
+fn a_gate_json_sealed_before_the_level_fields_still_loads() {
+    // Sealed by the adapter in the run5 live run, before `sessions`/`accepted_candidate` existed.
+    // The chain binds gate.json to these contract bytes (git show f44a746, before Gap 1 added
+    // `command`); only their digest is needed.
+    const SEALED_WITH: &str = r#"{
+  "id": "fixture-t4",
+  "goal": "Prove the candidate file carries the fix",
+  "criteria": [
+    {
+      "id": "C2",
+      "check": "candidate_passes_reported_test",
+      "mandatory": true
+    }
+  ],
+  "forbidden_effects": [],
+  "scope": [
+    "candidate.txt",
+    "captures/"
+  ],
+  "max_repair_rounds": 2
+}
+"#;
+    let gate_json = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/claude-code-enforcement/captures/run5/L6.gate.json"
+    );
+    let d = dir("old-gate");
+    let state = d.0.join(".supervisor");
+    fs::create_dir_all(&state).unwrap();
+    fs::copy(gate_json, state.join("gate.json")).unwrap();
+    let old: Value =
+        serde_json::from_str(&fs::read_to_string(state.join("gate.json")).unwrap()).unwrap();
+    assert!(old.get("sessions").is_none() && old.get("accepted_candidate").is_none());
+    let digest = sha256::hex(SEALED_WITH.as_bytes());
+    let Stored::Valid(mut g) = load_gate(&state, &digest).unwrap() else {
+        panic!("an old gate.json no longer verifies")
+    };
+    assert!(g.sessions.is_empty() && g.accepted_candidate.is_none());
+    // Saved again, the added fields are written and covered by the chain from then on.
+    g.accepted_candidate = g.checkpoint.candidate.clone();
+    save_gate(&state, &g, &digest).unwrap();
+    assert!(matches!(
+        load_gate(&state, &digest).unwrap(),
+        Stored::Valid(_)
+    ));
+    let mut v: Value =
+        serde_json::from_str(&fs::read_to_string(state.join("gate.json")).unwrap()).unwrap();
+    v["accepted_candidate"] = Value::Null;
+    fs::write(state.join("gate.json"), v.to_string()).unwrap();
+    assert!(
+        matches!(load_gate(&state, &digest).unwrap(), Stored::Tampered(ref w) if w == "checkpoint")
     );
 }
