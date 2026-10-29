@@ -1,7 +1,7 @@
 //! `measure`: gate-derived numbers from adapter journals and T3 hook captures. Nothing here
 //! reads transcripts, and hook payloads carry no USD cost.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -76,6 +76,8 @@ pub struct Stats {
     pub accepted: u64,
     pub usage_lines: u64,
     pub total_tokens: u64,
+    /// Byte-identical lines seen before in this source (overlapping journal snapshots).
+    pub duplicates_dropped: u64,
 }
 
 #[derive(Debug, Default)]
@@ -311,6 +313,7 @@ pub fn collect(paths: &[PathBuf]) -> Report {
     for path in paths {
         find(path, &mut files, &mut report.unreadable);
     }
+    let mut seen: BTreeMap<&'static str, HashSet<String>> = BTreeMap::new();
     for file in files {
         let name = file.display().to_string();
         let text = match fs::read_to_string(&file) {
@@ -322,9 +325,16 @@ pub fn collect(paths: &[PathBuf]) -> Report {
         };
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
             let parsed = serde_json::from_str::<Value>(line).ok();
-            match parsed.as_ref().and_then(|v| observe(v, &name)) {
-                Some(o) => add(report.sources.entry(o.source).or_default(), &o),
-                None => report.unrecognized_lines += 1,
+            let Some(o) = parsed.as_ref().and_then(|v| observe(v, &name)) else {
+                report.unrecognized_lines += 1;
+                continue;
+            };
+            let stats = report.sources.entry(o.source).or_default();
+            // A later snapshot of the same session repeats its earlier lines; count each once.
+            if seen.entry(o.source).or_default().insert(line.to_owned()) {
+                add(stats, &o);
+            } else {
+                stats.duplicates_dropped += 1;
             }
         }
         report.files_read.push(name);
@@ -415,9 +425,13 @@ impl Report {
 
     pub fn markdown(&self) -> String {
         let mut out = format!(
-            "# Gate-derived measures\n\n{NOTE}\n\nFiles read: {}. Unrecognized lines: {}. Cells are n/d where a denominator applies.\n\n",
+            "# Gate-derived measures\n\n{NOTE}\n\nFiles read: {}. Unrecognized lines: {}. Duplicate lines dropped: {}. Cells are n/d where a denominator applies.\n\n",
             self.files_read.len(),
-            self.unrecognized_lines
+            self.unrecognized_lines,
+            self.sources
+                .values()
+                .map(|s| s.duplicates_dropped)
+                .sum::<u64>()
         );
         let sources: Vec<&str> = self.sources.keys().copied().collect();
         out.push_str(&format!("| measure | {} |\n", sources.join(" | ")));
@@ -470,6 +484,7 @@ impl Report {
                     ("tamper_refusals", st.tamper_refusals.into()),
                     ("accepted_tasks", st.accepted.into()),
                     ("usage_lines", st.usage_lines.into()),
+                    ("duplicates_dropped", st.duplicates_dropped.into()),
                     (
                         "worker_total_tokens_final_request_only",
                         st.total_tokens.into(),

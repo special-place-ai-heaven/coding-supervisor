@@ -195,21 +195,25 @@ fn run3_live_journals() {
     assert_eq!(report.files_read.len(), 7);
     assert_eq!(report.sources.len(), 1);
     let legacy = &report.sources["gate-legacy"];
-    // L1..L6 plus L2b, one file each; SubagentStop counts: L1 4, L2 1, L2b 1, L3 3, L4 2, L6 1.
+    // L2b is L2's journal plus the resume: all 7 of L2's lines repeat there and count once.
+    assert_eq!(legacy.duplicates_dropped, 7);
+    assert_eq!(legacy.lines, 52);
+    // L1..L6 plus L2b, one file each; L2b keeps its 3 resume lines.
     assert_eq!(legacy.sessions.len(), 7);
-    assert_eq!(legacy.dispatches, 12);
-    assert_eq!(legacy.headers, 11);
+    // SubagentStop: L1 4, L2 1, L3 3, L4 2, L6 1.
+    assert_eq!(legacy.dispatches, 11);
+    assert_eq!(legacy.headers, 10);
     assert_eq!(
         (
             legacy.pass_supported,
             legacy.pass_unsupported,
             legacy.no_header
         ),
-        (5, 6, 1)
+        (4, 6, 1)
     );
     assert_eq!(
         (legacy.recorded, legacy.rejected, legacy.unlinked),
-        (5, 0, 2)
+        (4, 0, 2)
     );
     // Blocks: L1 3 missing, L3 2 unlinked, L4 Stop stale, L5 Stop missing; deny: L2b terminal state.
     assert_eq!(legacy.refusals, 8);
@@ -217,9 +221,26 @@ fn run3_live_journals() {
     assert_eq!(legacy.categories["unlinked"], 2);
     assert_eq!(legacy.categories["stale"], 1);
     assert_eq!(legacy.categories["terminal_state"], 1);
-    // "completed" in L2, L2b, L4 and L6.
-    assert_eq!(legacy.accepted, 4);
+    // "completed" in L2, L4 and L6.
+    assert_eq!(legacy.accepted, 3);
     assert_eq!(legacy.usage_lines, 0);
+}
+
+#[test]
+fn identical_lines_in_two_files_count_once() {
+    let d = dir("dedup");
+    let line = v1("Stop", json!({"accepted": true, "gate_state": "completed"}));
+    write(&d.0.join("a.events.jsonl"), std::slice::from_ref(&line));
+    write(&d.0.join("b.events.jsonl"), &[line]);
+    let report = collect(std::slice::from_ref(&d.0));
+    assert_eq!(report.files_read.len(), 2);
+    let v1 = &report.sources["gate-v1"];
+    assert_eq!((v1.lines, v1.accepted, v1.duplicates_dropped), (1, 1, 1));
+    assert!(report.markdown().contains("Duplicate lines dropped: 1."));
+    assert_eq!(
+        report.to_json()["sources"]["gate-v1"]["duplicates_dropped"],
+        1
+    );
 }
 
 #[test]

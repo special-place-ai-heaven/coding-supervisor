@@ -1,0 +1,2 @@
+{"agent_id":"a80697a0164ed2618","command":"echo check-ok","cwd":"E:\\project\\coding-supervisor\\fixtures\\claude-code-enforcement","exit_code":0,"t":1793264474,"tool":"Bash","tool_use_id":"toolu_01JqNUTWbxutdydgFumHkxqt"}
+{"agent_id":"a013cf1e8ee113385","command":"echo check-ok","cwd":"E:\\project\\coding-supervisor\\fixtures\\claude-code-enforcement","exit_code":0,"t":1793264492,"tool":"Bash","tool_use_id":"toolu_01VqGpUvisaLnoNonrJHpAXL"}
