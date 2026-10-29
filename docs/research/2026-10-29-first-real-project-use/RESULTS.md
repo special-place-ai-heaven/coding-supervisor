@@ -150,3 +150,68 @@ Hooks are written for Claude Code only, so the skills tell the two cases apart b
 | `cargo test --workspace` | `job_01a18798d84c70c4995cf1362a753f7f` | 0 | 129 passed, 0 failed (MCP replay 14 to 15; total 128 to 129) |
 
 Not run: no chair session has used the corrected skills.
+
+## Run 2: the same lab repository, with a worker, after `fa80d3c` and `dcfa33d`
+
+Same project, contract and installed binaries, Claude Code 2.1.312, 2026-10-29. One chair session dispatched one background worker (agent `a23e83e8d6a1adeb1`). The journal is in the same state directory; run 1's files moved to `archive-run1-2026-10-29/` beside it.
+
+| File | Lines |
+|---|---|
+| `events.jsonl` | 57 (`#n` below is 1-based; the owner's brief numbers from 0, so its #37, #46 and #56 are #38, #47 and #57 here) |
+| `runs.jsonl` | 22 |
+| `gate.json` | state `completed`, 8 receipts |
+
+### R2-1. SubagentStop: first handback refused, second accepted
+
+| Line | Evidence |
+|---|---|
+| r10 to r13 | worker runs, each a compound: `cd /c/Users/rakovnik/.claude/robert; PYTHONIOENCODING=utf-8 python -I jev-pilot/scripts/test_j_checks.py; echo EXIT=$?`, `cd …; python -m py_compile harness-measurement/scripts/analyse2.py; echo EXIT=$?`, `cd …; python -m compileall -q harness-measurement/scripts jev-pilot/scripts; echo EXIT=$?`, `cd …; git diff --name-only; echo EXIT=$?; git status --short` (all exit 0) |
+| #38 | SubagentStop, `block`: "GATE: handback refused (refusal 1 of 3): unlinked CHECK C1 \| python -I jev-pilot/scripts/test_j_checks.py \| exit 0 (no run by agent a23e83e8d6a1adeb1 with that command and exit code); …" for C1 to C4, then `missing C2`. Journal `receipts.unlinked` C1..C4, each also `rejected …: receipt is not linked to an observed run` |
+| r15 to r18 | the worker reruns the four contract commands bare, exit 0 |
+| #47 | SubagentStop, no block: `recorded CHECK C1..C4`, "accepted: ready_for_review"; `gate_state ready_for_review` |
+
+The worker cited the contract's commands verbatim, but it had run them inside compounds, and there is no run with that exact text and exit code. Each line stayed unlinked, and the refusal named the agent and the missing run. That is gap 1 together with exact command linkage, working as intended on a real worker. The rerun took one round.
+
+### R2-2. Stop: the chair's own header completes the task
+
+| Line | Evidence |
+|---|---|
+| r19 to r22 | `agent main`, the four contract commands bare, exit 0 |
+| #57 | Stop, no block, `accepted true`: `recorded CHECK C1..C4` (linked to r19 to r22), "completed"; `gate_state completed` |
+| whole run | MCP calls: one `mcp:task_state` (#2). No `task_start`, `candidate_observe`, `receipt_record`, `accept_try` or `task_complete` |
+
+The two run-1 dead ends are gone. The chair never called `task_start` and recorded nothing through MCP. The enforcing path ran end to end: the hooks journaled the runs, the worker's header was linked at SubagentStop, the chair's header was linked at Stop, and the core completed the task.
+
+### R2-3. Cited exit codes against observed ones
+
+The chair said in its session that it wrote the exit codes in its header without seeing them. That statement is not in the journal (message text is never journaled). The journal holds the exit codes the hooks observed: r15 to r22 all exit 0. A CHECK line links only to a run whose exit code equals the cited one, so the gate checked those codes against the observed runs rather than taking them on trust. They matched.
+
+Each receipt's `output_ref` is the tool-use id of the run it links to:
+
+| Receipt | `output_ref` | Run |
+|---|---|---|
+| worker C1..C4 | `toolu_01CKtny…`, `toolu_01LSpYL…`, `toolu_01Lcnte…`, `toolu_01RsnzeqjmH…` | r15 to r18 |
+| chair C1..C4 | `toolu_016dPkn…`, `toolu_01THQTF…`, `toolu_01PzaDa…`, `toolu_01SmLGJ…` | r19 to r22 |
+
+All eight receipts are bound to candidate `2231840f9dc1…` with `claim_supported true`.
+
+### R2-4. After-cohort numbers
+
+Source: the lab repository's `harness-measurement/evidence/after-vs-before.md` (commit `08ee8cd`, SHA-256 `f54e3a64…1b1583`), produced by its unedited `analyse2.py`. The before cohort is the newest 200 sessions. The after cohort is the sessions since 2026-10-28T12:08:18Z: 21 sessions, 11 dispatches, with this repository's fixtures and throwaway projects excluded.
+
+| Measure | Before | After |
+|---|---|---|
+| Header compliance (`COMPLETED-COMPLIANT` / completed dispatches) | 0 / 237 | 5 / 11 |
+| Verdicts PASS / FAIL / UNVERIFIED / none | 0 / 0 / 0 / 246 | 0 / 5 / 0 / 6 |
+| Receipt-backed PASS (`supported_passes`) | 0 | 0 |
+| Receipt-backed FAIL | 0 | 1 |
+
+Workers now write the header in about half of dispatches, where before none did. Neither cohort has a single PASS backed by a receipt. All five compliant handbacks in the after cohort were FAIL verdicts. With 11 dispatches the after cohort is far too small to support any claim about verified work per token, and none is made.
+
+### Verification
+
+| Command | Job | Exit | Evidence |
+|---|---|---|---|
+| `cargo fmt --all -- --check` | `job_01a187ac97ac70d38ce4b55a3d4ad2ac` | 0 | no diff |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a187ac9f37723c863a7b9c593cce16` | 0 | no warning or error lines |
+| `cargo test --workspace` | `job_01a187aca6f475daa87552665ce816cd` | 0 | 129 passed, 0 failed (documentation-only change, count unchanged) |

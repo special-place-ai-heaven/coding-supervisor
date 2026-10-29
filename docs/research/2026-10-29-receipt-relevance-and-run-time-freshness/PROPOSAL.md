@@ -121,13 +121,15 @@ The receipt that is finally recorded carries the candidate from the run, which i
 - One replay test in the adapter: run, edit, hand back, expect refusal; run again, hand back, expect acceptance.
 - The existing `restore` grouping logic in `adapter.rs`, which groups stored receipts by candidate and replays them in order, becomes simpler, because receipts now arrive already bound. It need not be rewritten; it just stops being the only place freshness is reconstructed.
 
-## Two smaller observations, not part of this proposal
+## Smaller observations, not part of this proposal
 
-Recorded here so the next session does not rediscover them. Neither blocks real use.
+Recorded here so the next session does not rediscover them. None blocks real use.
 
 **`fail_open` on contract read or journal write.** `handle` returns a `systemMessage` and no decision when the state directory cannot be read or written. `PreToolUse` already fails closed when the candidate cannot be observed; the same treatment for an unreadable contract would mean a permissions hiccup on the state directory pauses writes rather than silently removing the gate. The `shortcut:` comment already schedules this after a month of clean journals; that schedule is reasonable.
 
 **`claims_completion` is a vocabulary.** The `Stop` hook refuses only when the final message contains one of eight phrases without a negation in the same clause. A chair that ends with "Here is the PR" or "Pushed to the branch" is never examined. The README already states that no acceptance event exists; this is the practical edge of that statement. The inverse rule is stricter and has no vocabulary: while a contract is loaded and the task is not in a terminal state, block any `Stop` unless the message explicitly says the task is not complete. Whether the extra refusals are worth it is a measurement question for the after-cohort, not something to decide now.
+
+**An acceptance rule outside the core (added after `fa80d3c`).** Once a task is `completed`, the core takes no receipt, so `Session::link_checks` in the Claude Code adapter keeps a hook-linked receipt in `gate.json` itself, and `observed_evidence` judges it there. That is an acceptance rule the core does not know about. It exists for one sequence, seen in the first real-project run: a chair completes the task through MCP and then stops citing its own runs. Decide later whether it moves into the core (for example, a completed task re-checked on observed evidence) or is deleted once chairs follow the skill's order, which in run 2 never reached this path.
 
 ## Suggested order
 
