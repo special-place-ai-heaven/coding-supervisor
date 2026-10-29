@@ -923,3 +923,137 @@ fn gap2_run_record_without_a_candidate_never_links() {
     assert!(blocked(&r).contains("run it again"), "{r:?}");
     assert!(gate(&env)["receipts"].as_array().unwrap().is_empty());
 }
+
+/// One mandatory criterion C1 whose only command is `cargo test`.
+fn one_command() -> Value {
+    let mut c = contract(&[("C1", true)], &["src/"]);
+    c["criteria"][0]["command"] = json!("cargo test");
+    c
+}
+
+#[test]
+fn derived_run_after_the_last_change_accepts_a_bare_done() {
+    let d = dir("derived-accept");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    // The worker edits a file, then runs the check.
+    env.candidate = fake("two", &["src/lib.rs"]);
+    assert_eq!(
+        handle(&bash("w1", "cargo test", 0), &mut env),
+        Decision::None
+    );
+    assert_eq!(
+        handle(
+            &handback("w1", "Done, the fix is complete.", false),
+            &mut env
+        ),
+        Decision::None
+    );
+    assert_eq!(gate(&env)["state"], "ready_for_review");
+    let line: Value = serde_json::from_str(&last_reasons(&env)).unwrap();
+    assert_eq!(line["receipts"]["recorded"], json!(["C1"]));
+    assert_eq!(line["header"], Value::Null);
+}
+
+#[test]
+fn derived_chair_run_accepts_a_bare_done_at_stop() {
+    let d = dir("derived-accept-stop");
+    let mut chair = env(&d, Some(one_command()), fake("two", &["src/lib.rs"]));
+    assert_eq!(
+        handle(&bash("main", "cargo test", 0), &mut chair),
+        Decision::None
+    );
+    assert_eq!(
+        handle(&stop("Done, the task is complete.", false), &mut chair),
+        Decision::None
+    );
+    assert_eq!(gate(&chair)["state"], "completed");
+    let line: Value = serde_json::from_str(&last_reasons(&chair)).unwrap();
+    assert_eq!(line["receipts"]["recorded"], json!(["C1"]));
+    assert_eq!(line["accepted"], true);
+}
+
+#[test]
+fn derived_run_before_the_last_change_is_refused() {
+    let d = dir("derived-stale");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    handle(&bash("w1", "cargo test", 0), &mut env);
+    handle(&bash("main", "cargo test", 0), &mut env);
+    env.candidate = fake("two", &["src/lib.rs"]);
+    let r = handle(&handback("w1", "Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: ran before your last change."
+    );
+    let r = handle(&stop("Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: ran before your last change; or report the task as not complete."
+    );
+    assert!(gate(&env)["receipts"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn derived_never_ran_is_refused() {
+    let d = dir("derived-never");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    // Another agent's run does not count.
+    handle(&bash("w2", "cargo test", 0), &mut env);
+    let r = handle(&handback("w1", "Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: never ran."
+    );
+    let r = handle(&stop("Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: never ran; or report the task as not complete."
+    );
+}
+
+#[test]
+fn derived_failing_run_is_refused() {
+    let d = dir("derived-exit");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    handle(&bash("w1", "cargo test", 1), &mut env);
+    handle(&bash("main", "cargo test", 1), &mut env);
+    let r = handle(&handback("w1", "Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: exited 1."
+    );
+    let r = handle(&stop("Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: exited 1; or report the task as not complete."
+    );
+}
+
+#[test]
+fn derived_refusals_release_after_three_and_no_claim_keeps_the_header_refusal() {
+    let d = dir("derived-cap");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    // Not a completion claim: the existing one-time header refusal, then release.
+    let r = handle(&handback("w0", "Still working on it.", false), &mut env);
+    assert!(blocked(&r).starts_with("GATE: handback refused: no header."));
+    assert_eq!(
+        handle(&handback("w0", "Still working on it.", true), &mut env),
+        Decision::None
+    );
+    for k in 1..=3 {
+        let r = handle(&handback("w1", "Done.", k > 1), &mut env);
+        assert!(blocked(&r).contains(&format!("refusal {k} of 3")), "{r:?}");
+    }
+    assert_eq!(
+        handle(&handback("w1", "Done.", true), &mut env),
+        Decision::None
+    );
+    assert!(last_reasons(&env).contains("UNVERIFIED after 3 refusals"));
+    for k in 1..=3 {
+        let r = handle(&stop("Done.", k > 1), &mut env);
+        assert!(blocked(&r).contains(&format!("refusal {k} of 3")), "{r:?}");
+    }
+    assert_eq!(
+        handle(&stop("Done.", true), &mut env),
+        Decision::System("GATE: refusal cap reached; task remains verifying".into())
+    );
+}

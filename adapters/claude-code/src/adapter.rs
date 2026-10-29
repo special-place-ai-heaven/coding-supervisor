@@ -11,7 +11,7 @@ use coding_supervisor::{
 use serde_json::Value;
 
 use crate::candidate::{CandidateProvider, GitCandidate};
-use crate::header::{self, Header, Verdict};
+use crate::header::{self, CheckLine, Header, Verdict};
 use crate::journal::{self, Trace};
 use crate::state::{self, Gate, Stored, obj, state_name};
 use crate::{claim, guard, location};
@@ -461,15 +461,23 @@ impl Session {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let prior = self.gate.handback_refusals.get(agent).copied().unwrap_or(0);
-        let Some(header) = header::parse(message) else {
-            if prior > 0 {
+        let (header, to_run) = match header::parse(message) {
+            Some(header) => (header, None),
+            // A completion claim without a header is judged on the agent's observed runs.
+            None if claim::claims_completion(message) => {
+                let (header, to_run) = self.derive(dir, agent, reasons)?;
+                (header, Some(to_run))
+            }
+            None if prior > 0 => {
                 reasons.push("no header; released after one refusal".to_owned());
                 return Ok(Decision::None);
             }
-            self.gate.handback_refusals.insert(agent.to_owned(), 1);
-            return Ok(Decision::Block(
-                "GATE: handback refused: no header. Start the final message with the line VERDICT: PASS, FAIL or UNVERIFIED, then CHECKS RUN: <n>, then one line per check run in this session: CHECK <id> | <command> | exit <code>.".to_owned(),
-            ));
+            None => {
+                self.gate.handback_refusals.insert(agent.to_owned(), 1);
+                return Ok(Decision::Block(
+                    "GATE: handback refused: no header. Start the final message with the line VERDICT: PASS, FAIL or UNVERIFIED, then CHECKS RUN: <n>, then one line per check run in this session: CHECK <id> | <command> | exit <code>.".to_owned(),
+                ));
+            }
         };
         let cwd = text(payload, "cwd").unwrap_or_default();
         let (mut problems, mut instructions) =
@@ -512,17 +520,23 @@ impl Session {
         }
         let k = prior + 1;
         self.gate.handback_refusals.insert(agent.to_owned(), k);
-        if instructions.is_empty() {
-            instructions.push(
+        match to_run {
+            Some(to_run) => instructions = to_run.into_iter().map(|r| format!("{r}.")).collect(),
+            None if instructions.is_empty() => instructions.push(
                 "Run the check in this session and cite it as CHECK <id> | <command> | exit <code>."
                     .to_owned(),
-            );
+            ),
+            None => {}
         }
-        Ok(Decision::Block(format!(
-            "GATE: handback refused (refusal {k} of 3): {}. {}",
-            problems.join("; "),
-            instructions.join(" ")
-        )))
+        Ok(Decision::Block(
+            format!(
+                "GATE: handback refused (refusal {k} of 3): {}. {}",
+                problems.join("; "),
+                instructions.join(" ")
+            )
+            .trim_end()
+            .to_owned(),
+        ))
     }
 
     /// Link each CHECK line to a journaled run by `agent` with the same command and exit code,
@@ -679,14 +693,17 @@ impl Session {
             reasons.push("no completion claim".to_owned());
             return Ok(Decision::None);
         }
-        // A chair working alone cites its own runs the way a worker does.
-        let (problems, instructions) = match header::parse(message) {
-            Some(header) => {
-                let cwd = text(payload, "cwd").unwrap_or_default();
-                self.link_checks(&header, dir, cwd, agent, now, reasons)?
+        // A chair working alone cites its own runs the way a worker does; without a header
+        // the citation is derived from those runs.
+        let (header, to_run) = match header::parse(message) {
+            Some(header) => (header, None),
+            None => {
+                let (header, to_run) = self.derive(dir, agent, reasons)?;
+                (header, Some(to_run))
             }
-            None => (Vec::new(), Vec::new()),
         };
+        let cwd = text(payload, "cwd").unwrap_or_default();
+        let (problems, instructions) = self.link_checks(&header, dir, cwd, agent, now, reasons)?;
         self.note_asserted(reasons);
         let result = if problems.is_empty() {
             match self.task.state() {
@@ -713,13 +730,112 @@ impl Session {
                     )));
                 }
                 self.gate.continuations += 1;
-                let run_instead: String = instructions.iter().map(|i| format!(" {i}")).collect();
+                let tail = match to_run {
+                    Some(to_run) => to_run
+                        .iter()
+                        .map(|r| format!("{r}; "))
+                        .chain(["or report the task as not complete.".to_owned()])
+                        .collect::<String>(),
+                    None => {
+                        let run_instead: String =
+                            instructions.iter().map(|i| format!(" {i}")).collect();
+                        format!(
+                            "record the check with CHECK lines or report the task as not complete.{run_instead}"
+                        )
+                    }
+                };
                 Ok(Decision::Block(format!(
-                    "GATE refuses completion (refusal {} of 3, harness cap 8): state {state}; {why}; record the check with CHECK lines or report the task as not complete.{run_instead}",
+                    "GATE refuses completion (refusal {} of 3, harness cap 8): state {state}; {why}; {tail}",
                     self.gate.continuations
                 )))
             }
         }
+    }
+
+    /// For a completion claim without a header: per criterion, a CHECK line for the latest run by
+    /// `agent` of one of its commands that exited 0 on the current candidate and backs no receipt
+    /// yet. Also, per mandatory criterion left without a current passing hook-observed receipt,
+    /// what to run (the criterion's first command) and why.
+    fn derive(
+        &self,
+        dir: &Path,
+        agent: &str,
+        reasons: &mut Vec<String>,
+    ) -> Result<(Header, Vec<String>), String> {
+        let runs = state::read_runs(dir)?;
+        let current = self.observed.as_ref().ok().map(|c| &c.id);
+        // `link_checks` links one run to one CHECK line; derive the same way.
+        let mut used: HashSet<&str> = self
+            .gate
+            .receipts
+            .iter()
+            .map(|r| r.output_ref.as_str())
+            .collect();
+        let (mut checks, mut to_run) = (Vec::new(), Vec::new());
+        for c in &self.criteria {
+            let run = runs.iter().rev().find(|r| {
+                r.agent_id == agent
+                    && c.accepts(&r.command)
+                    && r.exit_code == Some(0)
+                    && current.is_some()
+                    && r.candidate.as_ref() == current
+                    && !used.contains(r.reference.as_str())
+            });
+            if let Some(r) = run {
+                used.insert(&r.reference);
+                checks.push(CheckLine {
+                    criterion: c.id.0.clone(),
+                    command: r.command.clone(),
+                    cwd: None,
+                    exit_code: 0,
+                });
+                continue;
+            }
+            let held = self
+                .gate
+                .receipts
+                .iter()
+                .rev()
+                .find(|r| {
+                    r.criterion == c.id
+                        && !r.output_ref.starts_with(MCP_ASSERTED)
+                        && Some(&r.candidate) == current
+                })
+                .is_some_and(|r| r.exit_code == Some(0));
+            if !c.mandatory || held {
+                continue;
+            }
+            let first = c.command.first().map_or("", |s| s.trim());
+            let latest = runs
+                .iter()
+                .rev()
+                .find(|r| r.agent_id == agent && r.command.trim() == first);
+            let why = match latest {
+                None => "never ran".to_owned(),
+                Some(r) if current.is_none() || r.candidate.as_ref() != current => {
+                    "ran before your last change".to_owned()
+                }
+                Some(r) => match r.exit_code {
+                    Some(0) => "its run already backs another check; run it again".to_owned(),
+                    Some(n) => format!("exited {n}"),
+                    None => "its exit code was not observed".to_owned(),
+                },
+            };
+            to_run.push(format!("run `{first}`: {why}"));
+        }
+        reasons.push(format!(
+            "header derived from observed runs of agent {agent}: {} CHECK lines",
+            checks.len()
+        ));
+        Ok((
+            Header {
+                verdict: Verdict::Pass,
+                checks_run: checks.len(),
+                checks,
+                consistent: true,
+            },
+            to_run,
+        ))
     }
 
     fn pre_tool_use(&mut self, payload: &Value) -> Decision {
