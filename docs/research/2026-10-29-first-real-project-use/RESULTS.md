@@ -298,3 +298,39 @@ Open:
 - For a criterion with several commands, the reason is drawn from the first command's runs only.
 - Two edge reasons were added: "its run already backs another check; run it again" and "its exit code was not observed".
 - Not run live in Claude Code.
+
+## Autonomous gate, phase 3: levels and status
+
+Branch `feat/autonomous-gate`, commits `de0505e` (claude-code) and `ec808ba` (cli), on top of the ruling fix `dc90f60`.
+
+| Level | Hook behaviour |
+|---|---|
+| `off` | Every hook returns at once with no decision and writes nothing. The state directory is located without being created. The state-path guard stays. |
+| `lite` | Claims are judged as at `full`, but nothing blocks. The would-be refusal becomes a `systemMessage`, and the next `UserPromptSubmit` injects ``GATE (lite, not blocking) at the last stop: <text>`` once. Refusal counters do not move. |
+| `full` | Phase 2 behaviour (default). |
+| `ultra` | Full, plus: criteria with `"tier": "full"` are required (below ultra they count as not mandatory, in memory only, so the contract hash is unchanged); every `Stop` after a file change is judged even without a claim; Write, Edit, MultiEdit and NotebookEdit outside the contract scope are denied (`GATE: Write refused: <path> is out of scope; the contract scope is src/ (level ultra)`). |
+
+- **Where the level comes from:** the `level` file in the project's state directory beats the global `level` file in the user config directory (`SUPERVISOR_CONFIG_DIR`, else `%APPDATA%` / `$XDG_CONFIG_HOME` / `$HOME/.config`, plus `coding-supervisor`). With neither, the level is `full`. An unreadable level file makes the hook run at `full` and journal why; the CLI errors.
+- **Degraded session:** the session baseline is the candidate at the session's first `UserPromptSubmit`. A nonzero run of a mandatory command on that baseline runs the session at `lite`, with the reason ``<command> exited <n> on the untouched tree at session start``.
+- **Additions to `gate.json`:** `sessions` (baseline, degraded reason, pending notice) and `accepted_candidate`. Both are covered by the chain when present. A capture sealed by the earlier code still verifies.
+- **`supervisor status [--project] [--home]`:** prints the level and its source, the degraded reason, the required checks (id, command, tier, mandatory, required now) and the accepted and refused completions with refusal reasons from `events.jsonl`.
+
+| Check | Job or run | Exit | Evidence |
+|---|---|---|---|
+| Ruling fix: `cargo test --workspace` | `job_01a188205c0076438f86dbd675178813` | 0 | 145 passed (new `derived_pass_then_fail_on_the_same_tree_is_refused`) |
+| Ruling fix: branch CI | run 40894901371 | success | Linux fresh and hosted Windows |
+| `cargo test --workspace` after phase 3 | `job_01a188291fc7707987139f16cd29333a` | 0 | 155 passed (replay 38 to 45, `cli/tests/level.rs` 3), no existing assertion edited |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a18828f93175579c0bbd5ef944f17e` | 0 | no warnings |
+| `cargo fmt --all -- --check` | `job_01a1882918c0767c9e0975fedbef9a7a` | 0 | no diff |
+| Branch CI | run 40896578998 | success | Linux fresh and hosted Windows |
+
+Open:
+- An agent could lower the level from a shell (`supervisor level off`, or by writing the global file). Phase 4 treats the level files as gate state.
+- A bug-fix task whose check fails on the starting tree degrades its own session to lite.
+- At `ultra`, writes outside the project are denied too.
+- The installer's PreToolUse matcher has no `MultiEdit` (phase 5).
+- The MCP server ignores levels.
+- Whether a lite `systemMessage` at SubagentStop keeps a worker running is unverified.
+- The `sessions` map is never pruned (`shortcut:`).
+- Ruling fix: a passing run that already backs a stored receipt still satisfies a later failing run on the same tree (phase 4 closes it).
+- Not run live in Claude Code.
