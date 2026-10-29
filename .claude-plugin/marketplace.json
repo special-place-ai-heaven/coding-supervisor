@@ -1,0 +1,12 @@
+{
+  "name": "coding-supervisor",
+  "owner": { "name": "special-place-ai-heaven" },
+  "metadata": { "description": "The completion gate for coding agents." },
+  "plugins": [
+    {
+      "name": "coding-supervisor",
+      "source": "./",
+      "description": "Completion gate for coding agents: a task is done only when every mandatory check has a current, observed receipt."
+    }
+  ]
+}

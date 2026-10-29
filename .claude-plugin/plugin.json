@@ -1,0 +1,11 @@
+{
+  "name": "coding-supervisor",
+  "version": "0.1.0",
+  "description": "Completion gate for coding agents: a task is done only when every mandatory check has a current, observed receipt. Needs the npm package coding-supervisor.",
+  "author": { "name": "special-place-ai-heaven" },
+  "repository": "https://github.com/special-place-ai-heaven/coding-supervisor",
+  "license": "MIT",
+  "mcpServers": {
+    "supervisor": { "command": "supervisor", "args": ["mcp"] }
+  }
+}
