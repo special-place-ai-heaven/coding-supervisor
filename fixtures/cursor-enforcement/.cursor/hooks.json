@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "python E:/project/coding-supervisor/fixtures/cursor-enforcement/hooks/capture.py",
+        "timeout": 30
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "python E:/project/coding-supervisor/fixtures/cursor-enforcement/hooks/capture.py",
+        "timeout": 30
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "python E:/project/coding-supervisor/fixtures/cursor-enforcement/hooks/capture.py",
+        "timeout": 30
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "python E:/project/coding-supervisor/fixtures/cursor-enforcement/hooks/capture.py",
+        "timeout": 30
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "python E:/project/coding-supervisor/fixtures/cursor-enforcement/hooks/capture.py",
+        "timeout": 30
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "python E:/project/coding-supervisor/fixtures/cursor-enforcement/hooks/capture.py",
+        "timeout": 30
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "python E:/project/coding-supervisor/fixtures/cursor-enforcement/hooks/capture.py",
+        "timeout": 30
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "python E:/project/coding-supervisor/fixtures/cursor-enforcement/hooks/capture.py",
+        "timeout": 30
+      }
+    ],
+    "subagentStart": [
+      {
+        "command": "python E:/project/coding-supervisor/fixtures/cursor-enforcement/hooks/capture.py",
+        "timeout": 30
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "python E:/project/coding-supervisor/fixtures/cursor-enforcement/hooks/capture.py",
+        "timeout": 30
+      }
+    ],
+    "afterAgentResponse": [
+      {
+        "command": "python E:/project/coding-supervisor/fixtures/cursor-enforcement/hooks/capture.py",
+        "timeout": 30
+      }
+    ],
+    "stop": [
+      {
+        "command": "python E:/project/coding-supervisor/fixtures/cursor-enforcement/hooks/capture.py",
+        "timeout": 30
+      }
+    ]
+  }
+}

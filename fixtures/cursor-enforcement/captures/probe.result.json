@@ -1,0 +1,8 @@
+﻿node.exe : ActionRequiredError: Weekly usage limit reached. It resets in 2 days. Buy credits to keep going now.
+At C:\Users\rakovnik\AppData\Local\cursor-agent\cursor-agent.ps1:65 char:1
++ & "$nodePath" "$scriptPath\versions\$versionName\index.js" $args
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (ActionRequiredE...keep going now.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
