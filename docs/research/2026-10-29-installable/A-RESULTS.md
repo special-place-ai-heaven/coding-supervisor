@@ -175,6 +175,26 @@ Items 1 to 3 were fixed in the commit "Phase A: install allows the gate's tools,
 
 4. Claude Code drops a project-scoped `permissions.allow` entry while the workspace is untrusted (S3c), even under `-p`. The hooks in the same file still run. So the allow rule install writes only takes effect after the interactive trust dialog has been accepted for the project, or after `hasTrustDialogAccepted` is set in the user's `~/.claude.json`. Install writes neither and prints the trust step as a manual step for claude-code. A third route leaves the live configuration alone: a separate `CLAUDE_CONFIG_DIR` whose `.claude.json` marks the project with `hasTrustDialogAccepted: true` (key spelled `C:/temp/sup-throwaway/proj`), plus a copy of the login. With it the installed allow rule applied and the tools answered (S3d). The claude-code manual step now names this route.
 
+## CI and release runs (2026-10-29, repository public, owner's runner policy)
+
+Workflow runs on branch `phase-a-installable`, read from the GitHub Actions API; job names as the workflow prints them.
+
+| Run | Trigger | Job | Runner | Result |
+|---|---|---|---|---|
+| 40855898294 | push `1830d57` | the single CI job | none | not started: hosted runners were billing-blocked while the repository was private |
+| 40860286297 | push `9e942d5` | CI on `[self-hosted, Linux, X64, fresh]` | a fresh runner | clippy failed: the runner exports `RUSTC_WRAPPER=sccache` and sccache is not installed; fixed by setting the variable empty |
+| 40860416463 | push `99f1c46` | CI on fresh | a fresh runner | success (rustup bootstrapped from nothing, cache step allowed to fail) |
+| 40860579410 | tag `v0.1.0-rc1` at `e20d832` | Build x86_64-unknown-linux-gnu | aap-crrr-a9dc930d97c7 (fresh) | success |
+| | | Build x86_64-pc-windows-msvc | GitHub Actions (windows-latest) | success |
+| | | Build aarch64-apple-darwin | GitHub Actions (macos-latest) | failed at the host check with exit 141: `grep -q` closed the pipe and rustc died of SIGPIPE under pipefail; the host line read `aarch64-apple-darwin` |
+| | | Build x86_64-apple-darwin | GitHub Actions (macos-15-intel) | same failure; the `macos-15-intel` label resolves and the host line read `x86_64-apple-darwin` |
+| | | Publish GitHub release | skipped | because two required builds failed |
+| 40860771325 | push `079d9e3` | Linux (self-hosted fresh) | aap-crrr-610c592c8ca9 | success |
+| | | Windows (hosted) | GitHub Actions (windows-latest) | success |
+| | | Linux (hosted, pull requests) | skipped on push | runs only for pull_request events |
+
+What the fresh runners lacked: rustup (bootstrapped by the workflow with no default toolchain), a working `RUSTC_WRAPPER` (cleared), and the actions cache was not relied on. The host-check fix (`be70c07`) has not run on a tag yet; the owner pushes the next tag.
+
 ## Limits
 
 - One session per case, on sonnet with haiku workers. No repetition, so nothing here separates the model's wording from the gate's behaviour beyond the journaled decisions.
