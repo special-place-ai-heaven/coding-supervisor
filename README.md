@@ -335,3 +335,29 @@ State lives, in order of preference, under `SUPERVISOR_STATE_DIR`, then the plat
 This repository grew out of a study of when to fold specialist agents into one agent loop, applied to coding. The conclusion that shaped it: in the author's own session corpus, the independent verifier caught real defects and was worth keeping, but one accept in seven was issued with no command run, and almost no judge cited the command it ran against the claim it supported. The gate exists to make that impossible by construction rather than by instruction. The research and measurement that led here live in a separate repository on the author's machine and are referenced from `HANDOVER.md` by path and hash.
 
 License: MIT.
+
+## What works
+
+✅ Works today    🚧 Being wired up    💭 Strong opinions, pending code
+
+| Status | Capability | Where |
+|---|---|---|
+| ✅ | Deterministic completion gate: contract, candidate, receipts, typed refusals, freshness, bounded repair; no model, no dependencies | core, `src/lib.rs` |
+| ✅ | Claude Code enforcement at Stop, SubagentStop and PreToolUse; state outside the project under a hash chain; agents cannot write the gate's state | `adapters/claude-code` |
+| ✅ | A receipt must cite the exact command the contract names for its criterion | gap 1 |
+| ✅ | A chair working alone is judged by its own CHECK header at Stop | Stop path |
+| ✅ | Install for Claude Code, Codex CLI, Cursor, OMP and Grok; one entry per hook event, scan before write, atomic writes | `supervisor install` |
+| ✅ | MCP server with the gate's tools on all five harnesses (advisory: receipts are caller-asserted) | `adapters/mcp` |
+| ✅ | `npm install -g coding-supervisor` on Windows and Linux; releases cut automatically from main | release-please, npm |
+| 🚧 | Each run record carries the files' fingerprint at the run, so a check that ran before the last edit no longer counts | gap 2 |
+| 🚧 | No header needed: the gate picks the checks from the agent's own runs, and the latest run on the current files decides | derived receipts |
+| 🚧 | Levels off, lite, full, ultra, and `supervisor status` | CLI |
+| 🚧 | No setup per project: contract inferred from the repo's declared checks, a new task per session, required checks shown at session start | autonomous gate, phase 4 |
+| 🚧 | Claude Code plugin with `/supervisor <level>` and `/supervisor status` | autonomous gate, phase 5 |
+| 💭 | Enforcement on Codex, Cursor, OMP and Grok; today they have no hook the gate can block from | per-harness adapters |
+| 💭 | Changes outside the project folder, for example an installed tool the fix edits, observed as part of the candidate | extra observed roots |
+| 💭 | Compound commands such as `cmd; echo $?` recorded with the real stage's exit code, not the last one | run records |
+| 💭 | The rule that keeps hook-linked receipts after an MCP completion moves into the core, or is deleted | adapter rule from `fa80d3c` |
+| 💭 | Evidence that the gate improves verified work per token; two real tasks so far, too few to claim it | measurement |
+
+The 🚧 rows are built on the branch `feat/autonomous-gate` and arrive with the next release.
