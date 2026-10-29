@@ -1,0 +1,7 @@
+{"agent_id":"main","decision":null,"event":"UserPromptSubmit","reasons":[],"state_location":"local-app-data","t":1793263306}
+{"agent_id":"main","decision":null,"event":"PreToolUse","reasons":["replay: 0 receipts restored, 0 rejected"],"state_location":"local-app-data","t":1793263328}
+{"agent_id":"a05f19f8c81ce3074","decision":null,"event":"PreToolUse","reasons":["replay: 0 receipts restored, 0 rejected"],"state_location":"local-app-data","t":1793263331}
+{"agent_id":"a05f19f8c81ce3074","decision":null,"event":"PostToolUse","reasons":["command run journaled","replay: 0 receipts restored, 0 rejected"],"state_location":"local-app-data","t":1793263339}
+{"agent_id":"a05f19f8c81ce3074","decision":null,"event":"SubagentStop","reasons":["replay: 0 receipts restored, 0 rejected","recorded CHECK C2 | echo check-ok | exit 0","accepted: ready_for_review"],"state_location":"local-app-data","t":1793263341}
+{"agent_id":"main","decision":{"hookSpecificOutput":{"additionalContext":"GATE: state ready_for_review; current receipts: [C2]; missing: []; stale: []; decision: accepted","hookEventName":"PostToolUse"}},"event":"PostToolUse","reasons":["replay: 1 receipts restored, 0 rejected"],"state_location":"local-app-data","t":1793263342}
+{"agent_id":"main","decision":null,"event":"Stop","reasons":["replay: 1 receipts restored, 0 rejected","no completion claim"],"state_location":"local-app-data","t":1793263343}

@@ -1,0 +1,33 @@
+{
+  "candidate": {
+    "base_commit": "c6c51298be2f8a3333974a6d7d839a57b943c6b7",
+    "dirty_digest": "6188ab84315e785bfa06b0c8c5177b03e2de26987543471e8105761aa87f27e4"
+  },
+  "checkpoint_hash": "e05e94d362e5042f5f6ca12192b6f28569e46022c39504fdbd013c97686fdc61",
+  "consumed_repair_rounds": 0,
+  "continuations": 0,
+  "contract_id": "fixture-t4",
+  "handback_refusals": {},
+  "next_action": "",
+  "open_findings": [],
+  "prompt_id": "1195e71c-bfd4-4339-96ae-b8da37d44225",
+  "receipts": [
+    {
+      "candidate": {
+        "base_commit": "c6c51298be2f8a3333974a6d7d839a57b943c6b7",
+        "dirty_digest": "6188ab84315e785bfa06b0c8c5177b03e2de26987543471e8105761aa87f27e4"
+      },
+      "claim_supported": true,
+      "command": "echo check-ok",
+      "criterion": "C2",
+      "cwd": "E:\\project\\coding-supervisor\\fixtures\\claude-code-enforcement",
+      "exit_code": 1,
+      "finished_at": 1793263339,
+      "hash": "632c7160f48e8e6a07002bcfa95ef44998bed5c0446fe926b15ebf86a4050cb4",
+      "output_ref": "toolu_01CZreZJM414WyPoEGQu8rc3",
+      "prev": "genesis",
+      "started_at": 1793263339
+    }
+  ],
+  "state": "ready_for_review"
+}
