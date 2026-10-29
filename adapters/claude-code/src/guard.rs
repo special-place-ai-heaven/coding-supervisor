@@ -11,6 +11,30 @@ fn normalized(s: &str) -> String {
     s.replace('\\', "/").to_lowercase()
 }
 
+/// Terminal Commander input fields that can carry a command, a working directory or a path.
+const TC_TEXT_FIELDS: [&str; 9] = [
+    "argv",
+    "command",
+    "script",
+    "cwd",
+    "path",
+    "file_path",
+    "root",
+    "dir",
+    "target",
+];
+
+/// The `.supervisor` marker or the state directory (either separator form) inside lowercased
+/// command text; returns what matched.
+fn text_reference(text: &str, dir: &str) -> Option<String> {
+    if text.contains(".supervisor") {
+        return Some(".supervisor".to_owned());
+    }
+    [dir.to_owned(), dir.replace('/', "\\")]
+        .into_iter()
+        .find(|d| !d.is_empty() && text.contains(d.as_str()))
+}
+
 /// A deny decision when the tool call targets `.supervisor` or the resolved state dir.
 pub fn state_write_denial(payload: &Value, state_dir: &Path) -> Option<Decision> {
     let tool = payload.get("tool_name").and_then(Value::as_str)?;
@@ -32,13 +56,30 @@ pub fn state_write_denial(payload: &Value, state_dir: &Path) -> Option<Decision>
         }
         "Bash" | "PowerShell" => {
             let command = input.get("command").and_then(Value::as_str)?.to_lowercase();
-            if command.contains(".supervisor") {
-                Some(".supervisor".to_owned())
-            } else {
-                [dir.to_owned(), dir.replace('/', "\\")]
-                    .into_iter()
-                    .find(|d| !d.is_empty() && command.contains(d.as_str()))
+            text_reference(&command, dir)
+        }
+        // Terminal Commander runs commands and reads or writes files through the daemon;
+        // every field that can name a command, a working directory or a path is scanned.
+        // The guard matches on tool name and field text: a connector tool outside this
+        // prefix, or a field not listed here, is not covered.
+        t if t.starts_with("mcp__terminal_commander__") => {
+            let mut text = String::new();
+            for field in TC_TEXT_FIELDS {
+                match input.get(field) {
+                    Some(Value::String(s)) => {
+                        text.push_str(s);
+                        text.push(' ');
+                    }
+                    Some(Value::Array(items)) => {
+                        for s in items.iter().filter_map(Value::as_str) {
+                            text.push_str(s);
+                            text.push(' ');
+                        }
+                    }
+                    _ => {}
+                }
             }
+            text_reference(&text.to_lowercase(), dir)
         }
         _ => None,
     }?;

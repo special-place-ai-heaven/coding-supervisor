@@ -166,6 +166,111 @@ fn bash_naming_the_state_dir_is_denied() {
 }
 
 #[test]
+fn tc_run_and_watch_argv_naming_supervisor_is_denied() {
+    let r = denied(call(
+        "mcp__terminal_commander__run_and_watch",
+        json!({"argv": ["cmd", "/c", "type", ".supervisor\\gate.json"], "cwd": "E:\\x"}),
+    ));
+    assert!(
+        r.starts_with("GATE: mcp__terminal_commander__run_and_watch refused"),
+        "{r}"
+    );
+    assert!(r.ends_with("(.supervisor)"));
+}
+
+#[test]
+fn tc_command_start_combed_cwd_in_state_dir_is_denied() {
+    let cwd = format!("{STATE}\\sub");
+    let r = denied(call(
+        "mcp__terminal_commander__command_start_combed",
+        json!({"argv": ["cargo", "test"], "cwd": cwd}),
+    ));
+    assert!(r.starts_with("GATE: mcp__terminal_commander__command_start_combed refused"));
+}
+
+#[test]
+fn tc_shell_exec_script_naming_state_dir_is_denied() {
+    let script = format!("echo x >> {}/gate.json", STATE.replace('\\', "/"));
+    let r = denied(call(
+        "mcp__terminal_commander__shell_exec",
+        json!({ "script": script }),
+    ));
+    assert!(r.starts_with("GATE: mcp__terminal_commander__shell_exec refused"));
+}
+
+#[test]
+fn tc_shell_session_exec_command_is_denied() {
+    let r = denied(call(
+        "mcp__terminal_commander__shell_session_exec",
+        json!({"session_id": "s1", "command": "rm -rf .supervisor"}),
+    ));
+    assert!(r.ends_with("(.supervisor)"));
+}
+
+#[test]
+fn tc_pty_command_start_argv_is_denied() {
+    let r = denied(call(
+        "mcp__terminal_commander__pty_command_start",
+        json!({"argv": ["bash", "-c", "cat .SUPERVISOR/contract.json"]}),
+    ));
+    assert!(r.ends_with("(.supervisor)"));
+}
+
+#[test]
+fn tc_file_write_path_is_denied() {
+    let path = format!("{STATE}\\gate.json");
+    let r = denied(call(
+        "mcp__terminal_commander__file_write",
+        json!({"path": path, "content": "{}"}),
+    ));
+    assert!(r.starts_with("GATE: mcp__terminal_commander__file_write refused"));
+}
+
+#[test]
+fn tc_file_read_window_path_is_denied() {
+    let r = denied(call(
+        "mcp__terminal_commander__file_read_window",
+        json!({"path": "E:/x/.supervisor/events.jsonl", "start": 1, "lines": 20}),
+    ));
+    assert!(r.ends_with("(.supervisor)"));
+}
+
+#[test]
+fn tc_file_search_root_is_denied() {
+    let r = denied(call(
+        "mcp__terminal_commander__file_search",
+        json!({"root": "E:\\x\\.supervisor", "query": "exit_code"}),
+    ));
+    assert!(r.ends_with("(.supervisor)"));
+}
+
+#[test]
+fn tc_ordinary_calls_are_allowed() {
+    assert_eq!(
+        call(
+            "mcp__terminal_commander__run_and_watch",
+            json!({"argv": ["cargo", "test"], "cwd": "E:\\x"})
+        ),
+        None
+    );
+    assert_eq!(
+        call(
+            "mcp__terminal_commander__file_read_window",
+            json!({"path": "E:/x/src/lib.rs"})
+        ),
+        None
+    );
+    // A field the guard does not read is not covered: documented limit.
+    assert_eq!(
+        call(
+            "mcp__terminal_commander__file_write",
+            json!({"content": ".supervisor/gate.json"})
+        ),
+        None
+    );
+}
+
+#[test]
 fn ordinary_calls_are_allowed() {
     assert_eq!(
         call("Write", json!({"file_path": "E:\\x\\src\\lib.rs"})),

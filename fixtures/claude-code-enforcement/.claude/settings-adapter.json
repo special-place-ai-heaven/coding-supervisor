@@ -24,7 +24,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Agent|Write|Edit|NotebookEdit|Bash|PowerShell",
+        "matcher": "Agent|Write|Edit|NotebookEdit|Bash|PowerShell|mcp__terminal_commander__.*",
         "hooks": [
           {
             "type": "command",
