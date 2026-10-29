@@ -643,3 +643,92 @@ fn a_config_held_open_fails_with_advice_and_stays_intact() {
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
+
+/// Writes `<root>/.claude/<name>` with the given `enabledPlugins` entries.
+fn write_plugin_settings(root: &Path, name: &str, enabled: Value) {
+    let dir = root.join(".claude");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(name),
+        json!({ "enabledPlugins": enabled }).to_string(),
+    )
+    .unwrap();
+}
+
+const PLUGIN_ENABLED: &str = "claude-code: the coding-supervisor plugin is enabled for this project; it carries the hooks and the MCP server, so nothing was written.";
+
+/// The gate's plugin, enabled in any of the three settings files Claude Code reads, carries the
+/// hooks and the MCP server: install says so and writes nothing.
+#[test]
+fn an_enabled_plugin_makes_claude_code_install_write_nothing() {
+    for (n, place) in [
+        "project settings.json",
+        "project settings.local.json",
+        "home settings.json",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (project, home) = dirs(&format!("plugin-on-{n}"));
+        let enabled = json!({ "coding-supervisor@coding-supervisor": true });
+        match n {
+            0 => write_plugin_settings(&project, "settings.json", enabled),
+            1 => write_plugin_settings(&project, "settings.local.json", enabled),
+            _ => write_plugin_settings(&home, "settings.json", enabled),
+        }
+        let (before_project, before_home) = (snapshot(&project), snapshot(&home));
+        let out = install(&project, &home, "claude-code", &[]);
+        assert_eq!(out.trim(), PLUGIN_ENABLED, "{place}");
+        assert_eq!(
+            snapshot(&project),
+            before_project,
+            "{place} wrote to the project"
+        );
+        assert_eq!(snapshot(&home), before_home, "{place} wrote to home");
+    }
+}
+
+/// A disabled plugin, another plugin and a settings file that does not parse all leave install
+/// doing its normal work.
+#[test]
+fn a_plugin_that_is_not_enabled_does_not_stop_claude_code_install() {
+    for (n, enabled) in [
+        json!({ "coding-supervisor@coding-supervisor": false }),
+        json!({ "other@coding-supervisor": true, "coding-supervisor@other": true }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (project, home) = dirs(&format!("plugin-off-{n}"));
+        write_plugin_settings(&project, "settings.json", enabled);
+        let out = install(&project, &home, "claude-code", &[]);
+        assert!(!out.contains("plugin is enabled"), "{out}");
+        assert!(project.join(".mcp.json").is_file(), "{out}");
+    }
+    let (project, home) = dirs("plugin-off-garbage");
+    fs::create_dir_all(project.join(".claude")).unwrap();
+    fs::write(
+        project.join(".claude").join("settings.local.json"),
+        "not json",
+    )
+    .unwrap();
+    let (_ok, out) = run_install(&project, &home, "claude-code", FAKE_BINARY, &[]);
+    assert!(!out.contains("plugin is enabled"), "{out}");
+}
+
+/// The plugin is Claude Code's: the other four harnesses install as before.
+#[test]
+fn an_enabled_plugin_does_not_change_install_for_other_harnesses() {
+    let (project, home) = dirs("plugin-other-harness");
+    write_plugin_settings(
+        &project,
+        "settings.json",
+        json!({ "coding-supervisor@coding-supervisor": true }),
+    );
+    let out = install(&project, &home, "codex", &[]);
+    assert!(!out.contains("plugin is enabled"), "{out}");
+    assert!(
+        project.join(".codex").join("config.toml").is_file(),
+        "{out}"
+    );
+}
