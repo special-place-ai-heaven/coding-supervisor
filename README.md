@@ -16,7 +16,8 @@ It sits beside an existing coding harness. The harness keeps the model, the tool
 | Measurement reader | `supervisor-claude-code measure` | Turns the adapter's journals into gate-derived numbers: dispatches, supported and unsupported passes, linked receipts, refusals by reason, accepted tasks, worker tokens per accepted task | `T6-RESULTS.md` |
 | Fixture | `fixtures/claude-code-enforcement/` | A throwaway project with its own hook settings, a contract, controlled fake workers and captured hook events, used for every live test | the results files above |
 | MCP server (advisory) | `adapters/mcp/` | The `supervisor-mcp` binary: eight tools over the same gate state as the hooks (`task_start`, `candidate_observe`, `receipt_record`, `finding_raise`, `repair_request`, `accept_try`, `task_complete`, `task_state`), newline-delimited JSON-RPC on stdin and stdout. Answers; never blocks. Receipts are caller-asserted | 22 tests (6 protocol, 15 replay, 1 journal; as_of 2026-10-29); one live Claude Code session in `A-RESULTS.md` (S3b) |
-| Command-line installer | `cli/` | The `supervisor` binary: `init`, `install --harness`, `hook`, `mcp`. Writes the two skills and the gate's registration into a project for one of five harnesses | 17 tests per platform (15 install, of which one runs only on Windows and one only on Unix, and 2 init; as_of 2026-10-29); Claude Code installed configuration run live in `A-RESULTS.md` |
+| Command-line installer | `cli/` | The `supervisor` binary: `init`, `install --harness`, `hook`, `mcp`. Writes the two skills and the gate's registration into a project for one of five harnesses | 20 tests per platform (18 install, of which one runs only on Windows and one only on Unix, and 2 init; as_of 2026-10-29); Claude Code installed configuration run live in `A-RESULTS.md` |
+| Claude Code plugin | `.claude-plugin/`, `hooks/`, `commands/` | The plugin manifest and a one-plugin marketplace, `hooks/hooks.json` (seven events), the MCP server declared in `plugin.json`, the `/supervisor` command, and `hooks/supervisor-hook.js`, a node wrapper that runs the native `supervisor` from the global npm package | 9 node tests in `hooks/supervisor-hook.test.js`; `claude plugin validate .`; not run live |
 | Skill templates | `skills/` | `supervisor-chair` and `supervisor-worker`, rendered per harness by `install` | rendered text shown in the install runs below |
 | Install fixture | `fixtures/claude-code-install/` | The runner, contract and captured hook and tool journals from the live sessions through the installed configuration | `docs/research/2026-10-29-installable/A-RESULTS.md` |
 | CI and release workflows | `.github/workflows/ci.yml`, `release-please.yml`, `release.yml` | CI on every push and pull request: format, lint, tests, and a check that the core has no dependencies. Releases are automatic from main: release-please opens and merges the release PR and tags it. Release on that `v*` tag: native release builds for two targets (Windows and Linux x86_64), archives with checksums, a GitHub release | CI green on every push to main. Release: two targets, published as `v0.1.0-rc2` (release run 40876811539, 2026-10-29): both archives published with checksums; `sha256sum -c SHA256SUMS` passed on the downloaded files and the Windows `supervisor.exe` started; the Linux binaries were not executed (as_of 2026-10-29) |
@@ -37,13 +38,16 @@ Status, as of 2026-10-29: Claude Code is the only harness run live through the i
 
 Harness names for `--harness`: `claude-code`, `codex`, `cursor`, `omp`, `grok`.
 
-### Get the binaries
+### Install
 
 ```text
 npm install -g coding-supervisor
-supervisor init --project <dir>
-supervisor install --harness claude-code --project <dir>
+/plugin marketplace add special-place-ai-heaven/coding-supervisor
+/plugin install coding-supervisor
+/supervisor full
 ```
+
+From then on the agent works normally and the gate judges every "done". `/supervisor <level>` sets the global default: `off` does nothing, `lite` judges but never blocks, `full` (the default) refuses a "done" that has no current passing run of the project's checks, and `ultra` also requires the contract's full-tier checks and denies edits outside the contract's scope; `/supervisor status` shows the level and the checks. The plugin carries the hooks and the MCP server and runs the native `supervisor` that the npm package installs, so the npm package must be installed first; without it the hooks do nothing and say so once. `supervisor install --harness claude-code` remains for setups without the plugin; it writes six hook events and not the `SessionStart` hook, so a project installed that way gets no inferred contract and no start-of-session context. When the plugin is enabled for the project, `supervisor install --harness claude-code` prints that and writes nothing. Do not have both the plugin and an earlier `supervisor install` active in one project: Claude Code runs both sets of hooks. Other harnesses use `supervisor install` and the MCP server only.
 
 The npm package `coding-supervisor` is a small launcher. npm installs alongside it the platform package for your system, `coding-supervisor-windows-x64` or `coding-supervisor-linux-x64`, which holds the three binaries; `supervisor` on your PATH runs the native `supervisor` from it. Windows and Linux x86_64 only. Releases publish under the npm dist-tag `latest`; the earlier release candidates are under `next`. Releases are automatic from main: on every push, `.github/workflows/release-please.yml` checks the commit subjects (conventional: `feat:`, `fix:`, `docs:`, `ci:` and the other types release-please knows), and release-please opens a release PR with the version bump and `CHANGELOG.md`, which the workflow merges at once; release-please then tags the merge commit, and the tag runs `release.yml`. Nobody tags by hand. The first automatic release, `v0.1.0`, ran end to end: release-please merged the release PR (#1), tagged the merge commit, and release run 40887469923 published it under the npm dist-tag `latest` (as_of 2026-10-29). Evidence: release run 40881138321 (`v0.1.0-rc3`, 2026-10-29) published all three packages at `0.1.0-rc3`; npm set both `next` and `latest` to it on each package's first publish, and `npm install -g coding-supervisor@0.1.0-rc3` from the registry into a temp prefix ran `supervisor --help` with exit 0 on Windows. The Linux package has not been installed or run (as_of 2026-10-29). Each package also lists a version `0.0.0-stage`: npm's placeholder from a package's first publish, not a release.
 
@@ -353,11 +357,11 @@ License: MIT.
 | ✅ | No header needed: the gate picks the checks from the agent's own runs, and the latest run on the current files decides | derived receipts |
 | ✅ | Levels off, lite, full, ultra, and `supervisor status` | CLI |
 | ✅ | No setup per project: contract inferred from the repo's declared checks, a new task per session, required checks shown at session start (Claude Code sends the session-start event to the gate through the plugin, phase 5) | autonomous gate, phase 4 |
-| 🚧 | Claude Code plugin with `/supervisor <level>` and `/supervisor status` | autonomous gate, phase 5 |
+| ✅ | Claude Code plugin: hooks for the seven events, the MCP server, `/supervisor <level>` and `/supervisor status`; `supervisor install` writes nothing when it is enabled | autonomous gate, phase 5 |
 | 💭 | Enforcement on Codex, Cursor, OMP and Grok; today they have no hook the gate can block from | per-harness adapters |
 | 💭 | Changes outside the project folder, for example an installed tool the fix edits, observed as part of the candidate | extra observed roots |
 | 💭 | Compound commands such as `cmd; echo $?` recorded with the real stage's exit code, not the last one | run records |
 | 💭 | The rule that keeps hook-linked receipts after an MCP completion moves into the core, or is deleted | adapter rule from `fa80d3c` |
 | 💭 | Evidence that the gate improves verified work per token; two real tasks so far, too few to claim it | measurement |
 
-The 🚧 row (phase 5) is being built on the branch `feat/autonomous-gate`. The ✅ rows for gap 2, derived receipts, levels and no setup per project are also on that branch so far, and reach npm with the next release.
+The ✅ rows for gap 2, derived receipts, levels, no setup per project and the plugin are on the branch `feat/autonomous-gate`, not on main yet, and reach npm and the marketplace with the next release. The plugin has been validated (`claude plugin validate .`) and its wrapper tested; it has not been run live in Claude Code.

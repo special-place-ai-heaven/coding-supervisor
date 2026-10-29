@@ -398,3 +398,44 @@ Open:
 - `runs.jsonl` is shared across sessions, so a run from an earlier session on the identical tree counts.
 - A git project with declared checks and no contract pays a second git observation per hook call.
 - Not run live in Claude Code.
+
+## Autonomous gate, phase 5: Claude Code plugin
+
+Branch `feat/autonomous-gate`, commits `0655031` (plugin), `ea92754` (install) and `e5e664b` (CI). The gate is packaged as a Claude Code plugin; the user runs `npm install -g coding-supervisor`, `/plugin marketplace add special-place-ai-heaven/coding-supervisor`, `/plugin install coding-supervisor`, `/supervisor full`.
+
+Files at the repository root:
+- `.claude-plugin/plugin.json`: name `coding-supervisor`, the Cargo version, MIT, and the MCP server declared inline (`mcpServers.supervisor`: command `supervisor`, args `["mcp"]`). There is no root `.mcp.json`, so the server is not registered for people working in this repository.
+- `.claude-plugin/marketplace.json`: marketplace `coding-supervisor`, one plugin at source `./`.
+- `hooks/hooks.json`: the seven events the adapter handles. Matchers are the installer's, with `MultiEdit` added to the PreToolUse matcher; PostToolUse is unchanged. Each hook runs `node` on `${CLAUDE_PLUGIN_ROOT}/hooks/supervisor-hook.js hook` in exec form (`command` plus `args`, which the hooks page prefers for a path placeholder), timeout 30 seconds.
+- `hooks/supervisor-hook.js`: a dependency-free node wrapper. It finds the native binary from `SUPERVISOR_BIN`, then the path cached in `$CLAUDE_PLUGIN_DATA/binary-path` (when that file still exists), then `npm root -g` plus the global package's own `lib/resolve-binary.js`, and caches the result. It spawns the binary with stdio passed through and returns its exit code. When it cannot resolve or start the binary it exits 0 and prints, on the first call only (marker `gate-not-active-notified` in the plugin data directory, or the temp directory), `{"systemMessage":"coding-supervisor: the gate is not active; run npm install -g coding-supervisor"}`. `slash` arguments map to `supervisor level <off|lite|full|ultra>`, `supervisor status`, or `supervisor level` for no argument; anything else prints `usage: /supervisor off|lite|full|ultra|status`. When a typed `/supervisor` finds no binary, it says so every time (a hook says it once). No new Rust subcommand.
+- `commands/supervisor.md`: `disable-model-invocation: true`, `argument-hint: off|lite|full|ultra|status`, body runs the wrapper with `slash $ARGUMENTS` through the `!` form.
+
+Docs relied on (code.claude.com, fetched 2026-10-29):
+- `mcpServers`, plugin manifest reference: "`mcpServers` takes a `.json` file path, an MCP bundle path or URL, an inline map, or an array mixing them. ... Claude Code loads `.mcp.json` at the plugin root first, then each declared shape in order." Inline map example: `{ "deploy-api": { "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/server.js"] } }`.
+- `${CLAUDE_PLUGIN_ROOT}` in commands, same page, "Where each variable resolves": "Skill, command, and agent content: Anywhere in the Markdown body", and "In skill, command, and agent content, write the `${...}` reference in the Markdown body instead, and Claude Code substitutes the path inline when it loads the content." The skills page says it more narrowly: "The plugin's installation directory. Substituted only in plugin skills." A command file is read as a skill with the same frontmatter and the manifest page lists commands, so the command relies on the manifest page; this is not run live.
+- Hook environment, same table: hook commands get `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA` and `CLAUDE_PROJECT_DIR` exported. Hook `timeout` is in seconds.
+- `disable-model-invocation`, skills page: "To keep a personal or project skill but stop Claude from invoking it on its own, set `disable-model-invocation: true` in its frontmatter".
+- Plugin commands are namespaced: a command in `commands/supervisor.md` runs as `/coding-supervisor:supervisor`; the bare `/supervisor` is not documented for plugins and is not verified.
+
+| Check | Job or run | Exit | Evidence |
+|---|---|---|---|
+| `claude plugin validate .` (2.1.312) | `job_01a1884baa69720e911a58eb3dedee85` | 0 | "Validation passed with warnings": no icon, and a note that `CLAUDE.md` at the plugin root is not loaded as context |
+| Wrapper tests, `node --test hooks/supervisor-hook.test.js` | `job_01a1884b7ee872d08d935bb00b66199b` | 0 | 9 passed, 0 failed, 0 skipped: resolution order, cached path, stale cache, missing binary announced once, stdio and exit code passed through, slash mapping and usage |
+| `npm test` in `npm/` | `job_01a1884b82ac7548ab6b3cc0b3a8311d` | 0 | 31 passed, 3 skipped (unchanged) |
+| `cargo test --workspace` | `job_01a1884c850876e98bd71f4760bedc3a` | 0 | 169 passed; the same command on the tree without the install change passed 166 (`job_01a1884d057676288d7a7e4252c1b5c2`); the 3 new tests are in `cli/tests/install.rs`; no original assertion edited |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a1884d7eb375febd1886d7b58d41fd` | 0 | no warnings |
+| `cargo fmt --all -- --check` | `job_01a1884f158b77e8af7987e753fb69ca` | 0 | no diff (a first check found formatting in the new lines only; `cargo fmt --all` fixed them) |
+| Wrapper against the real debug binary, Windows | local, throwaway directories under `C:\temp`, `SUPERVISOR_CONFIG_DIR` and `SUPERVISOR_STATE_DIR` redirected | 0 | `slash full` wrote the level file, `slash` printed `level: full (global)`, `slash status` printed the status, `slash bogus` the usage line, a hook with no binary printed the message once and then nothing |
+| Wrapper resolution through a fake global prefix | same, `npm_config_prefix` pointed at a temp tree holding `coding-supervisor` and `coding-supervisor-windows-x64` | 0 | `npm root -g`, then `resolve-binary.js`, found `supervisor.exe` and cached it; a second call with a wrong prefix used the cache |
+| Branch CI on `e5e664b` | run 40903326714 | success | Linux fresh (including the new node test step) and hosted Windows; the pull-request Linux job is skipped on a push |
+
+Install behaviour (`cli/src/install.rs`, `plugin_enabled`): for `--harness claude-code`, when `enabledPlugins["coding-supervisor@coding-supervisor"]` is `true` in the project's `.claude/settings.json` or `.claude/settings.local.json`, or in `<home>/.claude/settings.json`, install prints `claude-code: the coding-supervisor plugin is enabled for this project; it carries the hooks and the MCP server, so nothing was written.` and exits 0 without writing. A file that does not parse counts as not enabled. Tests in `cli/tests/install.rs`: all three locations write nothing, a disabled or other-named plugin or a garbage settings file leaves install working, and another harness is unaffected.
+
+Open:
+- Not run live in Claude Code: the plugin was not installed or enabled in a real `~/.claude`, and no session was started. Unverified: the marketplace add and plugin install steps, that `${CLAUDE_PLUGIN_ROOT}` is substituted in `commands/supervisor.md`, that the `!` command passes the permission check with the `allowed-tools` rule written there, that the bare `/supervisor` name resolves (the documented name is `/coding-supervisor:supervisor`), that the exec-form hooks start on Windows, and that the plugin's MCP server `supervisor` starts without `--project` and shares the hooks' gate state.
+- Duplicate hooks: Claude Code merges plugin hooks with the project's; a project that also ran `supervisor install` earlier runs both sets, and the hooks page says a plugin's copy of the same handler stays separate. The installer only reports the plugin when it is enabled; it does not remove an earlier install's hooks, and the plugin does not detect them. The README tells the user not to have both.
+- Without the npm package, every hook call that cannot find the binary runs `npm root -g` (about a second) because only a hit is cached (`shortcut:` in the wrapper).
+- `/supervisor <level>` sets the global default, so a project-level level file still wins over it; `supervisor level <word> --project <dir>` sets that one, and the slash command does not offer it.
+- The plugin's PostToolUse matcher has no `MultiEdit`, as with the installer; the adapter derives the candidate at run time, so it was left alone.
+- `claude plugin validate` advises an icon and a README install line in its own form (`/plugin install coding-supervisor --marketplace special-place-ai-heaven/coding-supervisor`); not done.
+- The repository root is the plugin root, so the whole repository is copied into the plugin cache on install.
