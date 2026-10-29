@@ -2,6 +2,9 @@
 # actions/upload-artifact@v7, actions/download-artifact@v8, softprops/action-gh-release@v3.
 # The Rust toolchain is installed with rustup straight from rust-toolchain.toml.
 #
+# Tags are pushed by the owner only; the owner has set a tag ruleset on the
+# repository, so nobody else can create a v* tag and trigger a release.
+#
 # The x86_64 macOS build runs on macos-15-intel, not macos-13: GitHub retired the
 # macos-13 image in December 2025, and macos-latest is arm64 only.
 name: Release

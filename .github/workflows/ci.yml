@@ -1,6 +1,12 @@
 # Action versions chosen on 2026-10-29: actions/checkout@v7, Swatinem/rust-cache@v2.
 # The Rust toolchain is installed with rustup straight from rust-toolchain.toml,
-# so that file is the only place the version is written (see the install step).
+# so that file is the only place the version is written.
+#
+# Runner policy (owner, 2026-10-29): pushes run on the organisation's five
+# self-hosted Linux runners labelled fresh; pull requests run on a hosted
+# ubuntu-latest runner so a fork's code never executes on a self-hosted
+# machine; a hosted windows-latest job runs for both, because the first user
+# and the adapter's path handling are Windows.
 name: CI
 
 on:
@@ -17,19 +23,16 @@ env:
   RUSTC_WRAPPER: ""
 
 jobs:
-  check:
-    name: Format, lint, test, core dependency check
-    # Self-hosted Linux runners labelled fresh (five, org level); hosted runners
-    # are billing-blocked for this organisation as of 2026-10-29.
+  linux-fresh:
+    name: "Linux (self-hosted fresh): format, lint, test, core dependency check"
+    if: github.event_name == 'push'
     runs-on: [self-hosted, Linux, X64, fresh]
     steps:
       - uses: actions/checkout@v7
 
-      # dtolnay/rust-toolchain requires an explicit version and cannot read
-      # rust-toolchain.toml. With no arguments, rustup installs the channel
-      # and components that the file names (1.99.1, rustfmt, clippy).
       # A fresh runner may have no rustup at all; install it with no default
-      # toolchain, then let rustup read rust-toolchain.toml.
+      # toolchain, then let rustup read rust-toolchain.toml (1.99.1, rustfmt,
+      # clippy). dtolnay/rust-toolchain cannot read that file.
       - name: Install rustup if missing, then the pinned Rust toolchain
         run: |
           if ! command -v rustup > /dev/null; then
@@ -61,3 +64,56 @@ jobs:
             cargo tree -p coding-supervisor --edges normal,build,dev
             exit 1
           fi
+
+  linux-hosted:
+    name: "Linux (hosted, pull requests): format, lint, test, core dependency check"
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint with warnings as errors
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Check the core crate has no dependencies
+        run: |
+          lines=$(cargo tree -p coding-supervisor --edges normal,build,dev | wc -l)
+          if [ "$lines" -ne 1 ]; then
+            echo "::error::coding-supervisor must have no dependencies, but cargo tree printed $lines lines:"
+            cargo tree -p coding-supervisor --edges normal,build,dev
+            exit 1
+          fi
+
+  windows-hosted:
+    name: "Windows (hosted): format, lint, test"
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint with warnings as errors
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace
