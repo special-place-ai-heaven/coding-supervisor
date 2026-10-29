@@ -161,6 +161,11 @@ fn missing_or_ill_typed_fields_are_tool_errors_naming_the_field() {
         assert!(text.contains(named), "{tool}: {text}");
     }
     let mut contract = common::four();
+    contract["criteria"][2]["command"] = json!([]);
+    let (is_error, text) = call(&s, "task_start", contract);
+    assert!(is_error);
+    assert!(text.contains("criterion C3 command is empty"), "{text}");
+    let mut contract = common::four();
     contract["max_repair_rounds"] = json!("two");
     let (is_error, text) = call(&s, "task_start", contract);
     assert!(is_error);

@@ -60,7 +60,7 @@ pub fn contract(criteria: &[(&str, bool)], max_repair_rounds: u32) -> Value {
     json!({
         "id": "mcp-test",
         "goal": GOAL,
-        "criteria": criteria.iter().map(|(id, m)| json!({"id": id, "check": id, "mandatory": m})).collect::<Vec<_>>(),
+        "criteria": criteria.iter().map(|(id, m)| json!({"id": id, "check": id, "mandatory": m, "command": "cargo test"})).collect::<Vec<_>>(),
         "forbidden_effects": [],
         "scope": ["src/", "tests/"],
         "max_repair_rounds": max_repair_rounds

@@ -293,3 +293,31 @@ fn mcp_lines_count_apart_from_sessions_and_hook_acceptances() {
     assert_eq!(json["accepted_via_mcp_advisory"], 1);
     assert_eq!(json["tool_server_lines_no_session"], 3);
 }
+
+#[test]
+fn wrong_command_refusals_have_their_own_category() {
+    let d = dir("wrong-command");
+    let pass = json!({"verdict": "PASS", "checks_run": 1, "lines": 1, "consistent": true});
+    write(
+        &d.0.join("events.jsonl"),
+        &[v1(
+            "SubagentStop",
+            json!({"header": pass,
+            "receipts": {"recorded": [], "rejected": [], "unlinked": ["C2"]},
+            "decision": {"kind": "block", "text": "GATE: handback refused (refusal 1 of 3): C2 cites `echo ok` but the contract requires `echo check-ok`; missing C2. Run that command in this session and cite it as CHECK C2 | echo check-ok | exit 0."}}),
+        )],
+    );
+    let report = collect(std::slice::from_ref(&d.0));
+    let v1 = &report.sources["gate-v1"];
+    assert_eq!(v1.refusals, 1);
+    assert_eq!(v1.categories["wrong_command"], 1);
+    assert_eq!((v1.pass_supported, v1.pass_unsupported), (0, 1));
+    assert_eq!(v1.unlinked, 1);
+    assert!(
+        report
+            .markdown()
+            .contains("| gate-derived refusals: wrong_command | 1/1 |"),
+        "{}",
+        report.markdown()
+    );
+}

@@ -14,6 +14,15 @@ pub struct Criterion {
     pub id: CriterionId,
     pub check: CheckName,
     pub mandatory: bool,
+    /// The commands a receipt for this criterion may cite. Contract loaders reject an empty
+    /// list; should one reach the core anyway, it accepts no receipt.
+    pub command: Vec<String>,
+}
+impl Criterion {
+    /// Exact text after trimming both sides; no normalisation of shells, quoting or paths.
+    pub fn accepts(&self, command: &str) -> bool {
+        self.command.iter().any(|c| c.trim() == command.trim())
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Budget {
@@ -125,6 +134,11 @@ pub enum GateError {
     ReceiptMissingExitCode,
     ReceiptUnsupported,
     UnknownCriterion(CriterionId),
+    WrongCommand {
+        criterion: CriterionId,
+        cited: String,
+        required: Vec<String>,
+    },
     ReceiptForOtherCandidate {
         expected: CandidateId,
         got: CandidateId,
@@ -247,13 +261,20 @@ impl Task {
                 got: receipt.candidate,
             });
         }
-        if !self
+        let Some(criterion) = self
             .contract
             .criteria
             .iter()
-            .any(|c| c.id == receipt.criterion)
-        {
+            .find(|c| c.id == receipt.criterion)
+        else {
             return Err(GateError::UnknownCriterion(receipt.criterion));
+        };
+        if !criterion.accepts(&receipt.command) {
+            return Err(GateError::WrongCommand {
+                criterion: criterion.id.clone(),
+                cited: receipt.command.trim().to_owned(),
+                required: criterion.command.clone(),
+            });
         }
         self.receipts.push((receipt, ReceiptStatus::Current));
         Ok(())

@@ -350,6 +350,28 @@ pub fn render(error: &GateError) -> String {
         GateError::ReceiptMissingExitCode => "receipt has no exit code".to_owned(),
         GateError::ReceiptUnsupported => "receipt is not linked to an observed run".to_owned(),
         GateError::UnknownCriterion(c) => format!("unknown criterion {}", c.0),
+        GateError::WrongCommand {
+            criterion,
+            cited,
+            required,
+        } => match required.split_first() {
+            Some((first, [])) => format!(
+                "{} cites `{cited}` but the contract requires `{first}`",
+                criterion.0
+            ),
+            Some((first, rest)) => format!(
+                "{} cites `{cited}` but the contract requires `{first}` or one of: {}",
+                criterion.0,
+                rest.iter()
+                    .map(|c| format!("`{c}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            None => format!(
+                "{} cites `{cited}` but the contract names no command for it",
+                criterion.0
+            ),
+        },
         GateError::ReceiptForOtherCandidate { expected, got } => format!(
             "receipt is for candidate {} but the current one is {}",
             got.dirty_digest, expected.dirty_digest
@@ -440,6 +462,8 @@ impl Session {
             ));
         };
         let mut problems = Vec::new();
+        // What to run instead, one per CHECK line that cites a command the contract does not name.
+        let mut instructions = Vec::new();
         if !header.consistent {
             problems.push(format!(
                 "header says CHECKS RUN {} but has {} well-formed CHECK lines",
@@ -460,18 +484,41 @@ impl Session {
                 "CHECK {} | {} | exit {}",
                 line.criterion, line.command, line.exit_code
             );
+            // The core enforces the same rule; checking it here keeps the run unlinked and names the command.
+            let wrong = self
+                .criteria
+                .iter()
+                .find(|c| c.id.0 == line.criterion && !c.accepts(&line.command));
             let run = runs.iter().find(|r| {
-                r.agent_id == agent
+                wrong.is_none()
+                    && r.agent_id == agent
                     && r.command.trim() == line.command.trim()
                     && r.exit_code == Some(line.exit_code)
                     && !used.contains(&r.reference)
             });
-            let (output_ref, at) = match run {
-                Some(r) => {
+            let (output_ref, at) = match (run, wrong) {
+                (Some(r), _) => {
                     used.insert(r.reference.clone());
                     (r.reference.clone(), r.t)
                 }
-                None => {
+                (None, Some(c)) => {
+                    let problem = render(&GateError::WrongCommand {
+                        criterion: c.id.clone(),
+                        cited: line.command.trim().to_owned(),
+                        required: c.command.clone(),
+                    });
+                    reasons.push(format!(
+                        "unlinked {cited} (claim_supported false: {problem})"
+                    ));
+                    problems.push(problem);
+                    let first = c.command.first().map_or("", |s| s.trim());
+                    instructions.push(format!(
+                        "Run that command in this session and cite it as CHECK {} | {first} | exit 0.",
+                        c.id.0
+                    ));
+                    (String::new(), now)
+                }
+                (None, None) => {
                     problems.push(format!(
                         "unlinked {cited} (no run by agent {agent} with that command and exit code)"
                     ));
@@ -539,9 +586,16 @@ impl Session {
         }
         let k = prior + 1;
         self.gate.handback_refusals.insert(agent.to_owned(), k);
+        if instructions.is_empty() {
+            instructions.push(
+                "Run the check in this session and cite it as CHECK <id> | <command> | exit <code>."
+                    .to_owned(),
+            );
+        }
         Ok(Decision::Block(format!(
-            "GATE: handback refused (refusal {k} of 3): {}. Run the check in this session and cite it as CHECK <id> | <command> | exit <code>.",
-            problems.join("; ")
+            "GATE: handback refused (refusal {k} of 3): {}. {}",
+            problems.join("; "),
+            instructions.join(" ")
         )))
     }
 

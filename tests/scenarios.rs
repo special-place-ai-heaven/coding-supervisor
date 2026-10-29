@@ -26,6 +26,7 @@ fn contract() -> TaskContract {
                 id: CriterionId(id.into()),
                 check: CheckName(id.into()),
                 mandatory: true,
+                command: vec!["fake".into()],
             })
             .collect(),
         forbidden_effects: vec![],
@@ -350,7 +351,7 @@ fn matrix_record_receipt() {
         }
     }
     for make in [in_verifying as fn() -> Task, in_ready] {
-        for n in 0..4 {
+        for n in 0..5 {
             let mut t = make();
             let before = snap(&t);
             let mut r = receipt(&t);
@@ -370,9 +371,18 @@ fn matrix_record_receipt() {
                         got: candidate("two").id,
                     }
                 }
-                _ => {
+                3 => {
                     r.criterion = CriterionId("C9".into());
                     GateError::UnknownCriterion(CriterionId("C9".into()))
+                }
+                // specified by PROPOSAL gap 1
+                _ => {
+                    r.command = "other".into();
+                    GateError::WrongCommand {
+                        criterion: CriterionId("C1".into()),
+                        cited: "other".into(),
+                        required: vec!["fake".into()],
+                    }
                 }
             };
             assert_eq!(t.record_receipt(r), Err(error));
@@ -617,6 +627,7 @@ fn matrix_try_accept() {
         id: CriterionId("C5".into()),
         check: CheckName("C5".into()),
         mandatory: false,
+        command: vec!["fake".into()],
     });
     for optional_failure in [false, true] {
         let mut t = Task::new(c.clone());
@@ -827,6 +838,7 @@ fn r26_mandatory_regression_blocks_despite_aggregate() {
         id: CriterionId("optional".into()),
         check: CheckName("optional".into()),
         mandatory: false,
+        command: vec!["fake".into()],
     });
     let mut t = Task::new(c);
     t.start_preparing().unwrap();
@@ -887,6 +899,32 @@ fn x2_receipt_for_other_candidate_rejected() {
         Err(GateError::ReceiptForOtherCandidate { expected, got })
     );
     assert_eq!(t.state(), TaskState::Verifying);
+}
+#[test]
+fn gap1_receipt_must_cite_a_command_the_contract_names() {
+    let mut c = contract();
+    c.criteria[1].command = vec!["fake".into(), "fake --release".into()];
+    let mut t = Task::new(c);
+    t.start_preparing().unwrap();
+    t.observe_candidate(candidate("one")).unwrap();
+    let before = snap(&t);
+    let mut r = FakeRunner::receipt("C2", t.candidate().unwrap(), Some(0));
+    r.command = " echo ok ".into();
+    assert_eq!(
+        t.record_receipt(r.clone()),
+        Err(GateError::WrongCommand {
+            criterion: CriterionId("C2".into()),
+            cited: "echo ok".into(),
+            required: vec!["fake".into(), "fake --release".into()],
+        })
+    );
+    assert_unchanged(&before, &t);
+    r.command = "  fake --release ".into();
+    assert_eq!(t.record_receipt(r), Ok(()));
+    assert_eq!(
+        t.receipt_status(&CriterionId("C2".into())),
+        Some(ReceiptStatus::Current)
+    );
 }
 #[test]
 fn illegal_transitions_return_typed_errors_and_preserve_state() {

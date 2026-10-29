@@ -12,11 +12,12 @@ use crate::journal::{decision_parts, receipts_from_reasons, usage};
 use crate::state::obj;
 
 /// Refusal categories in report order.
-pub const CATEGORIES: [&str; 12] = [
+pub const CATEGORIES: [&str; 13] = [
     "missing",
     "stale",
     "failing",
     "out_of_scope",
+    "wrong_command",
     "unlinked",
     "no_header",
     "inconsistent",
@@ -30,13 +31,14 @@ pub const CATEGORIES: [&str; 12] = [
 /// First match wins. Fixed refusal sentences come first because their wording contains other
 /// keywords (the no-header text names `CHECKS RUN`); evidence problems follow in the order the
 /// gate lists them.
-const CLASSIFY: [(&str, &str); 11] = [
+const CLASSIFY: [(&str, &str); 12] = [
     ("tampered", "tampered"),
     ("not writable by agents", "state_path"),
     ("no header", "no_header"),
     ("task is ", "terminal_state"),
     ("could not be observed", "unobserved"),
     ("CHECKS RUN", "inconsistent"),
+    ("but the contract requires", "wrong_command"),
     ("unlinked", "unlinked"),
     ("out of scope", "out_of_scope"),
     ("failing", "failing"),

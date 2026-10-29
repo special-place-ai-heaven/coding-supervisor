@@ -5,7 +5,8 @@
     {
       "id": "C2",
       "check": "candidate_passes_reported_test",
-      "mandatory": true
+      "mandatory": true,
+      "command": "echo check-ok"
     }
   ],
   "forbidden_effects": [],

@@ -273,16 +273,44 @@ fn finding_from(v: &Value) -> Result<Finding, String> {
     })
 }
 
+/// A criterion's `command`: one string or a non-empty list of strings, none of them blank.
+fn commands(c: &Value, id: &str) -> Result<Vec<String>, String> {
+    let list = match c.get("command") {
+        None => {
+            return Err(format!(
+                "criterion {id} has no command; name the command a receipt for it must cite"
+            ));
+        }
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|s| s.as_str().map(str::to_owned))
+            .collect::<Option<_>>()
+            .ok_or_else(|| format!("criterion {id} command holds a non-string"))?,
+        Some(_) => {
+            return Err(format!(
+                "criterion {id} command is not a string or a list of strings"
+            ));
+        }
+    };
+    if list.is_empty() || list.iter().any(|s| s.trim().is_empty()) {
+        return Err(format!("criterion {id} command is empty"));
+    }
+    Ok(list)
+}
+
 pub fn contract_from(v: &Value) -> Result<TaskContract, String> {
     let criteria = array(v, "criteria")?
         .iter()
         .map(|c| {
+            let id = string(c, "id")?;
             Ok(Criterion {
-                id: CriterionId(string(c, "id")?),
                 check: CheckName(string(c, "check")?),
                 mandatory: field(c, "mandatory")?
                     .as_bool()
                     .ok_or("criterion mandatory is not a boolean")?,
+                command: commands(c, &id)?,
+                id: CriterionId(id),
             })
         })
         .collect::<Result<_, String>>()?;

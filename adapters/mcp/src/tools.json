@@ -14,9 +14,10 @@
             "properties": {
               "id": {"type": "string"},
               "check": {"type": "string"},
-              "mandatory": {"type": "boolean"}
+              "mandatory": {"type": "boolean"},
+              "command": {"type": ["string", "array"], "items": {"type": "string"}, "minItems": 1, "description": "The command a receipt for this criterion must cite, or a list of accepted commands. Matched exactly after trimming."}
             },
-            "required": ["id", "check", "mandatory"]
+            "required": ["id", "check", "mandatory", "command"]
           }
         },
         "forbidden_effects": {"type": "array", "items": {"type": "string"}, "description": "Declared only; the gate does not enforce it."},
@@ -42,7 +43,7 @@
   },
   {
     "name": "receipt_record",
-    "description": "Record one check result for a criterion, bound to the current candidate. Caller-asserted: the server does not observe the command, and the receipt is stored and journaled as mcp-asserted.",
+    "description": "Record one check result for a criterion, bound to the current candidate. The command must be one the contract names for that criterion (exact text after trimming); any other command is refused. Caller-asserted: the server does not observe the command, and the receipt is stored and journaled as mcp-asserted.",
     "inputSchema": {
       "type": "object",
       "properties": {

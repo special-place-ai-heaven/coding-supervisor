@@ -221,6 +221,25 @@ fn r35_would_run_counts_as_not_run() {
 }
 
 #[test]
+fn gap1_receipt_must_cite_a_command_the_contract_names() {
+    let d = dir("gap1");
+    let s = server(&d);
+    started(&s);
+    let text = refused(
+        &s,
+        "receipt_record",
+        receipt("C1", "echo ok", json!(0), true),
+    );
+    assert!(
+        text.ends_with("refused: C1 cites `echo ok` but the contract requires `cargo test`"),
+        "{text}"
+    );
+    assert_eq!(task_state(&s)["receipts"]["C1"], "missing");
+    pass(&s, "C1");
+    assert_eq!(task_state(&s)["receipts"]["C1"], "current");
+}
+
+#[test]
 fn x1_receipt_without_exit_code_rejected() {
     let d = dir("x1");
     let s = server(&d);

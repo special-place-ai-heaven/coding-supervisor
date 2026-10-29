@@ -23,15 +23,16 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "task".into());
         // C1..C4 are the Duet checks; only C2 and C3 are mandatory in the starting contract.
-        let criterion = |id: &str, check: &str, mandatory: bool| json!({ "id": id, "check": check, "mandatory": mandatory });
+        // The commands are placeholders: edit them to the exact commands a receipt must cite.
+        let criterion = |id: &str, check: &str, mandatory: bool, command: &str| json!({ "id": id, "check": check, "mandatory": mandatory, "command": command });
         let contract = json!({
             "id": id,
             "goal": "Describe what this task must achieve.",
             "criteria": [
-                criterion("C1", "baseline_reproduces_reported_failure", false),
-                criterion("C2", "candidate_passes_reported_test", true),
-                criterion("C3", "regression_suite_passes", true),
-                criterion("C4", "diff_within_contract_scope", false),
+                criterion("C1", "baseline_reproduces_reported_failure", false, "cargo test"),
+                criterion("C2", "candidate_passes_reported_test", true, "cargo test"),
+                criterion("C3", "regression_suite_passes", true, "cargo test --workspace"),
+                criterion("C4", "diff_within_contract_scope", false, "git diff --name-only"),
             ],
             "forbidden_effects": [],
             "scope": ["src/", "tests/"],

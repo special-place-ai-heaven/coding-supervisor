@@ -69,7 +69,9 @@ fn contract(criteria: &[(&str, bool)], scope: &[&str]) -> Value {
     json!({
         "id": "t4-test",
         "goal": "replay",
-        "criteria": criteria.iter().map(|(id, m)| json!({"id": id, "check": id, "mandatory": m})).collect::<Vec<_>>(),
+        // The commands the tests below cite: `cargo test c1` .. `cargo test c4` and `cargo test`.
+        "criteria": criteria.iter().map(|(id, m)| json!({"id": id, "check": id, "mandatory": m,
+            "command": [format!("cargo test {}", id.to_lowercase()), "cargo test".to_owned()]})).collect::<Vec<_>>(),
         "forbidden_effects": [],
         "scope": scope,
         "max_repair_rounds": 2
@@ -362,6 +364,51 @@ fn replay_x2_run_by_another_agent_does_not_link() {
     );
     assert!(blocked(&r).contains("unlinked CHECK C1"), "{r:?}");
     assert!(gate(&env)["receipts"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn replay_gap1_check_citing_another_command_is_refused() {
+    let d = dir("gap1");
+    let mut c2 = contract(&[("C2", true)], &["src/"]);
+    c2["criteria"][0]["command"] = json!("echo check-ok");
+    let mut env = env(&d, Some(c2), fake("one", &["src/lib.rs"]));
+    let r = worker(&mut env, "w1", "PASS", &[("C2", "echo ok", 0)]);
+    assert_eq!(
+        blocked(&r),
+        "GATE: handback refused (refusal 1 of 3): C2 cites `echo ok` but the contract requires `echo check-ok`; missing C2. Run that command in this session and cite it as CHECK C2 | echo check-ok | exit 0."
+    );
+    let line: Value = serde_json::from_str(&last_reasons(&env)).unwrap();
+    assert_eq!(
+        line["receipts"],
+        json!({"recorded": [], "rejected": [], "unlinked": ["C2"]})
+    );
+    assert!(
+        line["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r.as_str().unwrap().starts_with(
+                "unlinked CHECK C2 | echo ok | exit 0 (claim_supported false: C2 cites"
+            )),
+        "{line}"
+    );
+    assert!(gate(&env)["receipts"].as_array().unwrap().is_empty());
+    assert_eq!(gate(&env)["state"], "verifying");
+}
+
+#[test]
+fn contract_without_a_command_fails_open_naming_the_criterion() {
+    let d = dir("no-command");
+    let mut c = contract(&[("C2", true)], &["src/"]);
+    c["criteria"][0].as_object_mut().unwrap().remove("command");
+    let mut env = env(&d, Some(c), fake("one", &["src/lib.rs"]));
+    let r = handle(&pre("Write"), &mut env);
+    assert!(
+        matches!(r, Decision::System(ref m) if m.starts_with("GATE adapter error: ")
+            && m.ends_with("criterion C2 has no command; name the command a receipt for it must cite")),
+        "{r:?}"
+    );
+    assert!(!env.state_dir.join("gate.json").exists());
 }
 
 #[test]

@@ -56,6 +56,19 @@ fn init_writes_the_starting_contract_and_never_overwrites_it() {
         .map(|c| c["mandatory"].as_bool().unwrap())
         .collect();
     assert_eq!(mandatory, [false, true, true, false]);
+    let commands: Vec<&str> = criteria
+        .iter()
+        .map(|c| c["command"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        commands,
+        [
+            "cargo test",
+            "cargo test",
+            "cargo test --workspace",
+            "git diff --name-only"
+        ]
+    );
     assert_eq!(v["scope"], serde_json::json!(["src/", "tests/"]));
     assert_eq!(v["forbidden_effects"], serde_json::json!([]));
     assert_eq!(v["max_repair_rounds"], 2);
