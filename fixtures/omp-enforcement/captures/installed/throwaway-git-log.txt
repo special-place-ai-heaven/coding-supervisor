@@ -1,0 +1,2 @@
+3d3a6b0 supervisor install --harness omp
+bdf57dc candidate v1

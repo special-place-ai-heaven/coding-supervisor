@@ -1,0 +1,12 @@
+Note: plan.defaultOnStartup is ignored in print mode (no interactive surface to review the plan). Use --plan-yolo for a headless plan flow.
+Working...
+Verbatim gate answers:
+
+1. `task_state`: `{"candidate_observed":false,"checkpoint":{"candidate":null,"consumed_repair_rounds":0,"next_action":"","open_findings":[],"state":"preparing"},"receipts":{"C2":"missing"},"rejected_claims":[],"task_id":"fixture-t4"}`
+2. `candidate_observe`: `{"candidate_observed":true,"checkpoint":{"candidate":{"base_commit":"3d3a6b024f64242f80c83cc959f320a2e59993d5","dirty_digest":"3677a01bc7c4ee1e2c4e564110a8a7d4e1a173b8fe685bcc7469ee600bc38b1a"},"consumed_repair_rounds":0,"next_action":"","open_findings":[],"state":"verifying"},"receipts":{"C2":"missing"},"rejected_claims":[],"task_id":"fixture-t4"}`
+3. `receipt_record` (C2): `{"candidate_observed":true,"checkpoint":{"candidate":{"base_commit":"3d3a6b024f64242f80c83cc959f320a2e59993d5","dirty_digest":"3677a01bc7c4ee1e2c4e564110a8a7d4e1a173b8fe685bcc7469ee600bc38b1a"},"consumed_repair_rounds":0,"next_action":"","open_findings":[],"state":"verifying"},"receipts":{"C2":"current"},"rejected_claims":[],"task_id":"fixture-t4"}`
+4. First `accept_try`: `Error: GATE (advisory): accept_try refused: out of scope .symforge/index.bin` — fixed the cause by deleting the regenerable untracked `.symforge/` cache, re-observed (receipt went stale), reran `echo check-ok` (exit 0), re-recorded C2.
+5. `accept_try` (retry): `{"candidate_observed":true,"checkpoint":{"candidate":{"base_commit":"3d3a6b024f64242f80c83cc959f320a2e59993d5","dirty_digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"consumed_repair_rounds":0,"next_action":"","open_findings":[],"state":"ready_for_review"},"receipts":{"C2":"current"},"rejected_claims":[],"task_id":"fixture-t4"}`
+6. `task_complete`: `{"candidate_observed":true,"checkpoint":{"candidate":{"base_commit":"3d3a6b024f64242f80c83cc959f320a2e59993d5","dirty_digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"consumed_repair_rounds":0,"next_action":"","open_findings":[],"state":"completed"},"receipts":{"C2":"current"},"rejected_claims":[],"task_id":"fixture-t4"}`
+
+Task fixture-t4 is complete — the gate accepted (state `completed`) after removing the out-of-scope `.symforge/index.bin`.
