@@ -2,8 +2,9 @@
 # actions/upload-artifact@v7, actions/download-artifact@v8, softprops/action-gh-release@v3.
 # The Rust toolchain is installed with rustup straight from rust-toolchain.toml.
 #
-# Tags are pushed by the owner only; the owner has set a tag ruleset on the
-# repository, so nobody else can create a v* tag and trigger a release.
+# Tags come from release-please (release-please.yml), created with RELEASE_PLEASE_TOKEN after
+# its release PR merges; nobody tags by hand. The repository's tag ruleset limits who may
+# create a v* tag, so that token's identity must be allowed to.
 #
 # Targets (owner's decision, 2026-10-29): Windows and Linux x86_64 only.
 name: Release
@@ -247,6 +248,8 @@ jobs:
 
       # Pre-release tags (with a hyphen) go to the npm dist-tag "next", release tags to "latest".
       # Platform packages first, the wrapper last, so the wrapper never points at a missing version.
+      # npm publish returns before the registry lists the new version (seen with rc3 and rc4), so
+      # the wrapper waits until both platform versions are listed, at most ten minutes.
       - name: Publish to npm
         shell: bash
         env:
@@ -256,16 +259,28 @@ jobs:
           set -euo pipefail
           version="${TAG#v}"
           case "$TAG" in *-*) dist_tag=next ;; *) dist_tag=latest ;; esac
-          for package in \
-            coding-supervisor-windows-x64 \
-            coding-supervisor-linux-x64 \
-            coding-supervisor
-          do
-            tarball="./dist/${package}-${version}.tgz"
+          platforms="coding-supervisor-windows-x64 coding-supervisor-linux-x64"
+          publish() {
+            local tarball="./dist/$1-${version}.tgz"
             test -f "$tarball"
-            if npm view "${package}@${version}" version > /dev/null 2>&1; then
-              echo "${package}@${version} already exists on npm; skipping publish."
+            if npm view "$1@${version}" version > /dev/null 2>&1; then
+              echo "$1@${version} already exists on npm; skipping publish."
             else
               npm publish "$tarball" --access public --tag "$dist_tag"
             fi
+          }
+          for package in $platforms; do
+            publish "$package"
           done
+          deadline=$((SECONDS + 600))
+          for package in $platforms; do
+            until npm view "${package}@${version}" version --prefer-online > /dev/null 2>&1; do
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "::error::${package}@${version} is not listed by the registry after ten minutes; coding-supervisor@${version} was not published."
+                exit 1
+              fi
+              sleep 15
+            done
+            echo "${package}@${version} is listed by the registry."
+          done
+          publish coding-supervisor

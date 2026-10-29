@@ -1,0 +1,172 @@
+# Releases are automatic from main, following symforge's release workflow. Every push to main
+# checks the commit subjects since the last successful run, then release-please opens or
+# updates the release PR (version bumps in the four Cargo.toml files, Cargo.lock and the three
+# npm package.json files, plus CHANGELOG.md) and this job merges it at once. On the push of
+# that merge, release-please tags the merge commit and creates the GitHub release; the tag runs
+# release.yml, which builds the binaries and publishes the archives and the npm packages.
+#
+# Differences from symforge: the published release-please action is used, pinned to the commit
+# whose bundle symforge's vendored runner pins, instead of that runner; and release-please
+# creates the tag and the release itself (symforge skips that and tags in its own job). The tag
+# is created with RELEASE_PLEASE_TOKEN, so it starts release.yml; a tag made with the default
+# GITHUB_TOKEN would not.
+name: Release PR
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: release-pr-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    name: Release PR
+    runs-on: [self-hosted, Linux, X64, fresh]
+    permissions:
+      actions: read
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      # A missing secret must fail here, visibly, rather than skip the release silently.
+      - name: Require the RELEASE_PLEASE_TOKEN secret
+        env:
+          RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          if [ -z "${RELEASE_PLEASE_TOKEN:-}" ]; then
+            echo "::error::The RELEASE_PLEASE_TOKEN secret is not set for this repository; no release PR was opened or merged."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install GitHub CLI
+        run: bash .github/scripts/ensure_gh.sh
+
+      - name: Test the commit subject check
+        run: python -m unittest discover -s .github/scripts -p 'test_*.py'
+
+      - name: Validate commit subjects since last successful Release PR run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LAST=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-please.yml --branch main --event push --status success --limit 5 --json databaseId,headSha --jq "[.[] | select(.databaseId != $GITHUB_RUN_ID)] | .[0].headSha // empty")
+          if [ -z "$LAST" ]; then
+            echo "No prior successful Release PR run; falling back to github.event.before"
+            LAST='${{ github.event.before }}'
+          fi
+          # Floor the baseline at the latest release tag, as symforge does: a tag can exist while
+          # its own run failed, and the range must not reach back past it.
+          git fetch --tags --force --quiet
+          FLOOR=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_SHA" 2>/dev/null || true)
+          if [ -n "$FLOOR" ] && git cat-file -e "$LAST^{commit}" 2>/dev/null && ! git merge-base --is-ancestor "$FLOOR" "$LAST"; then
+            echo "::warning::Last successful Release PR SHA $LAST predates the latest release tag $FLOOR; validating from the tag instead."
+            LAST=$(git rev-parse "$FLOOR^{commit}")
+          fi
+          echo "Validating subjects in $LAST..$GITHUB_SHA (floor $FLOOR)"
+          python .github/scripts/conventional_commits.py check-push-range "$LAST" "$GITHUB_SHA"
+
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: .github/release-please-config.json
+          manifest-file: .github/.release-please-manifest.json
+
+      # Copied from symforge's release workflow: merge exactly the PR release-please returned,
+      # once it carries the pending label.
+      - name: Auto-merge release PR
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_PRS_JSON: ${{ steps.release.outputs.prs }}
+        run: |
+          set -euo pipefail
+          PR="$(python -I - <<'PY'
+          import json
+          import os
+
+          try:
+              pull_requests = json.loads(os.environ["RELEASE_PRS_JSON"])
+          except (KeyError, json.JSONDecodeError, TypeError) as error:
+              raise SystemExit("release-please did not return valid PR identity JSON") from error
+          if not isinstance(pull_requests, list) or len(pull_requests) != 1:
+              raise SystemExit("release-please did not return exactly one release PR")
+          number = pull_requests[0].get("number") if isinstance(pull_requests[0], dict) else None
+          if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+              raise SystemExit("release-please returned an invalid release PR number")
+          print(number)
+          PY
+          )"
+          if [[ ! "$PR" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::The release-please PR identity is malformed."
+            exit 1
+          fi
+
+          # Wait only for the exact action-returned PR's pending label.
+          status=1
+          for attempt in 1 2 3 4 5 6; do
+            sleep 10
+            PR_CONTEXT="$(gh pr view "$PR" --json number,state,baseRefName,headRefName,labels)"
+            if python -I - "$PR" "$PR_CONTEXT" <<'PY'
+          import json
+          import sys
+
+          number = int(sys.argv[1])
+          try:
+              pull_request = json.loads(sys.argv[2])
+          except (json.JSONDecodeError, TypeError) as error:
+              raise SystemExit(2) from error
+          if (
+              not isinstance(pull_request, dict)
+              or pull_request.get("number") != number
+              or pull_request.get("state") != "OPEN"
+              or pull_request.get("baseRefName") != "main"
+              or not isinstance(pull_request.get("headRefName"), str)
+              or not pull_request["headRefName"].startswith("release-please--branches--main")
+          ):
+              raise SystemExit(2)
+          labels = pull_request.get("labels")
+          if not isinstance(labels, list) or not all(isinstance(label, dict) for label in labels):
+              raise SystemExit(2)
+          raise SystemExit(
+              0
+              if sum(label.get("name") == "autorelease: pending" for label in labels) == 1
+              else 1
+          )
+          PY
+            then
+              status=0
+              break
+            else
+              status=$?
+            fi
+            if [[ "$status" -eq 2 ]]; then
+              echo "::error::The action-returned release PR has an unexpected identity or state."
+              exit 1
+            fi
+            echo "Attempt $attempt: exact release PR is not pending yet, retrying..."
+          done
+          if [[ "$status" -ne 0 ]]; then
+            echo "::error::The exact release PR never acquired its pending label."
+            exit 1
+          fi
+          echo "Auto-merging release PR #$PR"
+          gh pr merge "$PR" --merge --delete-branch
+          # The token-powered merge pushes to main, and that run's release-please step
+          # tags the merge commit and creates the GitHub release.

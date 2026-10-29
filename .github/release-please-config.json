@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "bbef8c7b9a2aeadc649c5fecfaf4eda71f1dd61b",
+  "include-component-in-tag": false,
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "package-name": "coding-supervisor",
+      "include-v-in-tag": true,
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        { "type": "toml", "path": "Cargo.toml", "jsonpath": "$.package.version" },
+        { "type": "toml", "path": "cli/Cargo.toml", "jsonpath": "$.package.version" },
+        { "type": "toml", "path": "adapters/claude-code/Cargo.toml", "jsonpath": "$.package.version" },
+        { "type": "toml", "path": "adapters/mcp/Cargo.toml", "jsonpath": "$.package.version" },
+        { "type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name=='coding-supervisor')].version" },
+        { "type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name=='supervisor')].version" },
+        { "type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name=='supervisor-claude-code')].version" },
+        { "type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name=='supervisor-mcp')].version" },
+        { "type": "json", "path": "npm/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "npm/package.json", "jsonpath": "$.optionalDependencies['coding-supervisor-linux-x64']" },
+        { "type": "json", "path": "npm/package.json", "jsonpath": "$.optionalDependencies['coding-supervisor-windows-x64']" },
+        { "type": "json", "path": "npm/platforms/linux-x64/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "npm/platforms/windows-x64/package.json", "jsonpath": "$.version" }
+      ]
+    }
+  }
+}
