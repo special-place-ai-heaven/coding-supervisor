@@ -212,3 +212,15 @@ Sections 1 to 10 above were written on 2026-10-28. Where they disagree with `CLA
 - G7. Claude Code: the hand-written shape of user-scope servers in `~/.claude.json` is not documented (use `claude mcp add --scope user`); no `--cwd` flag; under `-p` project `.mcp.json` servers and settings-file hooks load without a trust prompt unless `--bare`.
 - G8. Windows: the binary must resolve as `supervisor` on `PATH`, or each file must carry an absolute path (install writes the absolute path of the running binary); none of the five docs promises `.cmd` or `.bat` resolution for stdio MCP commands; not tested.
 - G9. Enterprise and managed layers of each harness that can override or disable all of the above were not read.
+
+## Phase B (2026-10-29)
+
+Four investigations, one isolated fixture each, committed as `202910e` (OMP), `a90c015` (Codex CLI), `d86d9c3` (Cursor), `544d94e` (Grok Build). Each results file declares its mode on its first lines; CLAUDE.md "Current truth" repeats them. What each still needs:
+
+- **Codex CLI**: a live-model run once the ChatGPT usage limit resets (2026-11-04 10:32); persisted trust needs a `[projects.'<fixture path>'] trust_level = "trusted"` entry in `~/.codex/config.toml` and hook trust through `/hooks`, both home changes not made. An `OPENAI_API_KEY` exists in the environment and was not used because it bills a different account.
+- **Cursor**: nothing measured; the weekly limit resets about 2026-10-31. Re-run commands are in `cursor-T3-RESULTS.md`; the first run with an empty home syncs account plugins for about seven minutes and starts their MCP servers. The marker skill under `.agents/` is hidden by `.git/info/exclude` and was committed with `git add -f`.
+- **Grok Build**: a live xAI session needs a sign-in; `GROK_HOME=<temp> grok login --device-code` keeps the credential out of the real home. Note `--trust` writes `trusted_folders.toml` for the whole repository root. Grok's own startup rewrote bookkeeping files under `~/.grok` at 11:02 (metadata, bundled docs, lock, search database, log); no config, trust, login or session folder was created there.
+- **OMP**: user-level MCP servers could not be switched off without a home change, so two sessions show them; OMP wrote its own logs, caches and session markers under `~/.omp`.
+- **Port clash**: the Codex and Grok stand-in models briefly shared port 18765; the affected Grok runs are kept under `captures/discarded-port-collision/` and were re-run.
+
+Open blockers only the owner can clear: GitHub Actions billing (CI and release never ran), Codex and Cursor quotas, Grok sign-in, trusting the Claude Code throwaway folder (`A-RESULTS.md` S3c). The throwaway at `C:/temp/sup-throwaway` and its transcripts under `~/.claude/projects/C--temp-sup-throwaway-proj/` are to be deleted or excluded by hand.
