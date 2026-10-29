@@ -1,0 +1,15 @@
+{
+  "default": {"_test": "probe: observe only", "stop_mode": "observe"},
+  "SK": {"_test": "skills: do .omp/skills and .agents/skills descriptions reach the model", "stop_mode": "observe"},
+  "T1": {"_test": "missing receipt: fake worker via task, tool_result annotate, session_stop block once", "task_result_mode": "annotate", "stop_mode": "block"},
+  "T2": {"_test": "missing receipt: tool_result replaces the task content", "task_result_mode": "replace", "stop_mode": "block"},
+  "T3": {"_test": "cited worker (blocking: true): handlers in the subagent session; task result carries the output; receipt with a cited check", "task_result_mode": "annotate", "stop_mode": "block"},
+  "T5": {"_test": "stale candidate: candidate.txt written after the receipt", "task_result_mode": "annotate", "stop_mode": "block"},
+  "T6": {"_test": "bypass: claim done with no tools", "stop_mode": "block"},
+  "T7": {"_test": "tool_call block of a write to out.txt", "block_out_txt": true, "stop_mode": "observe"},
+  "T7F": {"_test": "fail-closed: tool_call handler throws on write", "throw_tool_call": "write", "stop_mode": "observe"},
+  "T8": {"_test": "assistant_message replaces a completion claim; session_stop block once", "replace_final": true, "stop_mode": "block"},
+  "T9": {"_test": "session_stop explicit block repeated up to 10 times: is there a cap (first attempt; chair stopped claiming after one block)", "stop_mode": "block", "stop_block_max": 10},
+  "T9B": {"_test": "session_stop explicit block on every stop up to 10, regardless of claim, run with --no-tools", "stop_mode": "block", "stop_block_max": 10, "stop_block_always": true},
+  "T10": {"_test": "before_subagent_spawn block", "block_spawn": true, "stop_mode": "observe"}
+}

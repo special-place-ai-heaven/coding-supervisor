@@ -9,7 +9,7 @@ use crate::state::{candidate_json, obj, state_name};
 
 /// Facts from the gate that the payload does not carry.
 #[derive(Default)]
-pub(crate) struct Trace {
+pub struct Trace {
     pub task_id: Option<String>,
     pub candidate: Option<CandidateId>,
     pub state_before: Option<TaskState>,
@@ -141,7 +141,7 @@ pub fn header_summary(payload: &Value) -> Value {
     }
 }
 
-pub(crate) fn line(
+pub fn line(
     payload: &Value,
     state_location: &str,
     t: u64,
@@ -156,7 +156,7 @@ pub(crate) fn line(
         _ => reasons.first().cloned(),
     };
     let [recorded, rejected, unlinked] = receipts_from_reasons(reasons);
-    let accepted = event == "Stop"
+    let accepted = matches!(event, "Stop" | "mcp:task_complete")
         && trace.state_after == Some(TaskState::Completed)
         && trace.state_before != Some(TaskState::Completed);
     obj([

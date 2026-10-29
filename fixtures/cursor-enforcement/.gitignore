@@ -1,0 +1,2 @@
+# per-run test label written by hooks/run.ps1 and hooks/selftest.sh
+hooks/active-test.txt

@@ -1,0 +1,8 @@
+# The repository ignores .codex/ and .agents/ (root .gitignore, .git/info/exclude); this fixture's project layer and skill are evidence and are committed.
+!.codex/
+!.agents/
+# Scratch outputs and per-run logs stay local.
+out.txt
+*.last.txt
+*.jsonl.raw
+captures/*.hookstate.json

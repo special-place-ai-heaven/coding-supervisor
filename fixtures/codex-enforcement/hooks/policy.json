@@ -1,0 +1,13 @@
+{
+  "active": "P0",
+  "default": {"pre_deny_tools": [], "post_result_mode": "none", "subagent_block_once": false, "stop_mode": "block", "stop_cap": 10},
+  "P0": {"_test": "connectivity, hook trust, skill marker; no decisions except Stop on a claim"},
+  "T1": {"_test": "missing receipt: fake-worker, PostToolUse annotate on the result, Stop block", "post_result_mode": "annotate"},
+  "T2": {"_test": "missing receipt: fake-worker, PostToolUse decision block on the result, Stop block", "post_result_mode": "block"},
+  "T3": {"_test": "SubagentStop block once on fake-worker", "subagent_block_once": true},
+  "T4": {"_test": "T4a: stale-candidate attempt under workspace-write; the sandbox rejected the worker command and the patch"},
+  "T5": {"_test": "bypass: claim done with no tools"},
+  "T6": {"_test": "PreToolUse deny of a file write", "pre_deny_tools": ["apply_patch", "Bash"]},
+  "T7": {"_test": "Stop continuation cap probe: block every Stop, ignoring stop_hook_active, handler cap 10", "stop_mode": "always", "stop_cap": 10},
+  "T4b": {"_test": "T4b stale candidate: cited-worker receipt, then candidate.txt changes, Stop recomputes digest (danger-full-access)"}
+}

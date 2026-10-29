@@ -1,0 +1,13 @@
+# Overlay passed with --config for every fixture run: keeps the runs from
+# writing learned skills, memories or advisor notes into the user's OMP home.
+autolearn:
+  enabled: false
+  autoContinue: false
+memory:
+  backend: off
+advisor:
+  enabled: false
+prewalk:
+  enabled: false
+task:
+  prewalk: false

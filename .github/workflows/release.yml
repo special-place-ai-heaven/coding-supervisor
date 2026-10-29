@@ -1,0 +1,140 @@
+# Action versions chosen on 2026-10-29: actions/checkout@v7, Swatinem/rust-cache@v2,
+# actions/upload-artifact@v7, actions/download-artifact@v8, softprops/action-gh-release@v3.
+# The Rust toolchain is installed with rustup straight from rust-toolchain.toml.
+#
+# Tags are pushed by the owner only; the owner has set a tag ruleset on the
+# repository, so nobody else can create a v* tag and trigger a release.
+#
+# The x86_64 macOS build runs on macos-15-intel, not macos-13: GitHub retired the
+# macos-13 image in December 2025, and macos-latest is arm64 only.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The fresh runners export RUSTC_WRAPPER=sccache without sccache installed;
+  # an empty value turns the wrapper off.
+  RUSTC_WRAPPER: ""
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.best_effort }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Owner's rule (2026-10-29): Linux builds on the five self-hosted
+          # runners labelled fresh; Windows and macOS on GitHub-hosted runners
+          # (the repository is public). The x86_64 macOS runner label is
+          # unverified, so that entry is best effort and never blocks the release.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            best_effort: false
+          - target: x86_64-unknown-linux-gnu
+            os: [self-hosted, Linux, X64, fresh]
+            best_effort: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            best_effort: false
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            best_effort: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      # A fresh Linux runner may have no rustup; the Windows runner is expected
+      # to have it (and the MSVC build tools) already.
+      - name: Install rustup if missing, then the pinned Rust toolchain
+        run: |
+          if ! command -v rustup > /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+
+      # The build is native, so the runner must already be the target.
+      - name: Check the runner matches the target
+        run: |
+          rustc -vV
+          # grep without -q reads the whole input: with -q it closed the pipe
+          # early and rustc died of SIGPIPE under pipefail (exit 141 on macOS).
+          rustc -vV | grep -x "host: ${{ matrix.target }}" > /dev/null
+
+      - name: Build release binaries
+        run: cargo build --release --workspace
+
+      - name: Package binaries and checksum
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          ext=""
+          if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
+          name="coding-supervisor-${TAG}-${TARGET}"
+          mkdir -p "dist/$name"
+          for bin in supervisor supervisor-mcp supervisor-claude-code; do
+            cp "target/release/${bin}${ext}" "dist/$name/"
+          done
+          cd dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            archive="$name.zip"
+            7z a "$archive" "$name" > /dev/null
+          else
+            archive="$name.tar.gz"
+            tar -czf "$archive" "$name"
+          fi
+          rm -rf "$name"
+          if command -v sha256sum > /dev/null; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+          cat "$archive.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: [self-hosted, Linux, X64, fresh]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: Combine per-archive checksums into SHA256SUMS
+        working-directory: dist
+        run: |
+          cat ./*.sha256 > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true
+          # A tag with a hyphen (v0.1.0-rc1) is a pre-release.
+          prerelease: ${{ contains(github.ref_name, '-') }}

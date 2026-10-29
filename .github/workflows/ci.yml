@@ -1,0 +1,127 @@
+# Action versions chosen on 2026-10-29: actions/checkout@v7, Swatinem/rust-cache@v2.
+# The Rust toolchain is installed with rustup straight from rust-toolchain.toml,
+# so that file is the only place the version is written.
+#
+# Runner policy (owner, 2026-10-29): pushes run on the organisation's five
+# self-hosted Linux runners labelled fresh (one dynamic pool on the owner's
+# machine, about 72 GB RAM and 26 cores, so no job caps or serialisation);
+# organisation settings already restrict those runners to verified committers,
+# and the hosted ubuntu-latest job for pull requests is a second layer so a
+# fork's code never executes on a self-hosted machine; a hosted windows-latest
+# job runs for both, because the first user and the adapter's path handling
+# are Windows.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A new push cancels the superseded run of the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The fresh runners export RUSTC_WRAPPER=sccache without sccache installed;
+  # an empty value turns the wrapper off.
+  RUSTC_WRAPPER: ""
+
+jobs:
+  linux-fresh:
+    name: "Linux (self-hosted fresh): format, lint, test, core dependency check"
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, Linux, X64, fresh]
+    steps:
+      - uses: actions/checkout@v7
+
+      # A fresh runner may have no rustup at all; install it with no default
+      # toolchain, then let rustup read rust-toolchain.toml (1.99.1, rustfmt,
+      # clippy). dtolnay/rust-toolchain cannot read that file.
+      - name: Install rustup if missing, then the pinned Rust toolchain
+        run: |
+          if ! command -v rustup > /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint with warnings as errors
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      # The core crate must stay free of dependencies. cargo tree prints one
+      # line (the crate itself) when it has none.
+      - name: Check the core crate has no dependencies
+        run: |
+          lines=$(cargo tree -p coding-supervisor --edges normal,build,dev | wc -l)
+          if [ "$lines" -ne 1 ]; then
+            echo "::error::coding-supervisor must have no dependencies, but cargo tree printed $lines lines:"
+            cargo tree -p coding-supervisor --edges normal,build,dev
+            exit 1
+          fi
+
+  linux-hosted:
+    name: "Linux (hosted, pull requests): format, lint, test, core dependency check"
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint with warnings as errors
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Check the core crate has no dependencies
+        run: |
+          lines=$(cargo tree -p coding-supervisor --edges normal,build,dev | wc -l)
+          if [ "$lines" -ne 1 ]; then
+            echo "::error::coding-supervisor must have no dependencies, but cargo tree printed $lines lines:"
+            cargo tree -p coding-supervisor --edges normal,build,dev
+            exit 1
+          fi
+
+  windows-hosted:
+    name: "Windows (hosted): format, lint, test"
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint with warnings as errors
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace

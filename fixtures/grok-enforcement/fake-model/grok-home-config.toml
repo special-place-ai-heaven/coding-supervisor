@@ -1,0 +1,15 @@
+[cli]
+auto_update = false
+
+[models]
+default = "fake-chair"
+
+[model.fake-chair]
+model = "fake-chair"
+base_url = "http://127.0.0.1:18811/v1"
+api_key = "local-fixture-placeholder"
+api_backend = "chat_completions"
+context_window = 128000
+
+[marketplace]
+default_skills_installs_purged = true

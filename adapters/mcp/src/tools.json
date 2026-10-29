@@ -1,0 +1,93 @@
+[
+  {
+    "name": "task_start",
+    "description": "Start a task from a contract: write contract.json to the gate's state directory, create the task and move it to preparing. Refused when the state directory already holds a contract.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string"},
+        "goal": {"type": "string"},
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {"type": "string"},
+              "check": {"type": "string"},
+              "mandatory": {"type": "boolean"}
+            },
+            "required": ["id", "check", "mandatory"]
+          }
+        },
+        "forbidden_effects": {"type": "array", "items": {"type": "string"}, "description": "Declared only; the gate does not enforce it."},
+        "scope": {"type": "array", "items": {"type": "string"}, "description": "Path prefixes the candidate may change."},
+        "max_repair_rounds": {"type": "integer", "minimum": 0}
+      },
+      "required": ["id", "goal", "criteria", "forbidden_effects", "scope", "max_repair_rounds"]
+    }
+  },
+  {
+    "name": "candidate_observe",
+    "description": "Report the candidate under test; omit the identity to let the gate derive it from git. Without base_commit and dirty_digest the gate reads the project's git state the same way its hooks do, and takes the changed paths from git unless changed_paths is given. With them, the identity and changed_paths are caller-asserted. A new identity marks every earlier receipt stale. In state repairing this also ends the repair round and returns the task to verifying.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "base_commit": {"type": "string"},
+        "dirty_digest": {"type": "string"},
+        "changed_paths": {"type": "array", "items": {"type": "string"}},
+        "provenance": {"type": "string", "description": "Who observed the candidate; default git when derived, mcp-caller when given."}
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "receipt_record",
+    "description": "Record one check result for a criterion, bound to the current candidate. Caller-asserted: the server does not observe the command, and the receipt is stored and journaled as mcp-asserted.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "criterion": {"type": "string"},
+        "command": {"type": "string"},
+        "cwd": {"type": "string"},
+        "exit_code": {"type": ["integer", "null"]},
+        "output_ref": {"type": "string"},
+        "claim_supported": {"type": "boolean"}
+      },
+      "required": ["criterion", "command", "cwd", "exit_code", "output_ref", "claim_supported"]
+    }
+  },
+  {
+    "name": "finding_raise",
+    "description": "Raise an open finding against the current candidate. An open high or critical finding refuses acceptance.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string"},
+        "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+        "location": {"type": "string"},
+        "evidence_ref": {"type": "string"}
+      },
+      "required": ["id", "severity", "location", "evidence_ref"]
+    }
+  },
+  {
+    "name": "repair_request",
+    "description": "Spend one repair round and move the task to repairing. When the budget is already spent the task becomes budget_exhausted and the request is refused.",
+    "inputSchema": {"type": "object", "properties": {}}
+  },
+  {
+    "name": "accept_try",
+    "description": "Ask the gate to accept the current candidate: every mandatory criterion needs a current receipt with exit 0, every changed path must be in scope, and no high or critical finding may be open. On success the task is ready_for_review.",
+    "inputSchema": {"type": "object", "properties": {}}
+  },
+  {
+    "name": "task_complete",
+    "description": "Complete a task that is ready_for_review; the gate checks the evidence again first.",
+    "inputSchema": {"type": "object", "properties": {}}
+  },
+  {
+    "name": "task_state",
+    "description": "Return the checkpoint, the receipt status per criterion and the receipt claims the gate rejected. No transition.",
+    "inputSchema": {"type": "object", "properties": {}}
+  }
+]

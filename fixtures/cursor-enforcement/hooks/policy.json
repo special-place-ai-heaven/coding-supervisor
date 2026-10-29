@@ -1,0 +1,53 @@
+{
+ "default": {
+  "_test": "fallback",
+  "stop_mode": "followup"
+ },
+ "probe": {
+  "_test": "connectivity, trust and approval behaviour",
+  "stop_mode": "followup"
+ },
+ "skills": {
+  "_test": "are .cursor/skills and .agents/skills read",
+  "stop_mode": "observe"
+ },
+ "deny": {
+  "_test": "point 1: preToolUse deny Write, beforeShellExecution deny echo",
+  "pre_deny_tools": [
+   "Write",
+   "Edit",
+   "StrReplace",
+   "Delete"
+  ],
+  "shell_deny_pattern": "echo",
+  "stop_mode": "observe"
+ },
+ "missing": {
+  "_test": "missing receipt: fake worker PASS with CHECKS RUN 0",
+  "post_task_annotate": true,
+  "stop_mode": "followup"
+ },
+ "subfollow": {
+  "_test": "subagentStop followup once on unsupported handback",
+  "subagent_followup_once": true,
+  "stop_mode": "observe"
+ },
+ "cited": {
+  "_test": "control: cited worker, receipt supported and fresh, gate state ignored",
+  "ignore_gate_state": true,
+  "stop_mode": "followup"
+ },
+ "stale": {
+  "_test": "stale candidate: cited worker, then candidate.txt changes",
+  "ignore_gate_state": true,
+  "stop_mode": "followup"
+ },
+ "bypass": {
+  "_test": "bypass: claim done with no tools",
+  "stop_mode": "followup"
+ },
+ "loopcap": {
+  "_test": "stop followup every time to observe loop_count and the default cap",
+  "stop_mode": "always"
+ }
+}

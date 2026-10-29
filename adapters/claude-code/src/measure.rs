@@ -73,7 +73,12 @@ pub struct Stats {
     pub refusals: u64,
     pub categories: BTreeMap<&'static str, u64>,
     pub tamper_refusals: u64,
+    /// Acceptances decided at a hook (Stop, SubagentStop).
     pub accepted: u64,
+    /// `accepted: true` on an `mcp:*` line: the advisory server's own answer, not enforced.
+    pub accepted_mcp: u64,
+    /// gate-v1 lines without a session id: the MCP tool server writes no session.
+    pub no_session_lines: u64,
     pub usage_lines: u64,
     pub total_tokens: u64,
     /// Byte-identical lines seen before in this source (overlapping journal snapshots).
@@ -98,7 +103,8 @@ enum Seen {
 struct Observation<'a> {
     source: &'static str,
     event: &'a str,
-    session: String,
+    /// `None` for a gate-v1 line without a session id.
+    session: Option<String>,
     agent_type: Option<&'a str>,
     kind: &'static str,
     text: Option<String>,
@@ -125,7 +131,8 @@ fn strings(v: Option<&Value>) -> Vec<String> {
 }
 
 fn observe<'a>(v: &'a Value, file: &str) -> Option<Observation<'a>> {
-    let session = |id: Option<&str>| id.map_or_else(|| file.to_owned(), str::to_owned);
+    // Older shapes fall back to the file name, which stands for one session there.
+    let session = |id: Option<&str>| Some(id.map_or_else(|| file.to_owned(), str::to_owned));
     if v.get("v").and_then(Value::as_u64) == Some(1) {
         let decision = v.get("decision");
         let header = match v.get("header").and_then(|h| s(h, "verdict")) {
@@ -151,7 +158,7 @@ fn observe<'a>(v: &'a Value, file: &str) -> Option<Observation<'a>> {
         return Some(Observation {
             source: "gate-v1",
             event: s(v, "event").unwrap_or_default(),
-            session: session(s(v, "session_id")),
+            session: s(v, "session_id").map(str::to_owned),
             agent_type: s(v, "agent_type"),
             kind,
             text: decision.and_then(|d| s(d, "text")).map(str::to_owned),
@@ -208,7 +215,7 @@ fn observe<'a>(v: &'a Value, file: &str) -> Option<Observation<'a>> {
     Some(Observation {
         source: "gate-legacy",
         event,
-        session: file.to_owned(),
+        session: Some(file.to_owned()),
         agent_type: None,
         kind,
         text,
@@ -222,7 +229,12 @@ fn observe<'a>(v: &'a Value, file: &str) -> Option<Observation<'a>> {
 
 fn add(stats: &mut Stats, o: &Observation) {
     stats.lines += 1;
-    stats.sessions.insert(o.session.clone());
+    match &o.session {
+        Some(session) => {
+            stats.sessions.insert(session.clone());
+        }
+        None => stats.no_session_lines += 1,
+    }
     let [recorded, rejected, unlinked] = o.receipts.map(|n| n as u64);
     if o.event == "SubagentStop" {
         stats.dispatches += 1;
@@ -273,7 +285,11 @@ fn add(stats: &mut Stats, o: &Observation) {
         }
     }
     if o.accepted {
-        stats.accepted += 1;
+        if o.event.starts_with("mcp:") {
+            stats.accepted_mcp += 1;
+        } else if matches!(o.event, "Stop" | "SubagentStop") {
+            stats.accepted += 1;
+        }
     }
     if let Some(tokens) = o.tokens {
         stats.usage_lines += 1;
@@ -373,6 +389,9 @@ impl Report {
         let mut rows = vec![
             row("lines", &|s| s.lines.to_string()),
             row("sessions", &|s| s.sessions.len().to_string()),
+            row("tool-server lines (no session)", &|s| {
+                s.no_session_lines.to_string()
+            }),
             row("judge dispatches (SubagentStop)", &|s| {
                 s.dispatches.to_string()
             }),
@@ -418,6 +437,9 @@ impl Report {
         }));
         rows.push(row("accepted tasks", &|s| {
             frac(s.accepted, s.sessions.len() as u64)
+        }));
+        rows.push(row("accepted via MCP (advisory)", &|s| {
+            s.accepted_mcp.to_string()
         }));
         rows.push(row("worker tokens (final request only)", &tokens_cell));
         rows
@@ -466,6 +488,7 @@ impl Report {
                 let value = obj([
                     ("lines", st.lines.into()),
                     ("sessions", st.sessions.len().into()),
+                    ("tool_server_lines_no_session", st.no_session_lines.into()),
                     ("dispatches", st.dispatches.into()),
                     ("dispatches_by_agent_type", Value::Object(by_agent_type)),
                     ("compliant_headers", st.headers.into()),
@@ -483,6 +506,7 @@ impl Report {
                     ("refusals_by_category", Value::Object(categories)),
                     ("tamper_refusals", st.tamper_refusals.into()),
                     ("accepted_tasks", st.accepted.into()),
+                    ("accepted_via_mcp_advisory", st.accepted_mcp.into()),
                     ("usage_lines", st.usage_lines.into()),
                     ("duplicates_dropped", st.duplicates_dropped.into()),
                     (

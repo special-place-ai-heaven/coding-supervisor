@@ -1,0 +1,3 @@
+[mcp_servers.supervisor]
+command = "C:/Target/coding-supervisor/main/target/debug/supervisor.exe"
+args = ["mcp", "--project", "C:/temp/sup-throwaway-codex/proj"]

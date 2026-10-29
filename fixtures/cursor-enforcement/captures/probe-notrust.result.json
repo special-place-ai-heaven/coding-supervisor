@@ -1,0 +1,18 @@
+﻿node.exe : 
+At C:\Users\rakovnik\AppData\Local\cursor-agent\cursor-agent.ps1:65 char:1
++ & "$nodePath" "$scriptPath\versions\$versionName\index.js" $args
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+ÔÜá Workspace Trust Required
+
+  Cursor Agent can execute code and access files in this directory.
+  Do you trust the contents of this directory?
+
+    E:\project\coding-supervisor\fixtures\cursor-enforcement
+
+  To proceed, you can either:
+    ÔÇó Run 'agent' interactively to decide
+    ÔÇó Pass --trust, --yolo, or -f if you trust this directory
+

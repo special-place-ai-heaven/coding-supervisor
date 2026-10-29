@@ -250,3 +250,46 @@ fn unreadable_paths_are_listed_and_skipped() {
     assert_eq!(report.unreadable.len(), 1);
     assert!(report.files_read.is_empty());
 }
+
+#[test]
+fn mcp_lines_count_apart_from_sessions_and_hook_acceptances() {
+    let d = dir("mcp");
+    let mcp = |event: &str, extra: Value| {
+        let mut line = v1(event, extra);
+        line["session_id"] = Value::Null;
+        line["prompt_id"] = Value::Null;
+        line["agent_id"] = Value::Null;
+        line
+    };
+    write(
+        &d.0.join("events.jsonl"),
+        &[
+            mcp("mcp:task_start", json!({})),
+            mcp("mcp:accept_try", json!({"gate_state": "ready_for_review"})),
+            mcp(
+                "mcp:task_complete",
+                json!({"accepted": true, "gate_state": "completed"}),
+            ),
+            v1(
+                "Stop",
+                json!({"decision": {"kind": "block", "text": "GATE refuses completion (refusal 1 of 3, harness cap 8): state completed; missing C2; record the check with CHECK lines or report the task as not complete."}}),
+            ),
+        ],
+    );
+    let report = collect(std::slice::from_ref(&d.0));
+    let v1 = &report.sources["gate-v1"];
+    assert_eq!(v1.lines, 4);
+    assert_eq!(v1.sessions.len(), 1);
+    assert_eq!(v1.no_session_lines, 3);
+    assert_eq!(v1.accepted, 0);
+    assert_eq!(v1.accepted_mcp, 1);
+    let md = report.markdown();
+    assert!(md.contains("| gate-derived sessions | 1 |"), "{md}");
+    assert!(md.contains("| gate-derived tool-server lines (no session) | 3 |"));
+    assert!(md.contains("| gate-derived accepted tasks | 0/1 |"));
+    assert!(md.contains("| gate-derived accepted via MCP (advisory) | 1 |"));
+    let json = &report.to_json()["sources"]["gate-v1"];
+    assert_eq!(json["accepted_tasks"], 0);
+    assert_eq!(json["accepted_via_mcp_advisory"], 1);
+    assert_eq!(json["tool_server_lines_no_session"], 3);
+}

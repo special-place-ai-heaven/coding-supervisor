@@ -1,0 +1,3 @@
+# Raw run output from the harness (stdout/stderr dumps); events and receipts are committed.
+captures/*.log
+.symforge/
