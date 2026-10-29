@@ -352,7 +352,7 @@ License: MIT.
 | ✅ | Each run record carries the files' fingerprint at the run, so a check that ran before the last edit no longer counts | gap 2 |
 | ✅ | No header needed: the gate picks the checks from the agent's own runs, and the latest run on the current files decides | derived receipts |
 | ✅ | Levels off, lite, full, ultra, and `supervisor status` | CLI |
-| 🚧 | No setup per project: contract inferred from the repo's declared checks, a new task per session, required checks shown at session start | autonomous gate, phase 4 |
+| ✅ | No setup per project: contract inferred from the repo's declared checks, a new task per session, required checks shown at session start (Claude Code sends the session-start event to the gate through the plugin, phase 5) | autonomous gate, phase 4 |
 | 🚧 | Claude Code plugin with `/supervisor <level>` and `/supervisor status` | autonomous gate, phase 5 |
 | 💭 | Enforcement on Codex, Cursor, OMP and Grok; today they have no hook the gate can block from | per-harness adapters |
 | 💭 | Changes outside the project folder, for example an installed tool the fix edits, observed as part of the candidate | extra observed roots |
@@ -360,4 +360,4 @@ License: MIT.
 | 💭 | The rule that keeps hook-linked receipts after an MCP completion moves into the core, or is deleted | adapter rule from `fa80d3c` |
 | 💭 | Evidence that the gate improves verified work per token; two real tasks so far, too few to claim it | measurement |
 
-The 🚧 rows (phases 4 and 5) are being built on the branch `feat/autonomous-gate`. The ✅ rows for gap 2, derived receipts and levels are also on that branch so far, and reach npm with the next release.
+The 🚧 row (phase 5) is being built on the branch `feat/autonomous-gate`. The ✅ rows for gap 2, derived receipts, levels and no setup per project are also on that branch so far, and reach npm with the next release.

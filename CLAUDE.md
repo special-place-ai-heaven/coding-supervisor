@@ -57,7 +57,14 @@ Out of scope for the first slice: a standalone loop engine, agent roster managem
   - Each `runs.jsonl` record carries the candidate observed at the run, and a CHECK line links only to a run on the current candidate.
   - A completion claim with no header is judged on derived receipts: per criterion, the latest run by that agent of a contract command on the current candidate, which must have exited 0. A refusal names what to run.
   - Levels `off|lite|full|ultra` (`supervisor level`, per-project beats global, default `full`) and `supervisor status`.
-  - A session whose mandatory check fails on the untouched tree runs at `lite`.
+  - A mandatory check that fails on the untouched tree at session start is recorded. The session keeps its level, a refusal naming that check says it already failed before the changes, and `supervisor status` lists it (owner's ruling).
+  - The level files, and `supervisor level <value>` run from an agent's shell, are gate state: the PreToolUse guard denies them.
+  - No setup per project:
+    - At `SessionStart` in a git repo with no contract, the hook writes an inferred contract (`"inferred": true`) from `Cargo.toml`, `package.json` scripts `lint`/`test` or `pyproject.toml`. `supervisor init` replaces it.
+    - No declared checks, or not a git repo: dormant, nothing written.
+    - Each session (`session_id`) gets its own task; workers stay in the parent's.
+    - SessionStart injects at most two lines naming the required commands.
+    - `supervisor install` does not write a `SessionStart` hook (doing so would change original install assertions), so this needs the plugin.
   - Not run live in Claude Code.
 - Jev routing: live in advisory mode on this machine; persona abstention rate 74 percent over 4,375 receipts; the cause is **unmeasured**. A roster correction (epoch 2) is deferred until the running brief-after cohort is measured.
 - Known failing test in the Jev engine suite: `test_harnesses.py:349`, a stale pinned skill description unrelated to this project. The engine's full suite has not been run.

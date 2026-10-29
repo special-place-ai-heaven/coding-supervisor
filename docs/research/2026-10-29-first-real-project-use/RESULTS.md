@@ -334,3 +334,67 @@ Open:
 - The `sessions` map is never pruned (`shortcut:`).
 - Ruling fix: a passing run that already backs a stored receipt still satisfies a later failing run on the same tree (phase 4 closes it).
 - Not run live in Claude Code.
+
+## Autonomous gate, phase 4: no setup per project
+
+Branch `feat/autonomous-gate`, rebased onto main `8c2b77a` (README status table) with no conflicts. `cargo test --workspace` after the rebase passed 158 (`job_01a1883601927259b01698e471dc372a`). Commits:
+
+| Commit | Change | CI |
+|---|---|---|
+| `a85a656` fix | A later failing run outranks a stored passing receipt on the same tree (owner's latest-run ruling, closing the stored-receipt gap) | run 40898887938, success |
+| `23eb086` fix | The global level file, and `supervisor level <off\|lite\|full\|ultra>` run from Bash, PowerShell or Terminal Commander, are gate state; the PreToolUse guard denies them. Reading the level and `supervisor status` stay allowed. | run 40898887938, success |
+| `96cc624` fix, `c4dabf8` docs | Owner's ruling: no demotion to lite on a baseline failure (see the phase 3 section) | run 40899255020, success |
+| `477376d` feat | Inferred contract, a task per session, SessionStart context | run 40900299450, success (Linux fresh and hosted Windows) |
+
+Baseline note (exact):
+
+```
+GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: exited 101 on your latest run (this check already failed before your changes); or report the task as not complete.
+```
+
+The inferred contract for a Cargo project:
+- `id`: `inferred-<dir>`, with `"inferred": true`.
+- Criteria:
+  - C1: `cargo clippy --all-targets -- -D warnings`;
+  - C2: `cargo test`;
+  - C3: `cargo test --workspace` with `"tier": "full"`.
+- `package.json` adds `npm run lint` and `npm test` for the scripts that exist. `pyproject.toml` adds `pytest`.
+- `scope` is `[""]`: the core reads an empty list as nothing in scope, and an empty prefix matches every path.
+- `supervisor init` replaces an inferred contract (never a hand-written one) and sets its `gate.json` aside as `gate.json.inferred`.
+- No declared checks, or not a git repository: dormant, and the state root is untouched (tested byte for byte).
+
+SessionStart context at `full` (at `ultra` the first line also names `cargo test --workspace`; nothing when dormant or off):
+
+```
+GATE (full): before saying done, run with exit 0 after your last change: `cargo clippy --all-targets -- -D warnings`, `cargo test`.
+The gate reads your runs; no header or tool call is needed.
+```
+
+A task per session:
+- `gate.json` records its owning `session_id`, and the chain covers it.
+- The chain is verified before anything else, so a hand-edited gate is refused and never rolled over.
+- A verified gate owned by another session is replaced by a fresh task.
+- Workers' SubagentStop payloads carry the parent's `session_id`, so they stay in the parent's task.
+- `events.jsonl` and `runs.jsonl` are append-only, so earlier tasks' lines are kept (tested).
+
+| Check | Job or run | Exit | Evidence |
+|---|---|---|---|
+| `cargo test --workspace` | `job_01a1883d48ef7036807505058942a53a` | 0 | 165 passed (155 before the fixes; no original assertion edited) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a1883d030476beb6a6374fac01784e` | 0 | no warnings (before a comment-only rewrap; CI reran clippy on the final head) |
+| `cargo fmt --all -- --check` | `job_01a1883d41a17446b471d4f4846fde87` | 0 | no diff |
+| Branch CI on `477376d` | run 40900299450 | success | Linux fresh and hosted Windows |
+
+Phase 3 tests that changed under the no-demotion ruling, both added on this branch:
+- The degraded-session test is replaced by `a_baseline_failure_fixed_in_the_session_is_accepted_at_full` and `a_baseline_failure_never_fixed_is_refused_with_the_note_until_the_release`.
+- The status test's `degraded:` line became `baseline failures: none (no gate state yet)`.
+
+Not landed:
+- `supervisor install` still writes six hook events, without `SessionStart`, and its PreToolUse matcher has no `MultiEdit`. Adding either would change an original assertion in `cli/tests/install.rs` (`claude_settings_keep_foreign_hooks_and_permissions_and_gain_the_fixture_hooks`, lines 193 and 202, which compare against the proven fixture). The plugin (phase 5) carries both. Until then, an installed project never sees SessionStart, so it gets no inference and no context lines.
+
+Open:
+- The baseline note is added only to derived "run `<cmd>`" items, not to refusals of a written header.
+- A failing run without an observed exit code cannot outrank a stored pass.
+- Two concurrent sessions on one project take the task from each other (`shortcut:`).
+- `runs.jsonl` is shared across sessions, so a run from an earlier session on the identical tree counts.
+- A git project with declared checks and no contract pays a second git observation per hook call.
+- Not run live in Claude Code.
