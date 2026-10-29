@@ -982,8 +982,28 @@ impl Session {
                         && Some(&r.candidate) == current
                 })
                 .is_some_and(|r| r.exit_code == Some(0));
-            if !c.mandatory || held {
+            if !c.mandatory {
                 continue;
+            }
+            if held {
+                // A stored pass on this tree yields to a later failing run of the same command:
+                // cite that run, so the core records the failure and refuses.
+                match latest {
+                    Some(r) if !used.contains(r.reference.as_str()) => {
+                        if let Some(n) = r.exit_code.filter(|n| *n != 0) {
+                            used.insert(&r.reference);
+                            checks.push(CheckLine {
+                                criterion: c.id.0.clone(),
+                                command: r.command.clone(),
+                                cwd: None,
+                                exit_code: n,
+                            });
+                        } else {
+                            continue;
+                        }
+                    }
+                    _ => continue,
+                }
             }
             let first = c.command.first().map_or("", |s| s.trim());
             let why = match latest {

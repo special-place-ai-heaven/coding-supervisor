@@ -1062,6 +1062,45 @@ fn derived_pass_then_fail_on_the_same_tree_is_refused() {
 }
 
 #[test]
+fn derived_pass_stored_then_fail_on_the_same_tree_is_refused() {
+    let d = dir("derived-latest-held");
+    let mut two = one_command();
+    two["criteria"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id": "C2", "check": "lint", "mandatory": true, "command": "cargo clippy"}));
+    let mut env = env(&d, Some(two), fake("one", &["src/lib.rs"]));
+    // A pass, then a refusal for another reason that stores the pass as a receipt.
+    for agent in ["w1", "main"] {
+        handle(&bash(agent, "cargo test", 0), &mut env);
+    }
+    let r = handle(&handback("w1", "Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE: handback refused (refusal 1 of 3): missing C2. run `cargo clippy`: never ran."
+    );
+    let r = handle(&stop("Done.", false), &mut env);
+    assert!(blocked(&r).contains("missing C2"), "{r:?}");
+    assert_eq!(gate(&env)["receipts"].as_array().unwrap().len(), 2);
+    // Then a failure of the same command on the same tree, and the other check passes.
+    for agent in ["w1", "main"] {
+        handle(&bash(agent, "cargo test", 1), &mut env);
+        handle(&bash(agent, "cargo clippy", 0), &mut env);
+    }
+    let r = handle(&handback("w1", "Done.", true), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE: handback refused (refusal 2 of 3): failing C1 exit 1. run `cargo test`: exited 1 on your latest run."
+    );
+    let r = handle(&stop("Done.", true), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE refuses completion (refusal 2 of 3, harness cap 8): state verifying; failing C1 exit 1; run `cargo test`: exited 1 on your latest run; or report the task as not complete."
+    );
+    assert_eq!(gate(&env)["state"], "verifying");
+}
+
+#[test]
 fn derived_refusals_release_after_three_and_no_claim_keeps_the_header_refusal() {
     let d = dir("derived-cap");
     let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
