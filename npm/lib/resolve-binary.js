@@ -3,6 +3,11 @@
 const fs = require("fs");
 const path = require("path");
 
+// The launcher's own version: a reinstall hint names it, never @latest, so a fix reinstalls the
+// version that is running rather than whatever latest points at.
+const { version: LAUNCHER_VERSION } = require("../package.json");
+const REINSTALL = `npm install -g --prefer-online coding-supervisor@${LAUNCHER_VERSION}`;
+
 const SUPPORTED_TARGETS = Object.freeze([
   Object.freeze({
     platform: "linux",
@@ -135,14 +140,14 @@ function formatResolveError(result, opts) {
         `  Give ${platform} its own npm prefix, then reinstall:\n` +
         `    npm config set prefix "$HOME/.npm-global"\n` +
         `    export PATH="$HOME/.npm-global/bin:$PATH"   # ahead of any /mnt/* entries; add to ~/.profile to persist\n` +
-        `    hash -r && npm install -g coding-supervisor@latest\n` +
+        `    hash -r && ${REINSTALL}\n` +
         `  Verify with: which supervisor   # expect $HOME/.npm-global/bin/supervisor, not /mnt/...\n` +
         `  Then rerun: supervisor install --harness <name> --project <dir>`
       );
     }
     return (
       `supervisor: platform package ${result.platformPackage} not installed or missing its binary. ` +
-      "Reinstall with optional dependencies enabled: npm install -g coding-supervisor@latest"
+      `Reinstall with optional dependencies enabled: ${REINSTALL}`
     );
   }
   if (result.reason === "invalid_binary") {

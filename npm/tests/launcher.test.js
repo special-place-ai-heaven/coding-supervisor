@@ -11,6 +11,7 @@ const {
   formatResolveError,
   resolveBinary,
 } = require("../lib/resolve-binary.js");
+const { version } = require("../package.json");
 
 function withPlatformPackage(t, packageName, binaryName) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "supervisor-platform-"));
@@ -95,6 +96,8 @@ test("formatResolveError diagnoses the WSL Windows-prefix trap for a /mnt launch
   assert.match(message, /shared Windows ~\/\.npmrc 'prefix='/);
   assert.match(message, /npm config set prefix "\$HOME\/\.npm-global"/);
   assert.match(message, /supervisor install --harness/);
+  assert.ok(message.includes(`--prefer-online coding-supervisor@${version}`), message);
+  assert.doesNotMatch(message, /@latest/);
 });
 
 test("formatResolveError keeps the generic missing-package message off Windows mounts", () => {
@@ -115,6 +118,12 @@ test("formatResolveError keeps the generic missing-package message off Windows m
 
   assert.match(message, /not installed or missing its binary/);
   assert.doesNotMatch(message, /Windows drive mount/);
+  // The launcher's own version, revalidated against the registry; never @latest.
+  assert.ok(
+    message.includes(`npm install -g --prefer-online coding-supervisor@${version}`),
+    message
+  );
+  assert.doesNotMatch(message, /@latest/);
 });
 
 test("formatResolveError never shows the WSL hint to a real Windows host", () => {
