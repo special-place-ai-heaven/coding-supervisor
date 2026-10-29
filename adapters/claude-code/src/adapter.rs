@@ -11,7 +11,7 @@ use coding_supervisor::{
 use serde_json::Value;
 
 use crate::candidate::{CandidateProvider, GitCandidate};
-use crate::header::{self, Verdict};
+use crate::header::{self, Header, Verdict};
 use crate::journal::{self, Trace};
 use crate::state::{self, Gate, Stored, obj, state_name};
 use crate::{claim, guard, location};
@@ -185,7 +185,7 @@ fn process(
     let mut session = Session::open(contract, stored, observed, false, reasons)?;
     let decision = match event {
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
-        "Stop" => session.stop(payload, reasons),
+        "Stop" => session.stop(payload, &env.state_dir, agent, now, reasons)?,
         "PreToolUse" => session.pre_tool_use(payload),
         "PostToolUse" if text(payload, "tool_name") == Some("Agent") => {
             session.agent_result(payload)
@@ -461,8 +461,74 @@ impl Session {
                 "GATE: handback refused: no header. Start the final message with the line VERDICT: PASS, FAIL or UNVERIFIED, then CHECKS RUN: <n>, then one line per check run in this session: CHECK <id> | <command> | exit <code>.".to_owned(),
             ));
         };
+        let cwd = text(payload, "cwd").unwrap_or_default();
+        let (mut problems, mut instructions) =
+            self.link_checks(&header, dir, cwd, agent, now, reasons)?;
+        if header.verdict != Verdict::Pass {
+            reasons.push("verdict is not PASS; journaled, not judged".to_owned());
+            return Ok(Decision::None);
+        }
+        self.note_asserted(reasons);
+        let completed = self.task.state() == TaskState::Completed;
+        let accepted = if completed {
+            self.observed_evidence()
+        } else {
+            self.task.try_accept()
+        };
+        match accepted {
+            Ok(()) if completed => reasons.push("completed: observed receipts current".to_owned()),
+            Ok(()) => reasons.push("accepted: ready_for_review".to_owned()),
+            Err(
+                e @ (GateError::MissingReceipt(_)
+                | GateError::StaleReceipt(_)
+                | GateError::FailingReceipt { .. }
+                | GateError::OutOfScope(_)),
+            ) => problems.push(render(&e)),
+            Err(e) => reasons.push(format!("try_accept: {}", render(&e))),
+        }
+        if problems.is_empty() {
+            return Ok(Decision::None);
+        }
+        reasons.extend(problems.iter().cloned());
+        if active && prior >= 3 {
+            // Silent release: additionalContext on SubagentStop keeps the worker running
+            // (measured in the L1 live run), so the cap must answer with nothing. The
+            // chair learns the outcome from the PostToolUse annotation.
+            reasons.push(format!(
+                "handback recorded as UNVERIFIED after 3 refusals: {}",
+                problems.join("; ")
+            ));
+            return Ok(Decision::None);
+        }
+        let k = prior + 1;
+        self.gate.handback_refusals.insert(agent.to_owned(), k);
+        if instructions.is_empty() {
+            instructions.push(
+                "Run the check in this session and cite it as CHECK <id> | <command> | exit <code>."
+                    .to_owned(),
+            );
+        }
+        Ok(Decision::Block(format!(
+            "GATE: handback refused (refusal {k} of 3): {}. {}",
+            problems.join("; "),
+            instructions.join(" ")
+        )))
+    }
+
+    /// Link each CHECK line to a journaled run by `agent` with the same command and exit code,
+    /// and record it as a receipt. Shared by SubagentStop (a worker) and Stop (the chair, agent
+    /// `main`). Returns the problems for a refusal and, per CHECK line citing a command the
+    /// contract does not name, the instruction to run the right one.
+    fn link_checks(
+        &mut self,
+        header: &Header,
+        dir: &Path,
+        cwd: &str,
+        agent: &str,
+        now: u64,
+        reasons: &mut Vec<String>,
+    ) -> Result<(Vec<String>, Vec<String>), String> {
         let mut problems = Vec::new();
-        // What to run instead, one per CHECK line that cites a command the contract does not name.
         let mut instructions = Vec::new();
         if !header.consistent {
             problems.push(format!(
@@ -478,7 +544,6 @@ impl Session {
             .iter()
             .map(|r| r.output_ref.clone())
             .collect();
-        let cwd = text(payload, "cwd").unwrap_or_default();
         for line in &header.checks {
             let cited = format!(
                 "CHECK {} | {} | exit {}",
@@ -540,6 +605,23 @@ impl Session {
                 started_at: at,
                 finished_at: at,
             };
+            // The core takes no receipt once the task is completed (a chair may complete it
+            // through MCP first). Keep a hook-linked one in gate.json, where
+            // `observed_evidence` reads it; anything else is rejected as the core would.
+            if self.task.state() == TaskState::Completed {
+                if run.is_some() && self.criteria.iter().any(|c| c.id == receipt.criterion) {
+                    reasons.push(format!(
+                        "recorded {cited} (task completed; held as observed evidence)"
+                    ));
+                    self.gate.receipts.push(receipt);
+                } else {
+                    reasons.push(format!(
+                        "rejected {cited}: {}",
+                        render(&GateError::ReceiptUnsupported)
+                    ));
+                }
+                continue;
+            }
             match self.task.record_receipt(receipt.clone()) {
                 Ok(()) => {
                     reasons.push(format!("recorded {cited}"));
@@ -548,58 +630,17 @@ impl Session {
                 Err(e) => reasons.push(format!("rejected {cited}: {}", render(&e))),
             }
         }
-        if header.verdict != Verdict::Pass {
-            reasons.push("verdict is not PASS; journaled, not judged".to_owned());
-            return Ok(Decision::None);
-        }
-        self.note_asserted(reasons);
-        let completed = self.task.state() == TaskState::Completed;
-        let accepted = if completed {
-            self.observed_evidence()
-        } else {
-            self.task.try_accept()
-        };
-        match accepted {
-            Ok(()) if completed => reasons.push("completed: observed receipts current".to_owned()),
-            Ok(()) => reasons.push("accepted: ready_for_review".to_owned()),
-            Err(
-                e @ (GateError::MissingReceipt(_)
-                | GateError::StaleReceipt(_)
-                | GateError::FailingReceipt { .. }
-                | GateError::OutOfScope(_)),
-            ) => problems.push(render(&e)),
-            Err(e) => reasons.push(format!("try_accept: {}", render(&e))),
-        }
-        if problems.is_empty() {
-            return Ok(Decision::None);
-        }
-        reasons.extend(problems.iter().cloned());
-        if active && prior >= 3 {
-            // Silent release: additionalContext on SubagentStop keeps the worker running
-            // (measured in the L1 live run), so the cap must answer with nothing. The
-            // chair learns the outcome from the PostToolUse annotation.
-            reasons.push(format!(
-                "handback recorded as UNVERIFIED after 3 refusals: {}",
-                problems.join("; ")
-            ));
-            return Ok(Decision::None);
-        }
-        let k = prior + 1;
-        self.gate.handback_refusals.insert(agent.to_owned(), k);
-        if instructions.is_empty() {
-            instructions.push(
-                "Run the check in this session and cite it as CHECK <id> | <command> | exit <code>."
-                    .to_owned(),
-            );
-        }
-        Ok(Decision::Block(format!(
-            "GATE: handback refused (refusal {k} of 3): {}. {}",
-            problems.join("; "),
-            instructions.join(" ")
-        )))
+        Ok((problems, instructions))
     }
 
-    fn stop(&mut self, payload: &Value, reasons: &mut Vec<String>) -> Decision {
+    fn stop(
+        &mut self,
+        payload: &Value,
+        dir: &Path,
+        agent: &str,
+        now: u64,
+        reasons: &mut Vec<String>,
+    ) -> Result<Decision, String> {
         let message = text(payload, "last_assistant_message").unwrap_or_default();
         let active = payload
             .get("stop_hook_active")
@@ -607,33 +648,47 @@ impl Session {
             .unwrap_or(false);
         if !claim::claims_completion(message) {
             reasons.push("no completion claim".to_owned());
-            return Decision::None;
+            return Ok(Decision::None);
         }
+        // A chair working alone cites its own runs the way a worker does.
+        let (problems, instructions) = match header::parse(message) {
+            Some(header) => {
+                let cwd = text(payload, "cwd").unwrap_or_default();
+                self.link_checks(&header, dir, cwd, agent, now, reasons)?
+            }
+            None => (Vec::new(), Vec::new()),
+        };
         self.note_asserted(reasons);
-        let result = match self.task.state() {
-            TaskState::Completed => self.observed_evidence(),
-            TaskState::ReadyForReview => self.task.complete(),
-            _ => self.task.try_accept().and_then(|()| self.task.complete()),
+        let result = if problems.is_empty() {
+            match self.task.state() {
+                TaskState::Completed => self.observed_evidence(),
+                TaskState::ReadyForReview => self.task.complete(),
+                _ => self.task.try_accept().and_then(|()| self.task.complete()),
+            }
+            .map_err(|e| render(&e))
+        } else {
+            // An unlinked CHECK line refuses before any acceptance is tried.
+            Err(problems.join("; "))
         };
         let state = state_name(self.task.state());
         match result {
             Ok(()) => {
                 reasons.push("completed".to_owned());
-                Decision::None
+                Ok(Decision::None)
             }
-            Err(e) => {
-                reasons.push(render(&e));
+            Err(why) => {
+                reasons.push(why.clone());
                 if active && self.gate.continuations >= 3 {
-                    return Decision::System(format!(
+                    return Ok(Decision::System(format!(
                         "GATE: refusal cap reached; task remains {state}"
-                    ));
+                    )));
                 }
                 self.gate.continuations += 1;
-                Decision::Block(format!(
-                    "GATE refuses completion (refusal {} of 3, harness cap 8): state {state}; {}; record the check with CHECK lines or report the task as not complete.",
-                    self.gate.continuations,
-                    render(&e)
-                ))
+                let run_instead: String = instructions.iter().map(|i| format!(" {i}")).collect();
+                Ok(Decision::Block(format!(
+                    "GATE refuses completion (refusal {} of 3, harness cap 8): state {state}; {why}; record the check with CHECK lines or report the task as not complete.{run_instead}",
+                    self.gate.continuations
+                )))
             }
         }
     }

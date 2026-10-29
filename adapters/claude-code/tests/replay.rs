@@ -769,3 +769,98 @@ fn task_completed_with_observed_receipts_still_stops() {
     assert_eq!(gate(&env)["state"], "completed");
     assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
 }
+
+/// The chair runs each line itself (agent `main`) unless `skip_runs`, then stops citing all of them.
+fn chair_stop(env: &mut Env, lines: &[(&str, &str, i32)], skip_runs: usize) -> Decision {
+    for (_, command, exit) in &lines[skip_runs..] {
+        assert_eq!(handle(&bash("main", command, *exit), env), Decision::None);
+    }
+    let cited: Vec<String> = lines
+        .iter()
+        .map(|(id, command, exit)| format!("CHECK {id} | {command} | exit {exit}"))
+        .collect();
+    let message = format!(
+        "VERDICT: PASS\nCHECKS RUN: {}\n{}\n\nThe task is complete.",
+        lines.len(),
+        cited.join("\n")
+    );
+    handle(&stop(&message, false), env)
+}
+
+#[test]
+fn chair_stop_links_check_lines_to_its_own_runs_and_completes() {
+    let d = dir("chair-stop");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    assert_eq!(chair_stop(&mut env, &ALL4, 0), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+    let line: Value = serde_json::from_str(&last_reasons(&env)).unwrap();
+    assert_eq!(line["event"], "Stop");
+    assert_eq!(
+        line["receipts"]["recorded"],
+        json!(["C1", "C2", "C3", "C4"])
+    );
+    assert_eq!(line["receipts"]["unlinked"], json!([]));
+}
+
+#[test]
+fn chair_stop_citing_a_run_that_was_not_journaled_is_refused() {
+    let d = dir("chair-stop-unjournaled");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    // C1 is cited but never ran.
+    let r = chair_stop(&mut env, &ALL4, 1);
+    let text = blocked(&r);
+    assert!(
+        text.starts_with("GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; unlinked CHECK C1 | cargo test c1 | exit 0 (no run by agent main with that command and exit code); record the check with CHECK lines"),
+        "{text}"
+    );
+    assert_eq!(gate(&env)["state"], "verifying");
+    // A worker's run does not link to the chair's CHECK line either.
+    assert_eq!(
+        handle(&bash("w1", "cargo test c1", 0), &mut env),
+        Decision::None
+    );
+    assert!(blocked(&chair_stop(&mut env, &ALL4[..1], 1)).contains("unlinked CHECK C1"));
+}
+
+#[test]
+fn chair_stop_citing_another_command_names_the_contract_command() {
+    let d = dir("chair-stop-gap1");
+    let mut env = env(
+        &d,
+        Some(contract(&[("C1", true)], &["src/"])),
+        fake("one", &["src/lib.rs"]),
+    );
+    let r = chair_stop(&mut env, &[("C1", "cargo test c1; echo done", 0)], 0);
+    let text = blocked(&r);
+    assert!(
+        text.contains("C1 cites `cargo test c1; echo done` but the contract requires `cargo test c1` or one of: `cargo test`"),
+        "{text}"
+    );
+    assert!(
+        text.ends_with(
+            "Run that command in this session and cite it as CHECK C1 | cargo test c1 | exit 0."
+        ),
+        "{text}"
+    );
+    assert_eq!(gate(&env)["state"], "verifying");
+}
+
+/// The live sequence of the first real-project use: the chair completed the task through MCP
+/// on asserted receipts, then stopped citing runs the hooks had journaled.
+#[test]
+fn chair_stop_after_mcp_completion_counts_its_own_runs() {
+    let d = dir("chair-stop-after-mcp");
+    let mut env = env(
+        &d,
+        Some(contract(&[("C1", true)], &["src/"])),
+        fake("one", &["src/lib.rs"]),
+    );
+    with_asserted_receipt(&mut env, true);
+    assert_eq!(
+        chair_stop(&mut env, &[("C1", "cargo test c1", 0)], 0),
+        Decision::None
+    );
+    let g = gate(&env);
+    assert_eq!(g["state"], "completed");
+    assert_eq!(g["receipts"].as_array().unwrap().len(), 2);
+}

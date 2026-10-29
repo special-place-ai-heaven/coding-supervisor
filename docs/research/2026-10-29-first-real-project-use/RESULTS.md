@@ -105,3 +105,27 @@ The gate bound each receipt to the candidate observed when the receipt was recor
 ## What follows
 
 Finding 1 is fixed in the Claude Code adapter (next commit: Stop reads the header). Findings 2 to 5 and 7 are addressed in the skill templates and the MCP `task_state` answer (the commit after). Findings 6 and 8 are documented only.
+
+## Fix for finding 1: Stop reads the header
+
+`adapters/claude-code/src/adapter.rs`. The CHECK-linking loop of `subagent_stop` moved unchanged into `Session::link_checks`, shared by both events. `stop` now parses `last_assistant_message` with `header::parse` and links each CHECK line to a journaled run by the hook's agent (`main` for the chair): same command after trimming, same exit code, not used by an earlier receipt, and the gap-1 check that the command is one the contract names. Linked receipts go to the core. Any problem (an unlinked line, a command the contract does not name, a header whose count disagrees) refuses before acceptance is tried, with the existing Stop wording: `GATE refuses completion (refusal k of 3, harness cap 8): state <s>; <problem>; record the check with CHECK lines or report the task as not complete.`, followed by `Run that command in this session and cite it as CHECK <id> | <command> | exit 0.` when the cited command is the wrong one. Without problems, acceptance runs as before.
+
+The core takes no receipt once a task is `completed`, and the live run completed through MCP before its Stop (#97, #98). For that state `link_checks` keeps a hook-linked receipt for a known criterion in `gate.json` without the core, where `observed_evidence` reads it. An unlinked one is rejected with the core's `receipt is not linked to an observed run`. This also applies at SubagentStop. Core `src/lib.rs` is untouched.
+
+| Replay test (`adapters/claude-code/tests/replay.rs`) | Shows |
+|---|---|
+| `chair_stop_links_check_lines_to_its_own_runs_and_completes` | four `main` runs, Stop citing them: no block, state `completed`, journal `receipts.recorded` C1..C4 |
+| `chair_stop_citing_a_run_that_was_not_journaled_is_refused` | C1 cited, never run: block starting `… state verifying; unlinked CHECK C1 \| cargo test c1 \| exit 0 (no run by agent main with that command and exit code); record the check with CHECK lines`; a worker's run of the same command does not link either |
+| `chair_stop_citing_another_command_names_the_contract_command` | `cargo test c1; echo done` cited: block names the contract command and ends with the run-instead instruction |
+| `chair_stop_after_mcp_completion_counts_its_own_runs` | the live sequence: completed through MCP on an asserted receipt, then a `main` run and a Stop citing it: no block |
+
+All through Terminal Commander, cwd `E:\project\coding-supervisor`, `CARGO_TARGET_DIR=C:\Target\coding-supervisor\main\target`.
+
+| Command | Job | Exit | Evidence |
+|---|---|---|---|
+| `cargo test -p supervisor-claude-code --test replay chair_stop` on the previous `adapter.rs` | `job_01a18795d394739ea3425b8ce921cbd4` | 101 | the four new tests FAILED, the two existing `chair_stop` matches ok |
+| `cargo fmt --all -- --check` | `job_01a187963c1571bf977f0fe0091bb485` | 0 | no diff |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a18796439672a184b2b82e5650e3db` | 0 | no warning or error lines |
+| `cargo test --workspace` | `job_01a1879654ff7491bf284b1edf5599f1` | 0 | 128 passed, 0 failed (replay 25 to 29; total 124 to 128) |
+
+Not run: no live Claude Code session has exercised the new Stop path.
