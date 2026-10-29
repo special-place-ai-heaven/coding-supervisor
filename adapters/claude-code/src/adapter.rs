@@ -773,15 +773,17 @@ impl Session {
             .collect();
         let (mut checks, mut to_run) = (Vec::new(), Vec::new());
         for c in &self.criteria {
-            let run = runs.iter().rev().find(|r| {
+            // The latest run on the current candidate decides, whatever its exit code.
+            let latest = runs.iter().rev().find(|r| {
                 r.agent_id == agent
                     && c.accepts(&r.command)
-                    && r.exit_code == Some(0)
                     && current.is_some()
                     && r.candidate.as_ref() == current
-                    && !used.contains(r.reference.as_str())
             });
-            if let Some(r) = run {
+            if let Some(r) = latest
+                && r.exit_code == Some(0)
+                && !used.contains(r.reference.as_str())
+            {
                 used.insert(&r.reference);
                 checks.push(CheckLine {
                     criterion: c.id.0.clone(),
@@ -806,20 +808,20 @@ impl Session {
                 continue;
             }
             let first = c.command.first().map_or("", |s| s.trim());
-            let latest = runs
-                .iter()
-                .rev()
-                .find(|r| r.agent_id == agent && r.command.trim() == first);
             let why = match latest {
-                None => "never ran".to_owned(),
-                Some(r) if current.is_none() || r.candidate.as_ref() != current => {
-                    "ran before your last change".to_owned()
-                }
                 Some(r) => match r.exit_code {
                     Some(0) => "its run already backs another check; run it again".to_owned(),
-                    Some(n) => format!("exited {n}"),
+                    Some(n) => format!("exited {n} on your latest run"),
                     None => "its exit code was not observed".to_owned(),
                 },
+                // No run on the current candidate: one of the first command on another candidate is stale.
+                None if runs
+                    .iter()
+                    .any(|r| r.agent_id == agent && r.command.trim() == first) =>
+                {
+                    "ran before your last change".to_owned()
+                }
+                None => "never ran".to_owned(),
             };
             to_run.push(format!("run `{first}`: {why}"));
         }

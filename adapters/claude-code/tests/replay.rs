@@ -1019,13 +1019,41 @@ fn derived_failing_run_is_refused() {
     let r = handle(&handback("w1", "Done.", false), &mut env);
     assert_eq!(
         blocked(&r),
-        "GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: exited 1."
+        "GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: exited 1 on your latest run."
     );
     let r = handle(&stop("Done.", false), &mut env);
     assert_eq!(
         blocked(&r),
-        "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: exited 1; or report the task as not complete."
+        "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: exited 1 on your latest run; or report the task as not complete."
     );
+}
+
+#[test]
+fn derived_pass_then_fail_on_the_same_tree_is_refused() {
+    let d = dir("derived-latest");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    // A pass, then a failure of the same command on the same tree: the latest run decides.
+    for agent in ["w1", "main"] {
+        assert_eq!(
+            handle(&bash(agent, "cargo test", 0), &mut env),
+            Decision::None
+        );
+        assert_eq!(
+            handle(&bash(agent, "cargo test", 1), &mut env),
+            Decision::None
+        );
+    }
+    let r = handle(&handback("w1", "Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: exited 1 on your latest run."
+    );
+    let r = handle(&stop("Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: exited 1 on your latest run; or report the task as not complete."
+    );
+    assert!(gate(&env)["receipts"].as_array().unwrap().is_empty());
 }
 
 #[test]
