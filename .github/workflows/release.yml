@@ -131,3 +131,5 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          # A tag with a hyphen (v0.1.0-rc1) is a pre-release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
