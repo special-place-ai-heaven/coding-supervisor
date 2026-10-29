@@ -192,10 +192,17 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         changes.push(change(path, |_| Ok(render(template, harness)))?);
     }
     let mcp_path = under(&project, harness.mcp_file);
+    // The server is told the project so it shares one gate state with the hooks, whatever
+    // directory the harness starts it in.
+    let project_arg = project.to_string_lossy().replace('\\', "/");
     changes.push(if harness.mcp_file.ends_with(".toml") {
-        change(mcp_path, |before| Ok(merge_mcp_toml(before, &binary)))?
+        change(mcp_path, |before| {
+            Ok(merge_mcp_toml(before, &binary, &project_arg))
+        })?
     } else {
-        change(mcp_path, |before| merge_mcp_json(before, &binary))?
+        change(mcp_path, |before| {
+            merge_mcp_json(before, &binary, &project_arg)
+        })?
     });
     let mut gitignore = None;
     if harness.id == "claude-code" {
@@ -264,6 +271,14 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
                 .map_err(|e| Failure::Error(format!("{}: {e}", c.path.display())))?;
         }
         println!("wrote {} file(s)", changes.len());
+    }
+    if changes
+        .iter()
+        .any(|c| c.path.extension().is_some_and(|e| e == "json"))
+    {
+        println!(
+            "note: JSON files are rewritten with two-space indentation; keys are written in sorted order."
+        );
     }
     if let Some(path) = gitignore {
         let verb = if dry_run { "would add" } else { "added" };
@@ -336,7 +351,7 @@ fn pretty(map: Map<String, Value>) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-fn merge_mcp_json(before: Option<&str>, binary: &str) -> Result<String, String> {
+fn merge_mcp_json(before: Option<&str>, binary: &str, project: &str) -> Result<String, String> {
     let mut root = json_object(before)?;
     root.entry("mcpServers")
         .or_insert_with(|| json!({}))
@@ -344,7 +359,7 @@ fn merge_mcp_json(before: Option<&str>, binary: &str) -> Result<String, String> 
         .ok_or("\"mcpServers\" is not an object")?
         .insert(
             "supervisor".into(),
-            json!({ "type": "stdio", "command": binary, "args": ["mcp"] }),
+            json!({ "type": "stdio", "command": binary, "args": ["mcp", "--project", project] }),
         );
     pretty(root)
 }
@@ -388,9 +403,13 @@ fn merge_hooks(before: Option<&str>, command: &str) -> Result<String, String> {
 // shortcut: only the plain header line `[mcp_servers.supervisor]` is recognised; a quoted key,
 // a trailing comment on the header, dotted keys or an inline table are not. Use a TOML parser
 // if a user's config is written that way.
-fn merge_mcp_toml(before: Option<&str>, binary: &str) -> String {
-    let quoted = format!("\"{}\"", binary.replace('\\', "\\\\").replace('"', "\\\""));
-    let section = format!("[mcp_servers.supervisor]\ncommand = {quoted}\nargs = [\"mcp\"]\n");
+fn merge_mcp_toml(before: Option<&str>, binary: &str, project: &str) -> String {
+    let quoted = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+    let section = format!(
+        "[mcp_servers.supervisor]\ncommand = {}\nargs = [\"mcp\", \"--project\", {}]\n",
+        quoted(binary),
+        quoted(project)
+    );
     let text = before.unwrap_or("");
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     match lines

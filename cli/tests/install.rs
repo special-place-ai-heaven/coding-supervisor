@@ -66,6 +66,11 @@ fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     files
 }
 
+/// The project path as install writes it into the registration files.
+fn forward(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 fn read_json(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
 }
@@ -95,13 +100,18 @@ fn every_harness_gets_its_documented_files_and_a_second_run_changes_nothing() {
             assert_eq!(
                 text,
                 format!(
-                    "[mcp_servers.supervisor]\ncommand = \"{FAKE_BINARY}\"\nargs = [\"mcp\"]\n"
+                    "[mcp_servers.supervisor]\ncommand = \"{FAKE_BINARY}\"\nargs = [\"mcp\", \"--project\", \"{}\"]\n",
+                    forward(&project)
                 )
             );
         } else {
             assert_eq!(
                 read_json(&registration)["mcpServers"]["supervisor"],
-                json!({ "type": "stdio", "command": FAKE_BINARY, "args": ["mcp"] })
+                json!({
+                    "type": "stdio",
+                    "command": FAKE_BINARY,
+                    "args": ["mcp", "--project", forward(&project)]
+                })
             );
         }
         assert!(snapshot(&home).is_empty(), "{harness} wrote into home");
@@ -199,8 +209,10 @@ fn a_toml_config_keeps_other_sections_and_replaces_only_ours() {
         )
         .unwrap();
         install(&project, &home, harness, &[]);
-        let ours =
-            format!("[mcp_servers.supervisor]\ncommand = \"{FAKE_BINARY}\"\nargs = [\"mcp\"]\n");
+        let ours = format!(
+            "[mcp_servers.supervisor]\ncommand = \"{FAKE_BINARY}\"\nargs = [\"mcp\", \"--project\", \"{}\"]\n",
+            forward(&project)
+        );
         assert_eq!(
             fs::read_to_string(&config).unwrap(),
             format!("{foreign}{ours}{tail}")
