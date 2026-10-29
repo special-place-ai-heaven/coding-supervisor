@@ -311,7 +311,7 @@ Branch `feat/autonomous-gate`, commits `de0505e` (claude-code) and `ec808ba` (cl
 | `ultra` | Full, plus: criteria with `"tier": "full"` are required (below ultra they count as not mandatory, in memory only, so the contract hash is unchanged); every `Stop` after a file change is judged even without a claim; Write, Edit, MultiEdit and NotebookEdit outside the contract scope are denied (`GATE: Write refused: <path> is out of scope; the contract scope is src/ (level ultra)`). |
 
 - **Where the level comes from:** the `level` file in the project's state directory beats the global `level` file in the user config directory (`SUPERVISOR_CONFIG_DIR`, else `%APPDATA%` / `$XDG_CONFIG_HOME` / `$HOME/.config`, plus `coding-supervisor`). With neither, the level is `full`. An unreadable level file makes the hook run at `full` and journal why; the CLI errors.
-- **Degraded session:** the session baseline is the candidate at the session's first `UserPromptSubmit`. A nonzero run of a mandatory command on that baseline runs the session at `lite`, with the reason ``<command> exited <n> on the untouched tree at session start``.
+- **Baseline failure (owner's ruling, commit `96cc624`):** the session baseline is the candidate at the session's first `UserPromptSubmit`. A nonzero run of a check's command on that baseline is recorded as a baseline failure (``<command> exited <n> on the untouched tree at session start``); the session stays at its configured level. A refusal naming that check ends with "(this check already failed before your changes)", `supervisor status` lists the failure, and the release after three refusals is the only escape.
 - **Additions to `gate.json`:** `sessions` (baseline, degraded reason, pending notice) and `accepted_candidate`. Both are covered by the chain when present. A capture sealed by the earlier code still verifies.
 - **`supervisor status [--project] [--home]`:** prints the level and its source, the degraded reason, the required checks (id, command, tier, mandatory, required now) and the accepted and refused completions with refusal reasons from `events.jsonl`.
 
@@ -326,7 +326,7 @@ Branch `feat/autonomous-gate`, commits `de0505e` (claude-code) and `ec808ba` (cl
 
 Open:
 - An agent could lower the level from a shell (`supervisor level off`, or by writing the global file). Phase 4 treats the level files as gate state.
-- A bug-fix task whose check fails on the starting tree degrades its own session to lite.
+- Resolved (owner's ruling, commit `96cc624`): no demotion; a refusal naming a check that failed at baseline carries '(this check already failed before your changes)', status lists the baseline failure, and the three-refusal release is the only escape.
 - At `ultra`, writes outside the project are denied too.
 - The installer's PreToolUse matcher has no `MultiEdit` (phase 5).
 - The MCP server ignores levels.
