@@ -272,3 +272,29 @@ GATE: handback refused (refusal 1 of 3): C1 `cargo test` ran before your last ch
 New tests: `gap2_run_before_the_last_change_is_refused_and_a_new_run_is_accepted`, `gap2_run_record_without_a_candidate_never_links`.
 
 Open: the candidate stays scoped to the hook's cwd (`git status -- .`), so a change outside that directory does not make a run stale. It is observed at PostToolUse, so a command that itself edits files is recorded against the tree after it ran. Stop with an old run has no dedicated test (same `link_checks` path). Not run live in Claude Code.
+
+## Autonomous gate, phase 2: derived receipts
+
+Branch `feat/autonomous-gate`, commit `5365178`. At `Stop` (agent `main`) and `SubagentStop` (that worker), a message that claims completion and carries no CHECK header gets a derived PASS header: per criterion, the latest run by that agent of one of the criterion's commands with exit 0 on the current candidate, not already backing a receipt. The derived header goes through the existing `link_checks` path and the core; there is no second acceptance path. A written header behaves as before. A message with no header and no completion claim also behaves as before (SubagentStop refuses once for the missing header, then releases). The refusal caps are unchanged. The journal gains one reason line (`header derived from observed runs of agent <id>: <n> CHECK lines`) and no new field.
+
+| Case | Observed (exact-match assertions) |
+|---|---|
+| edit, run `cargo test`, bare "done" | SubagentStop: no decision, `ready_for_review`. Stop: no decision, `completed`, `accepted: true`. |
+| run, edit, "done" | ``GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: ran before your last change.`` |
+| never ran | ``GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: never ran; or report the task as not complete.`` |
+| exit 1 on the current candidate | ``… run `cargo test`: exited 1 …`` at both events |
+| three refusals | SubagentStop releases (journaled UNVERIFIED), Stop answers `GATE: refusal cap reached; task remains verifying` |
+
+| Check | Job or run | Exit | Evidence |
+|---|---|---|---|
+| `cargo test --workspace` before | `job_01a188145c5b76f5bcca50fd8ea273ca` | 0 | 138 passed |
+| `cargo test --workspace` after | `job_01a18818d3ea76119032ceada6c765a8` | 0 | 144 passed (replay 31 to 37), no existing assertion edited |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a18818b1fc7552b191063b3f7ca77d` | 0 | no warnings |
+| `cargo fmt --all -- --check` | `job_01a18818cd7d74b19ee5f69ba4d28173` | 0 | no diff |
+| Branch CI | run 40893561661 | success | Linux fresh and hosted Windows |
+
+Open:
+- The spec is taken literally, so an exit-0 run counts even if a later run of the same command on the same candidate exited nonzero.
+- For a criterion with several commands, the reason is drawn from the first command's runs only.
+- Two edge reasons were added: "its run already backs another check; run it again" and "its exit code was not observed".
+- Not run live in Claude Code.
