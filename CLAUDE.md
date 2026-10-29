@@ -31,6 +31,7 @@ Out of scope for the first slice: a standalone loop engine, agent roster managem
 7. **Measurement uses the per-accepted-task metric** with failed attempts in the numerator and the acceptance rate beside it. Single-repetition flips are never attributed to architecture; four repetitions or a cross-variant table first.
 8. **Smallest change that fully works.** No abstraction, option or configuration nobody asked for. Shortcuts carry a `shortcut:` comment stating the limit and when to upgrade.
 9. **Secrets never appear in chat, logs, receipts or git.** Receipts carry identifiers, never prompt bodies or credentials.
+10. **`supervisor install` never stops, kills or waits for another process.** It scans before it writes, never writes a config it cannot parse (and never prints that file's text or parse error), writes every file through a temporary file beside it and a rename, and when a file it must write is held open it fails with that path and the advice to close the harness session; it does not retry or force. It does not replace binaries: that is npm's job (or the user's), so there is no rename-aside or rollback logic.
 
 ## Current truth (as_of 2026-10-28)
 

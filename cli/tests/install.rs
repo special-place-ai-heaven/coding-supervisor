@@ -143,7 +143,10 @@ fn every_harness_gets_its_documented_files_and_a_second_run_changes_nothing() {
             before,
             "{harness} second run changed bytes"
         );
-        assert!(second.contains("no changes"), "{harness}: {second}");
+        assert!(
+            second.contains("state: present-current") && second.contains("unchanged"),
+            "{harness}: {second}"
+        );
         assert!(
             !second.contains("+++ "),
             "{harness} second run printed a diff"
@@ -347,72 +350,296 @@ fn an_unknown_harness_is_a_usage_error() {
     assert!(snapshot(&project).is_empty());
 }
 
+/// Install with an explicit binary; returns (success, stdout + stderr).
+fn run_install(
+    project: &Path,
+    home: &Path,
+    harness: &str,
+    binary: &str,
+    extra: &[&str],
+) -> (bool, String) {
+    let out = Command::new(BIN)
+        .args(["install", "--harness", harness, "--project"])
+        .arg(project)
+        .arg("--home")
+        .arg(home)
+        .args(["--binary", binary])
+        .args(extra)
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), text)
+}
+
+const EVENTS: [&str; 6] = [
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "SubagentStop",
+    "Stop",
+];
+
 /// Lab repo, 2026-10-29: settings already held the gate's hooks from another binary path, and
 /// install appended a second set (12 entries). Our hooks are recognised by the `<path> hook`
-/// shape, whatever the path, and replaced.
+/// shape, whatever the path, dropped, and one fresh entry appended per event.
 #[test]
 fn claude_settings_replace_our_hooks_from_another_binary_path() {
     let (project, home) = dirs("settings-moved");
     fs::create_dir_all(project.join(".claude")).unwrap();
     let settings = project.join(".claude").join("settings.json");
-    let events = [
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "PostToolUseFailure",
-        "SubagentStop",
-        "Stop",
-    ];
-    // The broken state seen live: two old paths per event (one quoted, one an npm install),
-    // and one foreign hook that must survive.
+    // The broken state seen live, two old paths per event (one quoted, one an npm install),
+    // plus an unrelated hook on every event and one sharing a group with an old entry.
+    let foreign = |event: &str| json!({ "matcher": "Bash", "hooks": [{ "type": "command", "command": format!("guard-{event} hook-like") }] });
     let mut hooks = serde_json::Map::new();
-    for event in events {
+    for event in EVENTS {
         hooks.insert(
             event.into(),
             json!([
+                foreign(event),
                 { "hooks": [{ "type": "command", "command": "\"C:/Program Files/old/supervisor.exe\" hook" }] },
-                { "hooks": [{ "type": "command", "command": "/usr/lib/node_modules/coding-supervisor-linux-x64/bin/supervisor hook" }] }
+                { "hooks": [
+                    { "type": "command", "command": "/usr/lib/node_modules/coding-supervisor-linux-x64/bin/supervisor hook" },
+                    { "type": "command", "command": "audit-log" }
+                ] }
             ]),
         );
     }
-    hooks["Stop"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({ "hooks": [{ "type": "command", "command": "foreign-stop hook-like" }] }));
     fs::write(&settings, json!({ "hooks": hooks }).to_string()).unwrap();
     fs::write(
         project.join(".mcp.json"),
-        r#"{"mcpServers":{"supervisor":{"type":"stdio","command":"C:/old/supervisor.exe","args":["mcp"]}}}"#,
+        r#"{"mcpServers":{"other":{"command":"x"},"supervisor":{"type":"stdio","command":"C:/old/supervisor.exe","args":["mcp"]}}}"#,
     )
     .unwrap();
 
-    install(&project, &home, "claude-code", &[]);
+    let (ok, out) = run_install(&project, &home, "claude-code", FAKE_BINARY, &[]);
+    assert!(ok && out.contains("state: present-stale"), "{out}");
 
     let v = read_json(&settings);
-    for event in events {
-        let commands: Vec<&str> = v["hooks"][event]
-            .as_array()
-            .unwrap()
+    for event in EVENTS {
+        let groups = v["hooks"][event].as_array().unwrap();
+        let gate: Vec<&str> = groups
             .iter()
             .flat_map(|g| g["hooks"].as_array().unwrap())
             .filter_map(|h| h["command"].as_str())
             .filter(|c| c.ends_with(" hook"))
             .collect();
         assert_eq!(
-            commands,
+            gate,
             [OUR_HOOK],
             "{event}: exactly one gate hook, the new path"
         );
+        assert_eq!(
+            groups[0],
+            foreign(event),
+            "{event}: unrelated group untouched"
+        );
+        assert_eq!(
+            groups[1]["hooks"],
+            json!([{ "type": "command", "command": "audit-log" }]),
+            "{event}: the unrelated hook sharing a group stays"
+        );
+        assert_eq!(groups.len(), 3, "{event}: foreign, shared, ours");
     }
-    let stop = v["hooks"]["Stop"].to_string();
-    assert!(stop.contains("foreign-stop hook-like"), "{stop}");
+    let mcp = read_json(&project.join(".mcp.json"));
+    assert_eq!(mcp["mcpServers"]["supervisor"]["command"], FAKE_BINARY);
+    assert_eq!(mcp["mcpServers"]["other"], json!({ "command": "x" }));
+
+    let before = snapshot(&project);
+    let (ok, out) = run_install(&project, &home, "claude-code", FAKE_BINARY, &[]);
+    assert!(ok && out.contains("unchanged"), "{out}");
+    assert_eq!(snapshot(&project), before);
+}
+
+#[test]
+fn dry_run_prints_the_state_of_every_harness() {
+    let (project, home) = dirs("states");
+    let states = |out: &str| -> Vec<String> {
+        out.lines()
+            .filter_map(|l| l.strip_prefix("harness "))
+            .map(str::to_owned)
+            .collect()
+    };
+    let (_, out) = run_install(&project, &home, "claude-code", FAKE_BINARY, &["--dry-run"]);
     assert_eq!(
-        read_json(&project.join(".mcp.json"))["mcpServers"]["supervisor"]["command"],
+        states(&out),
+        [
+            "claude-code: not-installed",
+            "codex: not-installed",
+            "cursor: not-installed",
+            "omp: not-installed",
+            "grok: not-installed"
+        ],
+        "{out}"
+    );
+    assert!(snapshot(&project).is_empty(), "the dry run wrote");
+
+    install(&project, &home, "claude-code", &[]);
+    install(&project, &home, "codex", &[]);
+    fs::create_dir_all(project.join(".cursor")).unwrap();
+    fs::write(project.join(".cursor/mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+    // OMP registered with another binary: stale.
+    fs::create_dir_all(project.join(".omp")).unwrap();
+    fs::write(
+        project.join(".omp/mcp.json"),
+        r#"{"mcpServers":{"supervisor":{"command":"/old/supervisor","args":["mcp"]}}}"#,
+    )
+    .unwrap();
+    let (_, out) = run_install(&project, &home, "grok", FAKE_BINARY, &["--dry-run"]);
+    assert_eq!(
+        states(&out),
+        [
+            "claude-code: present-current",
+            "codex: present-current",
+            "cursor: absent",
+            "omp: present-stale",
+            "grok: not-installed"
+        ],
+        "{out}"
+    );
+}
+
+#[test]
+fn a_malformed_config_is_never_written_and_its_text_is_never_printed() {
+    let (project, home) = dirs("malformed");
+    let broken = r#"{"mcpServers": {"supervisor": {"env": {"API_TOKEN": "s3cr3t-value"}"#;
+    fs::write(project.join(".mcp.json"), broken).unwrap();
+    let before = snapshot(&project);
+    for extra in [&[][..], &["--dry-run"][..]] {
+        let (ok, out) = run_install(&project, &home, "claude-code", FAKE_BINARY, extra);
+        assert!(!ok, "{out}");
+        assert!(
+            out.contains("state: malformed") && out.contains(".mcp.json"),
+            "{out}"
+        );
+        assert!(out.contains("nothing was written"), "{out}");
+        assert!(
+            !out.contains("s3cr3t") && !out.contains("API_TOKEN"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("EOF") && !out.contains("line 1"),
+            "parse error printed: {out}"
+        );
+        assert_eq!(
+            snapshot(&project),
+            before,
+            "a malformed project was written"
+        );
+    }
+    // A TOML section without a readable command is malformed too.
+    let (project, home) = dirs("malformed-toml");
+    fs::create_dir_all(project.join(".codex")).unwrap();
+    fs::write(
+        project.join(".codex/config.toml"),
+        "[mcp_servers.supervisor]\ncommand = unquoted\n",
+    )
+    .unwrap();
+    let (ok, out) = run_install(&project, &home, "codex", FAKE_BINARY, &[]);
+    assert!(!ok && out.contains("state: malformed"), "{out}");
+}
+
+/// The registration names a `.cmd` wrapper that invokes this binary: the same install, so
+/// nothing is rewritten.
+#[test]
+fn a_registration_through_a_cmd_wrapper_of_this_binary_is_current() {
+    let (project, home) = dirs("wrapper");
+    let bin_dir = home.join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let real = bin_dir.join("supervisor.exe");
+    fs::write(&real, "binary").unwrap();
+    let real = forward(&real);
+    let wrapper = home.join("supervisor.cmd");
+    fs::write(
+        &wrapper,
+        format!("@echo off\r\n\"{}\" %*\r\n", real.replace('/', "\\")),
+    )
+    .unwrap();
+    let wrapper = forward(&wrapper);
+
+    let (ok, out) = run_install(&project, &home, "claude-code", &real, &[]);
+    assert!(ok, "{out}");
+    // Point the registration and every hook at the wrapper.
+    for file in [".mcp.json", ".claude/settings.json"] {
+        let path = project.join(file);
+        let text = fs::read_to_string(&path).unwrap().replace(&real, &wrapper);
+        fs::write(&path, text).unwrap();
+    }
+    let before = snapshot(&project);
+    let (ok, out) = run_install(&project, &home, "claude-code", &real, &[]);
+    assert!(
+        ok && out.contains("state: present-current") && out.contains("unchanged"),
+        "{out}"
+    );
+    assert_eq!(snapshot(&project), before);
+}
+
+/// Every file is written through a temporary file beside it and renamed over: none is left.
+#[test]
+fn install_leaves_no_temporary_file() {
+    let (project, home) = dirs("no-temp");
+    for harness in ["claude-code", "codex", "cursor", "omp", "grok"] {
+        install(&project, &home, harness, &[]);
+    }
+    let leftovers: Vec<_> = snapshot(&project)
+        .into_iter()
+        .filter(|(p, _)| p.to_string_lossy().contains("supervisor-tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+/// A symlinked config is written through: the link stays, its target gets the content.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_config_stays_a_link() {
+    let (project, home) = dirs("symlink");
+    let real = home.join("mcp-real.json");
+    fs::write(&real, "{}").unwrap();
+    std::os::unix::fs::symlink(&real, project.join(".mcp.json")).unwrap();
+    install(&project, &home, "claude-code", &[]);
+    assert!(
+        fs::symlink_metadata(project.join(".mcp.json"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        read_json(&real)["mcpServers"]["supervisor"]["command"],
         FAKE_BINARY
     );
+}
 
-    // A second run with the same path changes nothing.
-    let before = snapshot(&project);
-    install(&project, &home, "claude-code", &[]);
-    assert_eq!(snapshot(&project), before);
+/// A config another process holds open is not forced: install fails naming the file, the old
+/// content stays whole, and no temporary file is left.
+#[cfg(windows)]
+#[test]
+fn a_config_held_open_fails_with_advice_and_stays_intact() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let (project, home) = dirs("held-open");
+    fs::create_dir_all(project.join(".claude")).unwrap();
+    let settings = project.join(".claude").join("settings.json");
+    fs::write(&settings, "{}\n").unwrap();
+    // Share read only: install can read it but not replace it, as with a harness holding it.
+    let holder = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&settings)
+        .unwrap();
+    let (ok, out) = run_install(&project, &home, "claude-code", FAKE_BINARY, &[]);
+    drop(holder);
+    assert!(!ok, "{out}");
+    assert!(
+        out.contains("settings.json") && out.contains("Close the harness session"),
+        "{out}"
+    );
+    assert_eq!(fs::read_to_string(&settings).unwrap(), "{}\n");
+    let leftovers: Vec<_> = snapshot(&project)
+        .into_iter()
+        .filter(|(p, _)| p.to_string_lossy().contains("supervisor-tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
 }

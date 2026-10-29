@@ -6,7 +6,7 @@
 //! where that server is registered. User-level directories are printed as notes, not written.
 
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
@@ -197,64 +197,11 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
     .replace('\\', "/");
     let dry_run = flags.switch("--dry-run");
 
-    let mut changes = Vec::new();
-    for (name, template) in [("supervisor-worker", WORKER), ("supervisor-chair", CHAIR)] {
-        let path = under(&project, harness.skills).join(name).join("SKILL.md");
-        changes.push(change(path, |_| Ok(render(template, harness)))?);
-    }
-    let mcp_path = under(&project, harness.mcp_file);
-    // The server is told the project so it shares one gate state with the hooks, whatever
-    // directory the harness starts it in.
-    let project_arg = project.to_string_lossy().replace('\\', "/");
-    changes.push(if harness.mcp_file.ends_with(".toml") {
-        // Codex refuses every tool call under its non-interactive approval policy unless the
-        // server approves them, and passes no environment variable it is not told to.
-        let extra = if harness.id == "codex" {
-            "default_tools_approval_mode = \"approve\"\nenv_vars = [\"SUPERVISOR_STATE_DIR\"]\n"
-        } else {
-            ""
-        };
-        change(mcp_path, |before| {
-            Ok(merge_mcp_toml(before, &binary, &project_arg, extra))
-        })?
-    } else {
-        change(mcp_path, |before| {
-            merge_mcp_json(before, &binary, &project_arg)
-        })?
-    });
-    let mut gitignore = None;
-    if harness.id == "claude-code" {
-        let command = if binary.contains(char::is_whitespace) {
-            format!("\"{binary}\" hook")
-        } else {
-            format!("{binary} hook")
-        };
-        let settings = under(&project, ".claude/settings.json");
-        changes.push(change(settings, |before| merge_settings(before, &command))?);
-        let path = project.join(".gitignore");
-        if let Some(before) = read_existing(&path)? {
-            let listed = before.lines().any(|l| {
-                matches!(
-                    l.trim(),
-                    ".supervisor/" | ".supervisor" | "/.supervisor/" | "/.supervisor"
-                )
-            });
-            if !listed {
-                let mut after = before.clone();
-                if !after.is_empty() && !after.ends_with('\n') {
-                    after.push('\n');
-                }
-                after.push_str(".supervisor/\n");
-                gitignore = Some(path.clone());
-                changes.push(Change {
-                    path,
-                    before: Some(before),
-                    after,
-                });
-            }
-        }
-    }
-    changes.retain(|c| c.before.as_deref() != Some(c.after.as_str()));
+    let Plan {
+        state,
+        changes,
+        gitignore,
+    } = plan(harness, &project, &binary)?;
     if let Some(stray) = changes
         .iter()
         .find(|c| !c.path.starts_with(&project) && !c.path.starts_with(&home))
@@ -271,22 +218,34 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         project.display(),
         if dry_run { " (dry run)" } else { "" }
     );
-    if changes.is_empty() {
-        println!("no changes: every file is already up to date");
+    println!("state: {}", state.name());
+    if dry_run {
+        for h in &HARNESSES {
+            let shown = match plan(h, &project, &binary) {
+                Ok(p) => p.state.name(),
+                Err(_) => "unreadable",
+            };
+            println!("harness {}: {shown}", h.id);
+        }
+    }
+    if let State::Malformed(path) = &state {
+        // Neither the parse error nor the file's text is printed: either can quote a credential.
+        return Err(Failure::Error(format!(
+            "{} does not parse, or a key install writes has another type; nothing was written. Fix or remove it, then run install again.",
+            path.display()
+        )));
+    }
+    if state == State::PresentCurrent {
+        println!("unchanged: the registration runs this binary and every file is up to date");
     }
     for c in &changes {
         print!("{}", diff(&c.path, c.before.as_deref(), &c.after));
     }
     if dry_run {
         println!("dry run: nothing written");
-    } else {
+    } else if !changes.is_empty() {
         for c in &changes {
-            if let Some(parent) = c.path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| Failure::Error(format!("{}: {e}", parent.display())))?;
-            }
-            fs::write(&c.path, &c.after)
-                .map_err(|e| Failure::Error(format!("{}: {e}", c.path.display())))?;
+            atomic_write(&c.path, &c.after)?;
         }
         println!("wrote {} file(s)", changes.len());
     }
@@ -326,22 +285,303 @@ fn read_existing(path: &Path) -> Result<Option<String>, Failure> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) if held_open(&e) => Err(held_open_failure(path)),
         Err(e) => Err(Failure::Error(format!("{}: {e}", path.display()))),
     }
 }
 
-fn change(
-    path: PathBuf,
-    after: impl FnOnce(Option<&str>) -> Result<String, String>,
-) -> Result<Change, Failure> {
-    let before = read_existing(&path)?;
-    let after = after(before.as_deref())
-        .map_err(|e| Failure::Error(format!("{}: {e}; nothing written", path.display())))?;
-    Ok(Change {
-        path,
-        before,
-        after,
+/// What install finds for one harness in the project before it writes anything.
+#[derive(Debug, PartialEq, Eq)]
+pub enum State {
+    /// Neither the gate's registration nor the harness's project directory exists.
+    NotInstalled,
+    /// The harness's directory or file exists without the gate's registration.
+    Absent,
+    /// Registered, runs this binary, and every file is already what install would write.
+    PresentCurrent,
+    /// Registered, but some file differs: another binary, other arguments, older skills.
+    PresentStale,
+    /// A config file does not parse (or a key install writes has another type); never written.
+    Malformed(PathBuf),
+}
+
+impl State {
+    fn name(&self) -> &'static str {
+        match self {
+            State::NotInstalled => "not-installed",
+            State::Absent => "absent",
+            State::PresentCurrent => "present-current",
+            State::PresentStale => "present-stale",
+            State::Malformed(_) => "malformed",
+        }
+    }
+}
+
+struct Plan {
+    state: State,
+    /// Only the files whose content would change.
+    changes: Vec<Change>,
+    gitignore: Option<PathBuf>,
+}
+
+/// Scan one harness's files in `project` and compute what install would write. Reads only.
+fn plan(harness: &Harness, project: &Path, binary: &str) -> Result<Plan, Failure> {
+    let malformed = |path: PathBuf| Plan {
+        state: State::Malformed(path),
+        changes: Vec::new(),
+        gitignore: None,
+    };
+    let claude = harness.id == "claude-code";
+    let mcp_path = under(project, harness.mcp_file);
+    let mcp_before = read_existing(&mcp_path)?;
+    let toml = harness.mcp_file.ends_with(".toml");
+    let Ok(registered) = registered_command(mcp_before.as_deref(), toml) else {
+        return Ok(malformed(mcp_path));
+    };
+    let settings_path = under(project, ".claude/settings.json");
+    let settings_before = if claude {
+        read_existing(&settings_path)?
+    } else {
+        None
+    };
+    let Ok(hooks) = gate_hook_commands(settings_before.as_deref()) else {
+        return Ok(malformed(settings_path));
+    };
+
+    // A registration that already runs this binary keeps its spelling (a symlink, another
+    // form of the path, a .cmd wrapper), so re-running install over it changes nothing.
+    let mcp_binary = registered
+        .clone()
+        .filter(|c| runs_binary(c, binary))
+        .unwrap_or_else(|| binary.to_owned());
+    let hook = match hooks.first() {
+        Some(first)
+            if hooks.iter().all(|h| h == first)
+                && gate_hook_program(first).is_some_and(|p| runs_binary(p, binary)) =>
+        {
+            first.clone()
+        }
+        _ if binary.contains(char::is_whitespace) => format!("\"{binary}\" hook"),
+        _ => format!("{binary} hook"),
+    };
+
+    let mut changes = Vec::new();
+    for (name, template) in [("supervisor-worker", WORKER), ("supervisor-chair", CHAIR)] {
+        let path = under(project, harness.skills).join(name).join("SKILL.md");
+        let before = read_existing(&path)?;
+        changes.push(Change {
+            path,
+            before,
+            after: render(template, harness),
+        });
+    }
+    // The server is told the project so it shares one gate state with the hooks, whatever
+    // directory the harness starts it in.
+    let project_arg = project.to_string_lossy().replace('\\', "/");
+    let mcp_after = if toml {
+        // Codex refuses every tool call under its non-interactive approval policy unless the
+        // server approves them, and passes no environment variable it is not told to.
+        let extra = if harness.id == "codex" {
+            "default_tools_approval_mode = \"approve\"\nenv_vars = [\"SUPERVISOR_STATE_DIR\"]\n"
+        } else {
+            ""
+        };
+        Ok(merge_mcp_toml(
+            mcp_before.as_deref(),
+            &mcp_binary,
+            &project_arg,
+            extra,
+        ))
+    } else {
+        merge_mcp_json(mcp_before.as_deref(), &mcp_binary, &project_arg)
+    };
+    let Ok(mcp_after) = mcp_after else {
+        return Ok(malformed(mcp_path));
+    };
+    changes.push(Change {
+        path: mcp_path.clone(),
+        before: mcp_before,
+        after: mcp_after,
+    });
+    let mut gitignore = None;
+    if claude {
+        let Ok(after) = merge_settings(settings_before.as_deref(), &hook) else {
+            return Ok(malformed(settings_path));
+        };
+        changes.push(Change {
+            path: settings_path,
+            before: settings_before,
+            after,
+        });
+        let path = project.join(".gitignore");
+        if let Some(before) = read_existing(&path)? {
+            let listed = before.lines().any(|l| {
+                matches!(
+                    l.trim(),
+                    ".supervisor/" | ".supervisor" | "/.supervisor/" | "/.supervisor"
+                )
+            });
+            if !listed {
+                let mut after = before.clone();
+                if !after.is_empty() && !after.ends_with('\n') {
+                    after.push('\n');
+                }
+                after.push_str(".supervisor/\n");
+                gitignore = Some(path.clone());
+                changes.push(Change {
+                    path,
+                    before: Some(before),
+                    after,
+                });
+            }
+        }
+    }
+    changes.retain(|c| c.before.as_deref() != Some(c.after.as_str()));
+
+    let dir = if claude {
+        ".claude"
+    } else {
+        harness
+            .mcp_file
+            .split('/')
+            .next()
+            .unwrap_or(harness.mcp_file)
+    };
+    let state = if registered.is_some() || !hooks.is_empty() {
+        if changes.is_empty() {
+            State::PresentCurrent
+        } else {
+            State::PresentStale
+        }
+    } else if mcp_path.exists() || project.join(dir).exists() {
+        State::Absent
+    } else {
+        State::NotInstalled
+    };
+    Ok(Plan {
+        state,
+        changes,
+        gitignore,
     })
+}
+
+/// The command of the gate's MCP entry, `None` when there is none, `Err` when the file does
+/// not parse.
+// shortcut: TOML is read line by line, only the `command = "..."` line inside a plain
+// `[mcp_servers.supervisor]` header; a file is malformed only when that section has no such
+// line. Add a TOML parser if configs are written in other forms.
+fn registered_command(text: Option<&str>, toml: bool) -> Result<Option<String>, ()> {
+    if !toml {
+        let root = json_object(text).map_err(|_| ())?;
+        return Ok(root
+            .get("mcpServers")
+            .and_then(|m| m.get("supervisor"))
+            .and_then(|s| s.get("command"))
+            .and_then(Value::as_str)
+            .map(str::to_owned));
+    }
+    let mut lines = text.unwrap_or("").lines().map(str::trim);
+    if !lines.any(|l| l == "[mcp_servers.supervisor]") {
+        return Ok(None);
+    }
+    for line in lines.take_while(|l| !l.starts_with('[')) {
+        let Some(value) = line
+            .strip_prefix("command")
+            .and_then(|r| r.trim_start().strip_prefix('='))
+        else {
+            continue;
+        };
+        let quoted = value.trim();
+        if quoted.len() < 2 || !quoted.starts_with('"') || !quoted.ends_with('"') {
+            return Err(());
+        }
+        let inner = &quoted[1..quoted.len() - 1];
+        return Ok(Some(inner.replace("\\\"", "\"").replace("\\\\", "\\")));
+    }
+    Err(())
+}
+
+/// Every hook command in the settings that is one of the gate's, in file order.
+fn gate_hook_commands(text: Option<&str>) -> Result<Vec<String>, ()> {
+    let root = json_object(text).map_err(|_| ())?;
+    let Some(events) = root.get("hooks").and_then(Value::as_object) else {
+        return Ok(Vec::new());
+    };
+    Ok(events
+        .values()
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(|g| g["hooks"].as_array())
+        .flatten()
+        .filter_map(|h| h["command"].as_str())
+        .filter(|c| gate_hook_program(c).is_some())
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Whether `program` runs `binary`: the same file, resolved through symlinks, or a `.cmd`
+/// wrapper whose text names it.
+fn runs_binary(program: &str, binary: &str) -> bool {
+    let normal = |s: &str| {
+        let s = s.replace('\\', "/");
+        if cfg!(windows) { s.to_lowercase() } else { s }
+    };
+    let same = match (fs::canonicalize(program), fs::canonicalize(binary)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => normal(program) == normal(binary),
+    };
+    same || (Path::new(program)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("cmd"))
+        && fs::read_to_string(program)
+            .is_ok_and(|script| normal(&script).contains(&normal(binary))))
+}
+
+/// Windows refuses to read or replace a file another process opened without sharing it;
+/// elsewhere only a read-only file or directory is refused.
+fn held_open(e: &std::io::Error) -> bool {
+    (cfg!(windows) && matches!(e.raw_os_error(), Some(5 | 32 | 33)))
+        || e.kind() == ErrorKind::PermissionDenied
+}
+
+fn held_open_failure(path: &Path) -> Failure {
+    Failure::Error(format!(
+        "{} is held open by another process or is read-only, so install cannot replace it. Close the harness session that uses it and run install again; install does not stop processes or retry.",
+        path.display()
+    ))
+}
+
+/// Write `content` to a temporary file beside `path` and rename it over `path`, so a crash
+/// mid-write leaves the old file whole. A symlinked file is written through and stays a link.
+fn atomic_write(path: &Path, content: &str) -> Result<(), Failure> {
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let fail = |e: std::io::Error| {
+        if held_open(&e) {
+            held_open_failure(path)
+        } else {
+            Failure::Error(format!("{}: {e}", path.display()))
+        }
+    };
+    let parent = target
+        .parent()
+        .ok_or_else(|| Failure::Error(format!("{} has no parent directory", path.display())))?;
+    fs::create_dir_all(parent).map_err(fail)?;
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temp = parent.join(format!(".{name}.supervisor-tmp-{}", std::process::id()));
+    let written = fs::File::create(&temp).and_then(|mut f| {
+        f.write_all(content.as_bytes())?;
+        f.sync_all()
+    });
+    match written.and_then(|()| fs::rename(&temp, &target)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = fs::remove_file(&temp);
+            Err(fail(e))
+        }
+    }
 }
 
 fn render(template: &str, harness: &Harness) -> String {
@@ -355,7 +595,8 @@ fn render(template: &str, harness: &Harness) -> String {
 fn json_object(before: Option<&str>) -> Result<Map<String, Value>, String> {
     match before.filter(|t| !t.trim().is_empty()) {
         None => Ok(Map::new()),
-        Some(text) => match serde_json::from_str(text).map_err(|e| e.to_string())? {
+        // The parser's message can quote the file, so it is not passed on.
+        Some(text) => match serde_json::from_str(text).map_err(|_| "does not parse as JSON")? {
             Value::Object(map) => Ok(map),
             _ => Err("not a JSON object".into()),
         },
@@ -382,25 +623,28 @@ fn merge_mcp_json(before: Option<&str>, binary: &str, project: &str) -> Result<S
     pretty(root)
 }
 
-/// A hook this gate installed: `<path> hook` (path optionally quoted) where the program is
-/// `supervisor` or `supervisor-claude-code`, with or without `.exe`, at any path.
-fn is_gate_hook(command: &str) -> bool {
-    let Some(program) = command.trim().strip_suffix(" hook") else {
-        return false;
-    };
-    let program = program.trim().trim_matches('"');
+/// The program of a hook this gate installed: `<path> hook` (path optionally quoted) where the
+/// program is `supervisor` or `supervisor-claude-code` (bare, `.exe`, or the npm `.cmd` shim),
+/// at any path.
+fn gate_hook_program(command: &str) -> Option<&str> {
+    let program = command
+        .trim()
+        .strip_suffix(" hook")?
+        .trim()
+        .trim_matches('"');
     let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
-    matches!(
-        name,
-        "supervisor" | "supervisor.exe" | "supervisor-claude-code" | "supervisor-claude-code.exe"
-    )
+    let stem = name
+        .strip_suffix(".exe")
+        .or_else(|| name.strip_suffix(".cmd"))
+        .unwrap_or(name);
+    matches!(stem, "supervisor" | "supervisor-claude-code").then_some(program)
 }
 
-/// Per event, the first gate hook (any binary path) gets our command in place, further gate
-/// hooks and the groups they leave empty are removed, and our group is appended when there was
-/// none; so a moved or upgraded binary yields one entry per event. Also adds `mcp__supervisor`
-/// to `permissions.allow` (Claude Code otherwise refuses the gate's MCP tools under
-/// acceptEdits). No other permission key is written.
+/// Per event, every gate hook (recognised by its shape, whatever the binary path) is dropped,
+/// together with any group that leaves empty, and one fresh group is appended; other hooks and
+/// groups stay as they are. So a moved binary or an npm upgrade leaves one entry per event.
+/// Also adds `mcp__supervisor` to `permissions.allow` (Claude Code otherwise refuses the gate's
+/// MCP tools under acceptEdits). No other permission key is written.
 fn merge_settings(before: Option<&str>, command: &str) -> Result<String, String> {
     let mut root = json_object(before)?;
     let hooks = root
@@ -414,22 +658,15 @@ fn merge_settings(before: Option<&str>, command: &str) -> Result<String, String>
             .or_insert_with(|| json!([]))
             .as_array_mut()
             .ok_or_else(|| format!("hooks.{event} is not an array"))?;
-        let mut present = false;
         for group in groups.iter_mut() {
             let Some(hs) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
                 continue;
             };
             let before = hs.len();
-            hs.retain_mut(|h| {
-                if !h["command"].as_str().is_some_and(is_gate_hook) {
-                    return true;
-                }
-                if present {
-                    return false;
-                }
-                present = true;
-                h["command"] = command.into();
-                true
+            hs.retain(|h| {
+                !h["command"]
+                    .as_str()
+                    .is_some_and(|c| gate_hook_program(c).is_some())
             });
             // Mark a group emptied here; groups that were already empty are left alone.
             if hs.is_empty() && before > 0 {
@@ -437,17 +674,15 @@ fn merge_settings(before: Option<&str>, command: &str) -> Result<String, String>
             }
         }
         groups.retain(|g| !g.is_null());
-        if !present {
-            let mut group = Map::new();
-            if let Some(m) = matcher {
-                group.insert("matcher".into(), m.into());
-            }
-            group.insert(
-                "hooks".into(),
-                json!([{ "type": "command", "command": command }]),
-            );
-            groups.push(Value::Object(group));
+        let mut group = Map::new();
+        if let Some(m) = matcher {
+            group.insert("matcher".into(), m.into());
         }
+        group.insert(
+            "hooks".into(),
+            json!([{ "type": "command", "command": command }]),
+        );
+        groups.push(Value::Object(group));
     }
     let allow = root
         .entry("permissions")

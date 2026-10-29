@@ -215,3 +215,38 @@ Workers now write the header in about half of dispatches, where before none did.
 | `cargo fmt --all -- --check` | `job_01a187ac97ac70d38ce4b55a3d4ad2ac` | 0 | no diff |
 | `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a187ac9f37723c863a7b9c593cce16` | 0 | no warning or error lines |
 | `cargo test --workspace` | `job_01a187aca6f475daa87552665ce816cd` | 0 | 129 passed, 0 failed (documentation-only change, count unchanged) |
+
+## Installer: ownership by shape, scan before write, atomic writes
+
+Found on the lab repo: `supervisor install --harness claude-code` over a `.claude/settings.json` that already held the gate's hooks from another binary path appended a second set (12 hook entries, 6 per path). Install only treated an identical command as its own. Fixed in `cli/src/install.rs` after reading symforge's `src/cli/init.rs` (`is_symforge_entry`, `merge_event_entries`), `src/cli/harness.rs` (`scan_target`, `HarnessState`), `src/cli/harness_apply.rs` (`atomic_write`), `src/cli/update.rs` (`runs_live_binary`) and `SELF_UPDATE_PROCEDURE.md`. Core and adapters are untouched.
+
+| Item | What install does now |
+|---|---|
+| 1. Ownership by shape | A hook is the gate's when its command is `<path> hook` (path optionally quoted) and the program is `supervisor` or `supervisor-claude-code`, bare, `.exe` or the npm `.cmd` shim, at any path. Per event every such hook is dropped, along with any group it leaves empty, and one fresh group is appended. Unlike symforge, a group holding the gate's hook next to a foreign one keeps the foreign one. The MCP entry is replaced by its key `supervisor`. |
+| 2. Scan before write | Each harness is `not-installed` (neither the registration nor the harness's project directory exists), `absent`, `present-current`, `present-stale` or `malformed`. A registration that runs this binary keeps its spelling: the same file resolved through symlinks, or a `.cmd` wrapper whose text names it. `present-current` means install would change no byte: it prints `unchanged` and writes nothing. `malformed` (the file does not parse, or a key install writes has another type) is never written, and neither its text nor the parse error is printed. The dry run prints all five states. For a harness named with `--harness`, `not-installed` is reported and the files are created, as before. |
+| 3. Running-binary rule | Install never stops, kills or waits for a process. A file held open by another process (Windows sharing violation) or read-only fails with that path and the advice to close the harness session. No retry, no force. Install does not swap binaries; that is npm's job (or the user's), so there is no rename-aside or rollback logic. Recorded as implementation principle 10 in `CLAUDE.md`. |
+| 4. Atomic writes | Every file is written to `.<name>.supervisor-tmp-<pid>` beside it, synced, and renamed over it. A symlinked file is written through and stays a link. On a failed write the temporary file is removed and the old file is untouched. |
+
+Found while testing: the npm shim on Windows is `supervisor.cmd`, and the first version of the ownership rule did not count `.cmd`. A registration through the shim would have been duplicated in the same way; the wrapper test caught it.
+
+| New or changed test (`cli/tests/install.rs`) | Shows |
+|---|---|
+| `claude_settings_replace_our_hooks_from_another_binary_path` | two old paths on all six events (one quoted, one an npm install), plus an unrelated group and an unrelated hook sharing a group: one gate hook per event with the new path, the unrelated entries unchanged, the other MCP server kept, a rerun prints `unchanged` and changes no byte |
+| `dry_run_prints_the_state_of_every_harness` | all five `not-installed` on a fresh project with nothing written; then `present-current`, `present-current`, `absent`, `present-stale`, `not-installed` |
+| `a_malformed_config_is_never_written_and_its_text_is_never_printed` | a broken `.mcp.json` holding a token-like value: exit 1, `state: malformed`, the path named, no value, key or parse error in the output, no file written, in the normal run and the dry run; a TOML section without a readable command is malformed too |
+| `a_registration_through_a_cmd_wrapper_of_this_binary_is_current` | registration and hooks pointing at a `.cmd` wrapper of the binary: `present-current`, `unchanged`, no byte changed |
+| `install_leaves_no_temporary_file` | all five harnesses installed, no `supervisor-tmp` file left |
+| `a_symlinked_config_stays_a_link` (Unix only) | `.mcp.json` as a symlink stays a link, its target gets the entry |
+| `a_config_held_open_fails_with_advice_and_stays_intact` (Windows only) | `settings.json` held open with read sharing only: exit 1, the path and "Close the harness session" printed, old content intact, no temporary file left |
+| `every_harness_gets_its_documented_files_and_a_second_run_changes_nothing` | the second run now prints `state: present-current` and `unchanged` |
+
+A crash between write and rename is not simulated. What is shown is the mechanism (temporary file beside the target, then rename) and that a failed rename leaves the old file intact.
+
+| Command | Job | Exit | Evidence |
+|---|---|---|---|
+| `cargo fmt --all -- --check` | `job_01a187e06a32706f963c1dabc3ab36af` | 0 | no diff |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a187e0702c76d4b482cddfbdb3ea95` | 0 | no warning or error lines |
+| `cargo test --workspace` (Windows) | `job_01a187e077d27684afe35b0b93a119ec` | 0 | 136 passed, 0 failed (install 10 to 15) |
+| `npm test` in `npm/` | `job_01a187e0ab467474bdeec1a08674a476` | 0 | 34 tests: 31 pass, 3 skipped (symlinks unavailable on this Windows account) |
+
+The Unix-only symlink test runs on the Linux CI job, not on this machine.
