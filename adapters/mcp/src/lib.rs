@@ -1,8 +1,14 @@
-//! MODE: advisory via MCP on every harness; the server answers and never blocks; receipts are caller-asserted (the server does not observe commands). Journal format v1.
+//! MODE: advisory via MCP on every harness; the server answers and never blocks; receipts are caller-asserted (the server does not observe commands). On Claude Code, the hook adapter ignores these receipts when it decides whether a completion may stop. Journal format v1.
 //!
 //! Model Context Protocol server over the completion gate: newline-delimited JSON-RPC 2.0 on
 //! stdin/stdout. It shares contract.json, gate.json and events.jsonl with the Claude Code
 //! adapter, so one project has one gate whichever path writes it.
+//!
+//! ## Receipts through MCP
+//!
+//! A receipt recorded with `receipt_record` is stored with an `output_ref` that starts with
+//! `mcp-asserted:`. This server counts it in its own advisory answers; the Claude Code hook
+//! adapter leaves it out when it decides acceptance and journals it as an unlinked CHECK.
 #![forbid(unsafe_code)]
 
 use std::fs;
@@ -15,7 +21,7 @@ use coding_supervisor::{
     ReceiptStatus, Severity, TaskState, VerificationReceipt,
 };
 use serde_json::{Map, Value};
-use supervisor_claude_code::adapter::{Session, now, render};
+use supervisor_claude_code::adapter::{MCP_ASSERTED, Session, now, render};
 use supervisor_claude_code::journal::{self, Trace};
 use supervisor_claude_code::location::resolve_state_dir;
 use supervisor_claude_code::state::{
@@ -235,7 +241,7 @@ impl Server {
         };
         let candidate_known = observed.is_ok();
         let criteria = contract.criteria.clone();
-        let mut session = Session::open(contract, stored, observed, reasons)?;
+        let mut session = Session::open(contract, stored, observed, true, reasons)?;
         let result = apply(&op, &mut session, reasons);
         session.gate.checkpoint = session.task.checkpoint();
         trace.state_after = Some(session.task.state());
@@ -282,6 +288,7 @@ impl Server {
             contract,
             None,
             Err("no candidate observed yet".to_owned()),
+            true,
             reasons,
         )?;
         trace.state_after = Some(session.task.state());
@@ -383,7 +390,7 @@ fn apply(op: &Op, session: &mut Session, reasons: &mut Vec<String>) -> Result<()
                 command: command.clone(),
                 cwd: cwd.clone(),
                 exit_code: *exit_code,
-                output_ref: format!("mcp-asserted:{output_ref}"),
+                output_ref: format!("{MCP_ASSERTED}{output_ref}"),
                 claim_supported: *claim_supported,
                 started_at: t,
                 finished_at: t,

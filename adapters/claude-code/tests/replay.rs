@@ -7,11 +7,12 @@
 use std::fs;
 use std::path::PathBuf;
 
-use coding_supervisor::{Candidate, CandidateId};
+use coding_supervisor::{Candidate, CandidateId, CriterionId, VerificationReceipt};
 use serde_json::{Value, json};
-use supervisor_claude_code::adapter::{Decision, Env, handle};
+use supervisor_claude_code::adapter::{Decision, Env, MCP_ASSERTED, handle};
 use supervisor_claude_code::candidate::CandidateProvider;
 use supervisor_claude_code::journal::decision_parts;
+use supervisor_claude_code::state::{Stored, load_gate, read_contract, save_gate};
 
 const CAPTURES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -604,4 +605,41 @@ fn every_journal_line_names_the_state_location() {
     let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
     handle(&pre("Write"), &mut env);
     assert!(last_reasons(&env).contains("\"state_location\":\"test\""));
+}
+
+#[test]
+fn mcp_asserted_receipt_does_not_let_the_chair_stop() {
+    let d = dir("mcp-asserted");
+    let mut env = env(
+        &d,
+        Some(contract(&[("C1", true)], &["src/"])),
+        fake("one", &["src/lib.rs"]),
+    );
+    handle(&pre("Write"), &mut env);
+    let (_, digest) = read_contract(&env.state_dir).unwrap();
+    let Stored::Valid(mut g) = load_gate(&env.state_dir, &digest).unwrap() else {
+        panic!("gate.json not valid after the first call");
+    };
+    g.receipts.push(VerificationReceipt {
+        criterion: CriterionId("C1".into()),
+        candidate: g.checkpoint.candidate.clone().unwrap(),
+        command: "cargo test".into(),
+        cwd: ".".into(),
+        exit_code: Some(0),
+        output_ref: format!("{MCP_ASSERTED}run-1"),
+        claim_supported: true,
+        started_at: 1,
+        finished_at: 1,
+    });
+    save_gate(&env.state_dir, &g, &digest).unwrap();
+
+    let r = handle(&stop("Done, the task is complete.", false), &mut env);
+    assert!(blocked(&r).contains("missing C1"), "{r:?}");
+    let line: Value = serde_json::from_str(&last_reasons(&env)).unwrap();
+    assert_eq!(line["event"], "Stop");
+    assert_eq!(line["receipts"]["unlinked"], json!(["C1"]));
+    assert_eq!(line["tampered"], false);
+    let g = gate(&env);
+    assert_eq!(g["state"], "verifying");
+    assert_eq!(g["receipts"].as_array().unwrap().len(), 1);
 }

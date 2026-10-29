@@ -16,6 +16,10 @@ use crate::journal::{self, Trace};
 use crate::state::{self, Gate, Stored, obj, state_name};
 use crate::{claim, guard, location};
 
+/// `output_ref` prefix of a receipt recorded through the MCP server: caller-asserted, never
+/// observed by a hook, so the enforcing paths here do not count it.
+pub const MCP_ASSERTED: &str = "mcp-asserted:";
+
 /// Everything a hook call needs besides its payload.
 pub struct Env {
     /// contract.json, gate.json, runs.jsonl, events.jsonl; see `location::resolve_state_dir`.
@@ -178,7 +182,7 @@ fn process(
     if let Err(why) = &observed {
         reasons.push(format!("candidate not observed: {why}"));
     }
-    let mut session = Session::open(contract, stored, observed, reasons)?;
+    let mut session = Session::open(contract, stored, observed, false, reasons)?;
     let decision = match event {
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
         "Stop" => session.stop(payload, reasons),
@@ -366,10 +370,13 @@ pub struct Session {
 }
 
 impl Session {
+    /// `honour_asserted`: replay receipts whose `output_ref` starts with [`MCP_ASSERTED`].
+    /// The hook adapter passes `false`; only the advisory MCP server passes `true`.
     pub fn open(
         contract: TaskContract,
         stored: Option<Gate>,
         observed: Result<Candidate, String>,
+        honour_asserted: bool,
         reasons: &mut Vec<String>,
     ) -> Result<Self, String> {
         let criteria = contract.criteria.clone();
@@ -394,7 +401,8 @@ impl Session {
                 }
                 let mut task = Task::resume(contract, gate.checkpoint.clone());
                 if let Ok(current) = &observed {
-                    restore(&mut task, &gate, current, reasons).map_err(|e| render(&e))?;
+                    restore(&mut task, &gate, current, honour_asserted, reasons)
+                        .map_err(|e| render(&e))?;
                 }
                 (task, gate)
             }
@@ -645,10 +653,14 @@ impl Session {
 /// change marks the earlier receipts stale, so after the final observation of the current
 /// candidate the core itself reports `StaleReceipt` for evidence from an older candidate
 /// instead of `MissingReceipt` (the L4 live run showed the difference).
+///
+/// Unless `honour_asserted`, a caller-asserted MCP receipt is left out of the replay and
+/// journaled as an unlinked CHECK: no hook observed its command run.
 fn restore(
     task: &mut Task,
     gate: &Gate,
     current: &Candidate,
+    honour_asserted: bool,
     reasons: &mut Vec<String>,
 ) -> Result<(), GateError> {
     let previous = gate.checkpoint.candidate.clone();
@@ -656,6 +668,16 @@ fn restore(
         let mut groups: Vec<(coding_supervisor::CandidateId, Vec<&VerificationReceipt>)> =
             Vec::new();
         for receipt in &gate.receipts {
+            if !honour_asserted && receipt.output_ref.starts_with(MCP_ASSERTED) {
+                let exit = receipt
+                    .exit_code
+                    .map_or("none".to_owned(), |c| c.to_string());
+                reasons.push(format!(
+                    "unlinked CHECK {} | {} | exit {exit} (mcp-asserted receipt; no hook observed the run)",
+                    receipt.criterion.0, receipt.command
+                ));
+                continue;
+            }
             match groups.iter_mut().find(|(id, _)| *id == receipt.candidate) {
                 Some((_, list)) => list.push(receipt),
                 None => groups.push((receipt.candidate.clone(), vec![receipt])),
