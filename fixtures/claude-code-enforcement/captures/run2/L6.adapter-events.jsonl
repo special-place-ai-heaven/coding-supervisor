@@ -1,0 +1,9 @@
+{"agent_id":"main","decision":null,"event":"UserPromptSubmit","reasons":[],"t":1793261939}
+{"agent_id":"main","decision":null,"event":"PreToolUse","reasons":["replay: 0 receipts restored, 0 rejected"],"t":1793261942}
+{"agent_id":"main","decision":{"hookSpecificOutput":{"additionalContext":"GATE: background dispatch; the result is judged at SubagentStop, not here.","hookEventName":"PostToolUse"}},"event":"PostToolUse","reasons":["replay: 0 receipts restored, 0 rejected"],"t":1793261943}
+{"agent_id":"ab53a24fe6cedbada","decision":null,"event":"PreToolUse","reasons":["replay: 0 receipts restored, 0 rejected"],"t":1793261945}
+{"agent_id":"main","decision":null,"event":"Stop","reasons":["replay: 0 receipts restored, 0 rejected","no completion claim"],"t":1793261945}
+{"agent_id":"ab53a24fe6cedbada","decision":null,"event":"PostToolUse","reasons":["command run journaled","replay: 0 receipts restored, 0 rejected"],"t":1793261960}
+{"agent_id":"ab53a24fe6cedbada","decision":null,"event":"SubagentStop","reasons":["replay: 0 receipts restored, 0 rejected","recorded CHECK C2 | echo check-ok | exit 0","accepted: ready_for_review"],"t":1793261961}
+{"agent_id":"main","decision":null,"event":"UserPromptSubmit","reasons":["replay: 1 receipts restored, 0 rejected"],"t":1793261962}
+{"agent_id":"main","decision":null,"event":"Stop","reasons":["replay: 1 receipts restored, 0 rejected","completed"],"t":1793261965}

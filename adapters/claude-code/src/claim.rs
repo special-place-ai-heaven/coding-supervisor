@@ -45,7 +45,9 @@ pub fn claims_completion(text: &str) -> bool {
     if header::parse(text).is_some_and(|h| h.verdict == Verdict::Pass) {
         return true;
     }
-    let prose = without_fences(text).to_lowercase().replace('\u{2019}', "'");
+    let prose = without_quotes(&without_fences(text))
+        .to_lowercase()
+        .replace('\u{2019}', "'");
     // Clauses, not just sentences: "This is not complete, but the parser is done." is a claim.
     prose
         .split(['.', '!', '?', '\n', ',', ';', ':'])
@@ -65,6 +67,36 @@ fn without_fences(text: &str) -> String {
             out.push_str(line);
             out.push('\n');
         }
+    }
+    out
+}
+
+/// Drops text inside double quotes or backticks: a message that quotes an earlier claim while
+/// withdrawing it ("My earlier \"Done.\" was only a quote") is not itself a claim (L5 live run).
+/// An unbalanced quote keeps the rest of the line.
+fn without_quotes(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        let mut rest = line;
+        loop {
+            let Some(open) = rest.find(['"', '`']) else {
+                out.push_str(rest);
+                break;
+            };
+            let quote = rest.as_bytes()[open] as char;
+            out.push_str(&rest[..open]);
+            match rest[open + 1..].find(quote) {
+                Some(close) => {
+                    out.push(' ');
+                    rest = &rest[open + 1 + close + 1..];
+                }
+                None => {
+                    out.push_str(&rest[open + 1..]);
+                    break;
+                }
+            }
+        }
+        out.push('\n');
     }
     out
 }

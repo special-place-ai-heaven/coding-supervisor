@@ -214,6 +214,28 @@ fn replay_a19_changed_candidate_makes_receipts_stale() {
 }
 
 #[test]
+fn replay_review_survives_older_candidate_receipts() {
+    // L4 live run: fresh receipts on the new candidate reached review, then the next hook
+    // call replayed the older candidate's receipts first and dropped review to verifying.
+    let d = dir("review-restore");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    assert_eq!(worker(&mut env, "w1", "PASS", &ALL4), Decision::None);
+    env.candidate = fake("two", &["src/lib.rs"]);
+    let r = handle(&stop("Done.", false), &mut env);
+    assert!(blocked(&r).contains("stale C1"), "{r:?}");
+    assert_eq!(worker(&mut env, "w2", "PASS", &ALL4), Decision::None);
+    assert_eq!(gate(&env)["state"], "ready_for_review");
+    let r = handle(
+        &template(FOREGROUND, "PostToolUse", Some("Agent")),
+        &mut env,
+    );
+    assert!(context(&r).contains("decision: accepted"), "{r:?}");
+    assert_eq!(gate(&env)["state"], "ready_for_review");
+    assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+}
+
+#[test]
 fn replay_a20_resume_keeps_state_continuations_candidate_and_receipts() {
     let d = dir("a20");
     let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));

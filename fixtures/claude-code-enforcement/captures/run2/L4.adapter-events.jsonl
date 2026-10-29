@@ -1,0 +1,15 @@
+{"agent_id":"main","decision":null,"event":"UserPromptSubmit","reasons":[],"t":1793261865}
+{"agent_id":"main","decision":null,"event":"PreToolUse","reasons":["replay: 0 receipts restored, 0 rejected"],"t":1793261868}
+{"agent_id":"a3999364ebe6a103e","decision":null,"event":"PreToolUse","reasons":["replay: 0 receipts restored, 0 rejected"],"t":1793261872}
+{"agent_id":"a3999364ebe6a103e","decision":null,"event":"PostToolUse","reasons":["command run journaled","replay: 0 receipts restored, 0 rejected"],"t":1793261883}
+{"agent_id":"a3999364ebe6a103e","decision":null,"event":"SubagentStop","reasons":["replay: 0 receipts restored, 0 rejected","recorded CHECK C2 | echo check-ok | exit 0","accepted: ready_for_review"],"t":1793261885}
+{"agent_id":"main","decision":{"hookSpecificOutput":{"additionalContext":"GATE: state ready_for_review; current receipts: [C2]; missing: []; stale: []; decision: accepted","hookEventName":"PostToolUse"}},"event":"PostToolUse","reasons":["replay: 1 receipts restored, 0 rejected"],"t":1793261886}
+{"agent_id":"main","decision":null,"event":"PreToolUse","reasons":["replay: 1 receipts restored, 0 rejected"],"t":1793261889}
+{"agent_id":"main","decision":null,"event":"PostToolUse","reasons":["replay: 1 receipts restored, 0 rejected","candidate changed since the checkpoint"],"t":1793261890}
+{"agent_id":"main","decision":{"decision":"block","reason":"GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; stale C2; record the check with CHECK lines or report the task as not complete."},"event":"Stop","reasons":["replay: 1 receipts restored, 0 rejected","stale C2"],"t":1793261893}
+{"agent_id":"main","decision":null,"event":"PreToolUse","reasons":["replay: 1 receipts restored, 0 rejected"],"t":1793261897}
+{"agent_id":"acdda13e7d8ffdae9","decision":null,"event":"PreToolUse","reasons":["replay: 1 receipts restored, 0 rejected"],"t":1793261900}
+{"agent_id":"acdda13e7d8ffdae9","decision":null,"event":"PostToolUse","reasons":["command run journaled","replay: 1 receipts restored, 0 rejected"],"t":1793261901}
+{"agent_id":"acdda13e7d8ffdae9","decision":null,"event":"SubagentStop","reasons":["replay: 1 receipts restored, 0 rejected","recorded CHECK C2 | echo check-ok | exit 0","accepted: ready_for_review"],"t":1793261906}
+{"agent_id":"main","decision":{"hookSpecificOutput":{"additionalContext":"GATE: state verifying; current receipts: [C2]; missing: []; stale: []; decision: not accepted (state verifying)","hookEventName":"PostToolUse"}},"event":"PostToolUse","reasons":["replay: 2 receipts restored, 0 rejected"],"t":1793261907}
+{"agent_id":"main","decision":null,"event":"Stop","reasons":["replay: 2 receipts restored, 0 rejected","no completion claim"],"t":1793261910}

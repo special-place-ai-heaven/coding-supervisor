@@ -620,6 +620,15 @@ fn restore(
     task.observe_candidate(current.clone())?;
     if previous.as_ref() != Some(&current.id) {
         reasons.push("candidate changed since the checkpoint".to_owned());
+    } else if gate.checkpoint.state == TaskState::ReadyForReview
+        && task.state() == TaskState::Verifying
+    {
+        // Replaying an older candidate's receipts moved review back to verifying (L4 live
+        // run); the identity is unchanged, so re-evaluate on the evidence that is current.
+        match task.try_accept() {
+            Ok(()) => reasons.push("review state restored after replay".to_owned()),
+            Err(e) => reasons.push(format!("review not restored: {}", render(&e))),
+        }
     }
     Ok(())
 }

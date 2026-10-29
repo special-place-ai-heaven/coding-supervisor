@@ -92,6 +92,15 @@ fn claim_parser_required_cases() {
         ("Nothing is complete.", false),
         ("None of the checks pass.", false),
         ("No tests pass yet.", false),
+        (
+            "My earlier \"Done, the task is complete.\" was only the sentence you asked me to repeat.",
+            false,
+        ),
+        (
+            "The log says `all tests pass` but I have not checked it.",
+            false,
+        ),
+        ("The check is `cargo test`, and it is done.", true),
         ("Here is the log:\n```\ndone\n```\nSee above.", false),
     ];
     for (text, expected) in cases {
