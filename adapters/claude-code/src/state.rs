@@ -77,6 +77,10 @@ pub struct Gate {
     pub sessions: BTreeMap<String, SessionRecord>,
     /// The candidate at the last Stop that completed or confirmed completion.
     pub accepted_candidate: Option<CandidateId>,
+    /// The Claude Code session that owns this task: a call from another session starts a new
+    /// task. `None` in a gate.json written before per-session tasks, or by the MCP server; the
+    /// next hook call with a session adopts it.
+    pub session_id: Option<String>,
 }
 
 /// What the gate remembers about one Claude Code session.
@@ -102,6 +106,7 @@ impl Gate {
             handback_refusals: BTreeMap::new(),
             sessions: BTreeMap::new(),
             accepted_candidate: None,
+            session_id: None,
         }
     }
 
@@ -160,6 +165,7 @@ impl Gate {
                 "accepted_candidate",
                 self.accepted_candidate.as_ref().map(candidate_json).into(),
             ),
+            ("session_id", self.session_id.clone().into()),
         ])
     }
 
@@ -211,6 +217,7 @@ impl Gate {
                     .collect::<Result<_, String>>()?,
             },
             accepted_candidate: optional_candidate(v.get("accepted_candidate"))?,
+            session_id: optional_string(v, "session_id")?,
         })
     }
 }
@@ -505,6 +512,17 @@ pub fn save_gate(dir: &Path, gate: &Gate, contract_sha256: &str) -> Result<(), S
     )
     .map_err(|e| format!("{}: {e}", tmp.display()))?;
     fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Write `path` whole: a temp file beside it, then a rename, so a reader never sees half of it.
+pub fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    fs::write(&tmp, text).map_err(|e| format!("{}: {e}", path.display()))?;
+    fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 pub fn append_line(path: &Path, line: &Value) -> Result<(), String> {

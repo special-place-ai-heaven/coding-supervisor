@@ -18,7 +18,7 @@ const CHECKPOINT_FIELDS: [&str; 8] = [
     "contract_id",
 ];
 
-const ADDED_FIELDS: [&str; 2] = ["sessions", "accepted_candidate"];
+const ADDED_FIELDS: [&str; 3] = ["sessions", "accepted_candidate", "session_id"];
 
 /// Compact JSON with object keys sorted recursively. Written out rather than relying on
 /// serde_json's map order, which a `preserve_order` feature elsewhere in the build would change.

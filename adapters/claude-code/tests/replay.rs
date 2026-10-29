@@ -5,12 +5,13 @@
 //! covered by the core suite (tests/scenarios.rs) only; it is not faked here.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use coding_supervisor::{Candidate, CandidateId, CriterionId, TaskState, VerificationReceipt};
 use serde_json::{Value, json};
 use supervisor_claude_code::adapter::{Decision, Env, MCP_ASSERTED, handle};
 use supervisor_claude_code::candidate::CandidateProvider;
+use supervisor_claude_code::infer;
 use supervisor_claude_code::journal::decision_parts;
 use supervisor_claude_code::level::Level;
 use supervisor_claude_code::sha256;
@@ -1470,4 +1471,173 @@ fn an_agent_cannot_change_the_level_at_any_level() {
         read["tool_input"] = json!({"command": "supervisor level"});
         assert_eq!(handle(&read, &mut env), Decision::None, "{level:?}");
     }
+}
+
+/// A SessionStart payload as Claude Code sends it, for the project at `cwd`.
+fn session_start(sid: &str, cwd: &Path) -> Value {
+    json!({"hook_event_name": "SessionStart", "session_id": sid, "source": "startup",
+        "cwd": cwd.to_string_lossy(), "transcript_path": "t.jsonl"})
+}
+fn in_session(mut payload: Value, sid: &str) -> Value {
+    payload["session_id"] = json!(sid);
+    payload
+}
+fn start_text(d: &Decision) -> &str {
+    match d {
+        Decision::Context {
+            event: "SessionStart",
+            text,
+        } => text,
+        other => panic!("expected SessionStart context, got {other:?}"),
+    }
+}
+
+const CARGO_CONTEXT: &str = "GATE (full): before saying done, run with exit 0 after your last change: `cargo clippy --all-targets -- -D warnings`, `cargo test`.\nThe gate reads your runs; no header or tool call is needed.";
+
+#[test]
+fn session_start_infers_a_cargo_contract_and_names_the_commands() {
+    let d = dir("infer-cargo");
+    fs::write(d.0.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+    let mut env = env(&d, None, fake("one", &[]));
+    let r = handle(&session_start("s1", &d.0), &mut env);
+    assert_eq!(start_text(&r), CARGO_CONTEXT);
+    assert!(start_text(&r).lines().count() <= 3);
+    let written: Value =
+        serde_json::from_str(&fs::read_to_string(env.state_dir.join("contract.json")).unwrap())
+            .unwrap();
+    let name = d.0.file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(
+        written,
+        json!({
+            "id": format!("inferred-{name}"),
+            "goal": "The project's declared checks pass after the last change.",
+            "inferred": true,
+            "criteria": [
+                {"id": "C1", "check": "lint", "mandatory": true, "command": "cargo clippy --all-targets -- -D warnings"},
+                {"id": "C2", "check": "test", "mandatory": true, "command": "cargo test"},
+                {"id": "C3", "check": "suite", "mandatory": true, "command": "cargo test --workspace", "tier": "full"}
+            ],
+            "forbidden_effects": [],
+            "scope": [""],
+            "max_repair_rounds": 2
+        })
+    );
+    // It loads through the contract parser, and the task belongs to the session.
+    let (contract, _) = read_contract(&env.state_dir).unwrap();
+    assert_eq!(contract.unwrap().criteria.len(), 3);
+    assert_eq!(gate(&env)["session_id"], "s1");
+    assert!(last_reasons(&env).contains("contract inferred from the project's declared checks"));
+    // The quick checks complete at full; the whole project is in scope.
+    env.candidate = fake("two", &["src/lib.rs", "README.md"]);
+    for command in ["cargo clippy --all-targets -- -D warnings", "cargo test"] {
+        handle(&in_session(bash("main", command, 0), "s1"), &mut env);
+    }
+    assert_eq!(
+        handle(&in_session(stop("Done.", false), "s1"), &mut env),
+        Decision::None
+    );
+    assert_eq!(gate(&env)["state"], "completed");
+    // At ultra the full-tier check is named as well.
+    env.level = Level::Ultra;
+    let r = handle(&session_start("s2", &d.0), &mut env);
+    assert!(
+        start_text(&r).starts_with("GATE (ultra): before saying done, run with exit 0 after your last change: `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo test --workspace`."),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn inferred_checks_are_the_union_of_the_declared_ones() {
+    let d = dir("infer-union");
+    assert_eq!(infer::contract(&d.0), None);
+    fs::write(
+        d.0.join("package.json"),
+        r#"{"scripts": {"test": "jest", "build": "tsc"}}"#,
+    )
+    .unwrap();
+    fs::write(d.0.join("pyproject.toml"), "[project]\n").unwrap();
+    let c = infer::contract(&d.0).unwrap();
+    let commands: Vec<&str> = c["criteria"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["command"].as_str().unwrap())
+        .collect();
+    assert_eq!(commands, ["npm test", "pytest"]);
+}
+
+#[test]
+fn a_project_without_declared_checks_or_git_stays_dormant() {
+    let d = dir("dormant");
+    // Located, not created: the state dir must not appear.
+    let mut env = env_at(&d, fake("one", &[]));
+    assert_eq!(handle(&session_start("s1", &d.0), &mut env), Decision::None);
+    assert!(!env.state_dir.exists());
+    // Declared checks, but not a git repository.
+    fs::write(d.0.join("Cargo.toml"), "[package]\n").unwrap();
+    env.candidate = Box::new(Unobservable);
+    assert_eq!(handle(&session_start("s1", &d.0), &mut env), Decision::None);
+    assert!(!env.state_dir.exists());
+    // Level off infers nothing either.
+    env.candidate = fake("one", &[]);
+    env.level = Level::Off;
+    assert_eq!(handle(&session_start("s1", &d.0), &mut env), Decision::None);
+    assert!(!env.state_dir.exists());
+}
+
+#[test]
+fn each_session_gets_a_new_task_and_the_journals_are_kept() {
+    let d = dir("sessions");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    let r = handle(&session_start("s1", &d.0), &mut env);
+    assert_eq!(
+        start_text(&r),
+        "GATE (full): before saying done, run with exit 0 after your last change: `cargo test`.\nThe gate reads your runs; no header or tool call is needed."
+    );
+    handle(&in_session(bash("main", "cargo test", 0), "s1"), &mut env);
+    assert_eq!(
+        handle(&in_session(stop("Done.", false), "s1"), &mut env),
+        Decision::None
+    );
+    assert_eq!(gate(&env)["state"], "completed");
+    let first = fs::read_to_string(env.state_dir.join("events.jsonl")).unwrap();
+    let runs = fs::read_to_string(env.state_dir.join("runs.jsonl")).unwrap();
+
+    // A new session: a new task on the same contract, its baseline taken at SessionStart.
+    env.candidate = fake("two", &["src/lib.rs"]);
+    handle(&session_start("s2", &d.0), &mut env);
+    let g = gate(&env);
+    assert_eq!(g["state"], "verifying");
+    assert_eq!(g["session_id"], "s2");
+    assert_eq!(g["receipts"], json!([]));
+    assert_eq!(g["sessions"]["s2"]["baseline"]["dirty_digest"], "two");
+    assert!(g["sessions"].get("s1").is_none());
+    assert!(
+        last_reasons(&env)
+            .contains("new session: new task; the task of session s1 ended in state completed")
+    );
+    // A worker carries its parent's session_id and stays in that task.
+    let r = handle(&in_session(handback("w1", "Done.", false), "s2"), &mut env);
+    assert!(blocked(&r).contains("run `cargo test`: never ran"), "{r:?}");
+    let g = gate(&env);
+    assert_eq!(
+        (&g["session_id"], &g["handback_refusals"]),
+        (&json!("s2"), &json!({"w1": 1}))
+    );
+    // The earlier task's journal lines are kept.
+    let journal = fs::read_to_string(env.state_dir.join("events.jsonl")).unwrap();
+    assert!(journal.starts_with(&first));
+    assert_eq!(journal.lines().count(), first.lines().count() + 2);
+    assert!(
+        fs::read_to_string(env.state_dir.join("runs.jsonl"))
+            .unwrap()
+            .starts_with(&runs)
+    );
+
+    // The chain holds across the rollover: a hand edit is detected, and a new session does
+    // not start over from an edited gate.json.
+    let edited = edit_gate(&env, |g| g["state"] = json!("completed"));
+    assert_eq!(handle(&session_start("s3", &d.0), &mut env), Decision::None);
+    assert!(last_reasons(&env).contains("state tampered: checkpoint"));
+    assert_eq!(fs::read(env.state_dir.join("gate.json")).unwrap(), edited);
 }

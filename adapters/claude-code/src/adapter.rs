@@ -15,7 +15,7 @@ use crate::header::{self, CheckLine, Header, Verdict};
 use crate::journal::{self, Trace};
 use crate::level::{self, Level};
 use crate::state::{self, Gate, Stored, obj, state_name};
-use crate::{claim, guard, location};
+use crate::{claim, guard, infer, location};
 
 /// `output_ref` prefix of a receipt recorded through the MCP server: caller-asserted, never
 /// observed by a hook, so the enforcing paths here do not count it.
@@ -131,11 +131,42 @@ pub fn run_hook(input: &str) -> Option<String> {
     let decision = match serde_json::from_str::<Value>(input) {
         Err(e) => fail_open(&format!("payload is not JSON ({e}); not journaled")),
         Ok(payload) => match payload.get("cwd").and_then(Value::as_str) {
-            Some(cwd) => handle(&payload, &mut Env::real(Path::new(cwd))),
+            Some(cwd) => {
+                let cwd = Path::new(cwd);
+                dormant(&payload, cwd).unwrap_or_else(|| handle(&payload, &mut Env::real(cwd)))
+            }
             None => fail_open("payload has no cwd; not journaled"),
         },
     };
     decision.to_json().map(|v| v.to_string())
+}
+
+/// A project with no contract and nothing to infer one from (no declared checks, or no git
+/// candidate) is dormant: nothing is judged or written, not even the state directory. Only
+/// the state-path guard still answers. `None` when the project is not dormant.
+fn dormant(payload: &Value, cwd: &Path) -> Option<Decision> {
+    let lookup = |name: &str| std::env::var(name).ok();
+    let (dir, _) = location::state_dir_path(cwd, &lookup);
+    let has_contract = [dir.clone(), cwd.join(".supervisor")]
+        .iter()
+        .any(|d| d.join("contract.json").exists());
+    if has_contract
+        || infer::contract(cwd).is_some()
+            && (GitCandidate {
+                cwd: cwd.to_path_buf(),
+            })
+            .observe()
+            .is_ok()
+    {
+        return None;
+    }
+    Some(match text(payload, "hook_event_name") {
+        Some("PreToolUse") => {
+            guard::gate_write_denial(payload, &dir, level::config_dir(&lookup).as_deref())
+                .unwrap_or(Decision::None)
+        }
+        _ => Decision::None,
+    })
 }
 
 fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -154,8 +185,26 @@ pub fn handle(payload: &Value, env: &mut Env) -> Decision {
             _ => Decision::None,
         };
     }
-    let agent = text(payload, "agent_id").unwrap_or("main");
     let mut reasons = Vec::new();
+    if event == "SessionStart" && !env.state_dir.join("contract.json").exists() {
+        // A project without a contract gets one from its declared checks; with none, or
+        // outside git, it stays dormant and nothing is written.
+        let cwd = Path::new(text(payload, "cwd").unwrap_or_default());
+        let Some(inferred) = infer::contract(cwd).filter(|_| env.candidate.observe().is_ok())
+        else {
+            return Decision::None;
+        };
+        let written = serde_json::to_string_pretty(&inferred)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                state::write_atomic(&env.state_dir.join("contract.json"), &(text + "\n"))
+            });
+        reasons.push(match written {
+            Ok(()) => "contract inferred from the project's declared checks".to_owned(),
+            Err(e) => format!("contract not inferred: {e}"),
+        });
+    }
+    let agent = text(payload, "agent_id").unwrap_or("main");
     if let Some(error) = &env.level_error {
         reasons.push(error.clone());
     }
@@ -225,6 +274,21 @@ fn process(
         return Ok(no_contract(payload, event));
     };
     let sid = text(payload, "session_id").unwrap_or_default();
+    // One task per Claude Code session. The chain was checked above, before the old task is
+    // dropped, so a rollover never hides a hand edit; the journals keep the old task.
+    // Workers carry their parent's session_id and stay in its task.
+    // shortcut: one task per project at a time, so two sessions open on one project take the task from each other; key gate.json by session once that shows up in events.jsonl
+    let stored = match stored {
+        Some(g) if !sid.is_empty() && g.session_id.as_deref().is_some_and(|s| s != sid) => {
+            reasons.push(format!(
+                "new session: new task; the task of session {} ended in state {}",
+                g.session_id.as_deref().unwrap_or_default(),
+                state_name(g.checkpoint.state)
+            ));
+            None
+        }
+        other => other,
+    };
     let level = env.level;
     if level < Level::Ultra {
         // A full-tier criterion is required at ultra only.
@@ -240,6 +304,9 @@ fn process(
         reasons.push(format!("candidate not observed: {why}"));
     }
     let mut session = Session::open(contract, stored, observed, false, reasons)?;
+    if session.gate.session_id.is_none() && !sid.is_empty() {
+        session.gate.session_id = Some(sid.to_owned());
+    }
     session.track_session(sid, event, run.as_ref(), reasons);
     let counters = (
         session.gate.continuations,
@@ -262,6 +329,7 @@ fn process(
         "PostToolUse" if text(payload, "tool_name") == Some("Agent") => {
             session.agent_result(payload)
         }
+        "SessionStart" => session.start_context(level),
         "UserPromptSubmit" => {
             session.gate.continuations = 0;
             session.gate.prompt_id = text(payload, "prompt_id").map(str::to_owned);
@@ -564,10 +632,11 @@ impl Session {
         })
     }
 
-    /// The session's baseline is the candidate at its first UserPromptSubmit (Claude Code sends
-    /// it before any tool call). A run of a criterion's command that exits nonzero on that
-    /// baseline is recorded as a baseline failure: refusals naming that check say so, and the
-    /// level stays as configured (owner's ruling; the three-refusal release is the only escape).
+    /// The session's baseline is the candidate at its SessionStart, else at its first
+    /// UserPromptSubmit (Claude Code sends both before any tool call). A run of a criterion's
+    /// command that exits nonzero on that baseline is recorded as a baseline failure: refusals
+    /// naming that check say so, and the level stays as configured (owner's ruling; the
+    /// three-refusal release is the only escape).
     fn track_session(
         &mut self,
         sid: &str,
@@ -578,7 +647,7 @@ impl Session {
         sid.clone_into(&mut self.sid);
         let current = self.observed.as_ref().ok().map(|c| c.id.clone());
         let record = self.gate.sessions.entry(sid.to_owned()).or_default();
-        if event == "UserPromptSubmit" && record.baseline.is_none() {
+        if matches!(event, "SessionStart" | "UserPromptSubmit") && record.baseline.is_none() {
             record.baseline.clone_from(&current);
         }
         let Some(run) = run else { return };
@@ -606,6 +675,30 @@ impl Session {
             );
             reasons.push(format!("baseline failure recorded for {}: {why}", c.id.0));
             record.baseline_failures.insert(c.id.0.clone(), why);
+        }
+    }
+
+    /// SessionStart's additionalContext: the commands required at `level` and the rule, in two
+    /// lines. Nothing when no check is required.
+    fn start_context(&self, level: Level) -> Decision {
+        let mut commands: Vec<String> = Vec::new();
+        for c in self.criteria.iter().filter(|c| c.mandatory) {
+            if let Some(first) = c.command.first().map(|s| format!("`{}`", s.trim()))
+                && !commands.contains(&first)
+            {
+                commands.push(first);
+            }
+        }
+        if commands.is_empty() {
+            return Decision::None;
+        }
+        Decision::Context {
+            event: "SessionStart",
+            text: format!(
+                "GATE ({}): before saying done, run with exit 0 after your last change: {}.\nThe gate reads your runs; no header or tool call is needed.",
+                level.name(),
+                commands.join(", ")
+            ),
         }
     }
 

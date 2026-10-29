@@ -9,6 +9,7 @@ mod chain;
 pub mod claim;
 pub mod guard;
 pub mod header;
+pub mod infer;
 pub mod journal;
 pub mod level;
 pub mod location;

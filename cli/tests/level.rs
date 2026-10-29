@@ -1,5 +1,6 @@
-//! `supervisor level`, `supervisor status` and the hook at level off, run as child processes with
-//! the state root and the user config directory redirected into a temp directory.
+//! `supervisor level`, `supervisor status`, `supervisor init` over an inferred contract, and the
+//! hook at level off and in a dormant project, run as child processes with the state root and
+//! the user config directory redirected into a temp directory.
 
 use std::fs;
 use std::io::Write;
@@ -41,6 +42,9 @@ fn run(t: &Temp, args: &[&str], stdin: Option<&str>) -> Output {
         .args(args)
         .env("SUPERVISOR_STATE_DIR", &t.state)
         .env("SUPERVISOR_CONFIG_DIR", &t.config)
+        // git never looks above the temp root, so a project there is a repository only when
+        // a test makes it one.
+        .env("GIT_CEILING_DIRECTORIES", &t.root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -250,4 +254,104 @@ fn status_counts_completions_and_names_the_refusal_reasons() {
         text.contains("  C2 | `cargo test --workspace` or `cargo nextest run` | full | yes | yes"),
         "{text}"
     );
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+/// A git repository with one commit holding whatever `dir` already contains.
+fn repo(dir: &Path) {
+    fs::write(dir.join("README.md"), "x\n").unwrap();
+    git(dir, &["init", "-q"]);
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "init"]);
+}
+fn hook_calls(cwd: &str) -> [Value; 4] {
+    [
+        json!({"hook_event_name": "SessionStart", "cwd": cwd, "session_id": "s1", "source": "startup"}),
+        json!({"hook_event_name": "PreToolUse", "cwd": cwd, "session_id": "s1",
+            "tool_name": "Write", "tool_input": {"file_path": format!("{cwd}/src/lib.rs")}}),
+        json!({"hook_event_name": "PostToolUse", "cwd": cwd, "session_id": "s1",
+            "tool_name": "Bash", "tool_input": {"command": "cargo test"}, "tool_use_id": "toolu_1",
+            "tool_response": {"stdout": "ok"}}),
+        json!({"hook_event_name": "Stop", "cwd": cwd, "session_id": "s1",
+            "last_assistant_message": "Done, the task is complete.", "stop_hook_active": false}),
+    ]
+}
+
+#[test]
+fn a_dormant_project_leaves_the_state_root_untouched() {
+    let t = temp("dormant");
+    fs::write(t.state.join("keep.txt"), "untouched").unwrap();
+    let before = snapshot(&t.state);
+    // A git repository that declares no checks, and a Cargo project outside git.
+    repo(&t.project);
+    let plain = t.root.join("plain");
+    fs::create_dir_all(&plain).unwrap();
+    fs::write(plain.join("Cargo.toml"), "[package]\n").unwrap();
+    for project in [&t.project, &plain] {
+        let cwd = path(project);
+        for payload in hook_calls(cwd) {
+            let out = run(&t, &["hook"], Some(&payload.to_string()));
+            assert!(out.status.success());
+            assert_eq!(stdout(&out), "", "{payload}");
+        }
+        assert_eq!(snapshot(&t.state), before, "{cwd}");
+        assert!(!t.state.join(project_key(project)).exists(), "{cwd}");
+        assert!(!project.join(".supervisor").exists(), "{cwd}");
+    }
+}
+
+#[test]
+fn an_inferred_contract_is_replaced_by_init_without_tripping_the_chain() {
+    let t = temp("infer-init");
+    fs::write(t.project.join("Cargo.toml"), "[package]\nname = \"p\"\n").unwrap();
+    repo(&t.project);
+    let cwd = path(&t.project);
+    let [start, write, _, stop] = hook_calls(cwd);
+    let out = stdout(&run(&t, &["hook"], Some(&start.to_string())));
+    let decision: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(
+        decision["hookSpecificOutput"],
+        json!({"hookEventName": "SessionStart", "additionalContext": "GATE (full): before saying done, run with exit 0 after your last change: `cargo clippy --all-targets -- -D warnings`, `cargo test`.\nThe gate reads your runs; no header or tool call is needed."})
+    );
+    let dir = t.state.join(project_key(&t.project));
+    let read = || -> Value {
+        serde_json::from_str(&fs::read_to_string(dir.join("contract.json")).unwrap()).unwrap()
+    };
+    let inferred = read();
+    assert_eq!(inferred["inferred"], true);
+    assert_eq!(inferred["criteria"][2]["tier"], "full");
+    assert_eq!(stdout(&run(&t, &["hook"], Some(&write.to_string()))), "");
+    assert!(dir.join("gate.json").exists());
+
+    let text = ok(&t, &["init", "--project", cwd]);
+    assert!(
+        text.contains("contract written (replaces the inferred one)"),
+        "{text}"
+    );
+    assert!(text.contains("inferred task state moved to"), "{text}");
+    let replaced = read();
+    assert!(replaced.get("inferred").is_none());
+    assert_eq!(replaced["criteria"].as_array().unwrap().len(), 4);
+    assert!(dir.join("gate.json.inferred").exists());
+    // The next call judges the new contract; nothing reads as tampered.
+    let out = stdout(&run(&t, &["hook"], Some(&stop.to_string())));
+    assert!(out.contains("GATE refuses completion"), "{out}");
+    assert!(!out.contains("tampered"), "{out}");
+    // A hand-written contract is never replaced.
+    let again = ok(&t, &["init", "--project", cwd]);
+    assert!(again.contains("contract exists, left unchanged"), "{again}");
 }
