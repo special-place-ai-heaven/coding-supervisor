@@ -1,0 +1,4 @@
+name = "fake-worker"
+description = "Fixture worker that returns a fixed verdict without running anything. Use only when the prompt names fake-worker."
+model = "gpt-5.6-luna"
+developer_instructions = "Use no tools. Reply with exactly these two lines and nothing else:\nVERDICT: PASS\nCHECKS RUN: 0"
