@@ -95,6 +95,7 @@ fn env_at(d: &Dir, candidate: Box<dyn CandidateProvider>) -> Env {
         clock: || 1_000,
         level: Level::Full,
         level_error: None,
+        config_dir: None,
     }
 }
 fn env(d: &Dir, contract: Option<Value>, candidate: Box<dyn CandidateProvider>) -> Env {
@@ -1394,4 +1395,28 @@ fn a_gate_json_sealed_before_the_level_fields_still_loads() {
     assert!(
         matches!(load_gate(&state, &digest).unwrap(), Stored::Tampered(ref w) if w == "checkpoint")
     );
+}
+
+#[test]
+fn an_agent_cannot_change_the_level_at_any_level() {
+    let d = dir("level-guard");
+    let config = d.0.join("config");
+    for level in [Level::Off, Level::Lite, Level::Full, Level::Ultra] {
+        let mut env = at(level, &d, Some(one_command()), fake("one", &[]));
+        env.config_dir = Some(config.clone());
+        let mut set = pre("Bash");
+        set["tool_input"] = json!({"command": "supervisor level off"});
+        assert!(
+            matches!(handle(&set, &mut env), Decision::Deny(ref m) if m.ends_with("(supervisor level off)")),
+            "{level:?}"
+        );
+        let global = write_to(&config.join("level").to_string_lossy());
+        assert!(
+            matches!(handle(&global, &mut env), Decision::Deny(_)),
+            "{level:?}"
+        );
+        let mut read = pre("Bash");
+        read["tool_input"] = json!({"command": "supervisor level"});
+        assert_eq!(handle(&read, &mut env), Decision::None, "{level:?}");
+    }
 }

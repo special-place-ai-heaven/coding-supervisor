@@ -34,6 +34,9 @@ pub struct Env {
     pub level: Level,
     /// Why the level files could not be read; the call then runs at full and journals this.
     pub level_error: Option<String>,
+    /// The user config dir holding the global level file (`level::config_dir`); agents may not
+    /// write it.
+    pub config_dir: Option<PathBuf>,
 }
 
 impl Env {
@@ -41,14 +44,14 @@ impl Env {
         let lookup = |name: &str| std::env::var(name).ok();
         // Located without creating anything: at level off nothing is written.
         let (dir, location) = location::state_dir_path(cwd, &lookup);
-        let (level, level_error) =
-            match level::effective(&dir, level::config_dir(&lookup).as_deref()) {
-                Ok((level, _)) => (level, None),
-                Err(e) => (
-                    Level::Full,
-                    Some(format!("level not read, running at full: {e}")),
-                ),
-            };
+        let config_dir = level::config_dir(&lookup);
+        let (level, level_error) = match level::effective(&dir, config_dir.as_deref()) {
+            Ok((level, _)) => (level, None),
+            Err(e) => (
+                Level::Full,
+                Some(format!("level not read, running at full: {e}")),
+            ),
+        };
         let (state_dir, state_location) = if level == Level::Off {
             (dir, location)
         } else {
@@ -63,6 +66,7 @@ impl Env {
             clock: now,
             level,
             level_error,
+            config_dir,
         }
     }
 }
@@ -144,7 +148,8 @@ pub fn handle(payload: &Value, env: &mut Env) -> Decision {
         // Nothing judged, nothing written; only the state-path guard still answers.
         return match event {
             "PreToolUse" => {
-                guard::state_write_denial(payload, &env.state_dir).unwrap_or(Decision::None)
+                guard::gate_write_denial(payload, &env.state_dir, env.config_dir.as_deref())
+                    .unwrap_or(Decision::None)
             }
             _ => Decision::None,
         };
@@ -183,7 +188,8 @@ fn process(
     trace: &mut Trace,
 ) -> Result<Decision, String> {
     if event == "PreToolUse"
-        && let Some(denial) = guard::state_write_denial(payload, &env.state_dir)
+        && let Some(denial) =
+            guard::gate_write_denial(payload, &env.state_dir, env.config_dir.as_deref())
     {
         reasons.push("gate state path protected".to_owned());
         return Ok(denial);
