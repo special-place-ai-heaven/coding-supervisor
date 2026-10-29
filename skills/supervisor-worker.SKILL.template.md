@@ -30,8 +30,11 @@ CHECK C3 | cargo clippy --all-targets -- -D warnings | exit 0
   whole header when the count and the lines disagree.
 - `CHECK <criterion id> | <exact command> | exit <code>`; add
   `| cwd <directory>` when the command ran somewhere other than the project
-  root. The criterion id comes from the task contract (`C1`..`C4` or the ids
-  the chair gave you). The command is the one you ran, character for character.
+  root. The criterion id and the command come from the criteria table the
+  chair gave you (id, command, mandatory). Run the table's command and cite it
+  verbatim, character for character. A different command, even one that
+  differs by a single flag, is refused and links no run. Without a table, the
+  first refusal names the command each criterion requires.
 
 After the header, write the rest of your report as usual.
 

@@ -106,6 +106,11 @@ fn every_harness_gets_its_documented_files_and_a_second_run_changes_nothing() {
             if name == "supervisor-chair" {
                 assert!(skill.contains(mcp), "{harness} chair skill names {mcp}");
             }
+            // Both sides of the handoff name the criteria table, so a worker knows each command up front.
+            assert!(
+                skill.contains("id, command, mandatory"),
+                "{harness} {name} names the criteria table"
+            );
         }
         let registration = project.join(mcp);
         if mcp.ends_with(".toml") {

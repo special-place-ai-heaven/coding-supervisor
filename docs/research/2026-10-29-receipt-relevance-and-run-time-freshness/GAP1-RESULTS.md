@@ -67,3 +67,27 @@ No live harness run was made; the change is verified by the replay and scenario 
 ## What gap 1 does not solve
 
 From `PROPOSAL.md`: "A worker can still run the required command in a way that proves nothing, for example by editing the test it is supposed to pass." Gap 2 (a run bound to the candidate at handback rather than at run time) is also still open.
+
+## Follow-up: the skills hand the worker each criterion's command
+
+Closes the last bullet of "Not changed, and why" above: before this change a worker learned a criterion's command only from its first refusal.
+
+| File | Change |
+|---|---|
+| `skills/supervisor-chair.SKILL.template.md` | "When you delegate" now tells the chair to hand the worker the contract's criteria as a table (id, command, mandatory), taken from the `task_start` contract or `contract.json` in the gate's state directory, with every command of a list-valued criterion, and says the gate refuses any other command. A three-row example table. |
+| `skills/supervisor-worker.SKILL.template.md` | The `CHECK` rule says the id and command come from the chair's criteria table, cited verbatim; a different command is refused and links no run; without a table, the first refusal names the required command. |
+| `cli/tests/install.rs` | `every_harness_gets_its_documented_files_and_a_second_run_changes_nothing` asserts both rendered skills contain `id, command, mandatory` for all five harnesses. |
+
+Core `src/lib.rs`, both adapters and `cli/src/install.rs` are unchanged: install renders both templates for every harness through the same `render` (`{HARNESS}` and `{MCP_NOTE}` substitution only), so the new text needs no per-harness code.
+
+All through Terminal Commander, `CARGO_TARGET_DIR=C:\Target\coding-supervisor\main\target`, cwd `E:\project\coding-supervisor` unless stated.
+
+| Command | Job | Exit | Evidence |
+|---|---|---|---|
+| `cargo fmt --all -- --check` | `job_01a1876da365731b95bd67adc6c9cb6e` | 0 | no diff |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a1876db70c7210b2d4dcdef8aff6b3` | 0 | no warning or error lines |
+| `cargo test --workspace` | `job_01a1876dd2b776188fe4e3c178bf928e` | 0 | 124 passed, 0 failed (34 + 1 + 9 + 6 + 8 + 20 + 25 + 1 + 6 + 14); unchanged count, the new assertion sits in an existing test |
+| `cargo build --workspace` | `job_01a1876e57cb718dabb876808473cee2` | 0 | rebuilt `supervisor` with the new templates |
+| `sh C:/temp/render-check.sh` (cwd `C:\temp`): `supervisor install --harness <h>` into a throwaway git project per harness, then `grep -c "id, command, mandatory"` on both rendered `SKILL.md` | `job_01a1876ea6ed768287c11cf6774dfced` | 0 | count 1 in `supervisor-chair` and `supervisor-worker` for `claude-code` (`.claude/skills`), `codex` (`.agents/skills`), `cursor` (`.cursor/skills`), `omp` (`.omp/skills`), `grok` (`.grok/skills`) |
+
+Not run: no harness loaded the new skills and no chair or worker followed them in a live session; the text reaching each harness's skills directory is what is shown.

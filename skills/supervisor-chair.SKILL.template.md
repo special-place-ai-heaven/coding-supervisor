@@ -43,6 +43,18 @@ report it as done.
 
 ## When you delegate
 
+Hand the worker the contract's criteria as a short table, one row per
+criterion: id, command, mandatory. Take them from the contract you passed to
+`task_start` (or `contract.json` in the gate's state directory). A criterion
+with a list of commands gets all of them in its row. The worker's CHECK lines
+must cite a command from this table verbatim; the gate refuses any other.
+
+```text
+| id | command                                   | mandatory |
+| C2 | cargo test -p my-crate                    | yes       |
+| C3 | cargo clippy --all-targets -- -D warnings | yes       |
+```
+
 Tell the worker to use the `supervisor-worker` handback: `VERDICT:`,
 `CHECKS RUN:`, one `CHECK <id> | <command> | exit <code>` line per check.
 When the handback comes back, record its CHECK lines as receipts only if you
