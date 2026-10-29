@@ -1,0 +1,49 @@
+# Action versions chosen on 2026-10-29: actions/checkout@v7, Swatinem/rust-cache@v2.
+# The Rust toolchain is installed with rustup straight from rust-toolchain.toml,
+# so that file is the only place the version is written (see the install step).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Format, lint, test, core dependency check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # dtolnay/rust-toolchain requires an explicit version and cannot read
+      # rust-toolchain.toml. With no arguments, rustup installs the channel
+      # and components that the file names (1.99.1, rustfmt, clippy).
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint with warnings as errors
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      # The core crate must stay free of dependencies. cargo tree prints one
+      # line (the crate itself) when it has none.
+      - name: Check the core crate has no dependencies
+        run: |
+          lines=$(cargo tree -p coding-supervisor --edges normal,build,dev | wc -l)
+          if [ "$lines" -ne 1 ]; then
+            echo "::error::coding-supervisor must have no dependencies, but cargo tree printed $lines lines:"
+            cargo tree -p coding-supervisor --edges normal,build,dev
+            exit 1
+          fi
