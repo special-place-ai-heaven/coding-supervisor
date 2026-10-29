@@ -159,6 +159,9 @@ const HOOK_EVENTS: [(&str, Option<&str>); 6] = [
 /// Claude Code permission rule that allows every tool of the MCP server `supervisor`.
 const MCP_ALLOW: &str = "mcp__supervisor";
 
+/// The `enabledPlugins` key of the gate's Claude Code plugin: `<plugin>@<marketplace>`.
+const PLUGIN_KEY: &str = "coding-supervisor@coding-supervisor";
+
 const CREDENTIAL_WORDS: [&str; 4] = ["token", "key", "secret", "password"];
 
 struct Change {
@@ -187,6 +190,12 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
     };
     let home = std::path::absolute(&home)
         .map_err(|e| Failure::Error(format!("{}: {e}", home.display())))?;
+    if harness.id == "claude-code" && plugin_enabled(&project, &home) {
+        println!(
+            "claude-code: the coding-supervisor plugin is enabled for this project; it carries the hooks and the MCP server, so nothing was written."
+        );
+        return Ok(());
+    }
     let binary = match flags.value("--binary") {
         Some(binary) => binary.to_string(),
         None => std::env::current_exe()
@@ -272,6 +281,25 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         println!("note: {}", fill(note));
     }
     Ok(())
+}
+
+/// Whether the gate's plugin is enabled in a settings file Claude Code reads for this project
+/// (the project's two, or the user's). A file that cannot be read or parsed counts as "no".
+fn plugin_enabled(project: &Path, home: &Path) -> bool {
+    [
+        under(project, ".claude/settings.json"),
+        under(project, ".claude/settings.local.json"),
+        under(home, ".claude/settings.json"),
+    ]
+    .iter()
+    .any(|path| {
+        let text = fs::read_to_string(path).ok();
+        json_object(text.as_deref()).is_ok_and(|root| {
+            root.get("enabledPlugins")
+                .and_then(|plugins| plugins.get(PLUGIN_KEY))
+                == Some(&Value::Bool(true))
+        })
+    })
 }
 
 /// `base` joined with a `/`-separated relative path, one component at a time.

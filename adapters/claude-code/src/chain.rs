@@ -18,6 +18,8 @@ const CHECKPOINT_FIELDS: [&str; 8] = [
     "contract_id",
 ];
 
+const ADDED_FIELDS: [&str; 3] = ["sessions", "accepted_candidate", "session_id"];
+
 /// Compact JSON with object keys sorted recursively. Written out rather than relying on
 /// serde_json's map order, which a `preserve_order` feature elsewhere in the build would change.
 pub fn canonical(v: &Value) -> String {
@@ -53,6 +55,13 @@ fn checkpoint_input(gate: &Value, contract_sha256: &str) -> Value {
             )
         })
         .collect();
+    // Fields added after the chain existed: covered when present (save_gate always writes
+    // them), skipped when absent so a gate.json from before them still verifies.
+    for k in ADDED_FIELDS {
+        if let Some(v) = gate.get(k) {
+            map.insert(k.to_owned(), v.clone());
+        }
+    }
     map.insert("contract_sha256".to_owned(), contract_sha256.into());
     Value::Object(map)
 }

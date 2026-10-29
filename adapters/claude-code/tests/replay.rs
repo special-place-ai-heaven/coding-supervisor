@@ -5,14 +5,18 @@
 //! covered by the core suite (tests/scenarios.rs) only; it is not faked here.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use coding_supervisor::{Candidate, CandidateId, CriterionId, TaskState, VerificationReceipt};
 use serde_json::{Value, json};
 use supervisor_claude_code::adapter::{Decision, Env, MCP_ASSERTED, handle};
 use supervisor_claude_code::candidate::CandidateProvider;
+use supervisor_claude_code::infer;
 use supervisor_claude_code::journal::decision_parts;
+use supervisor_claude_code::level::Level;
+use supervisor_claude_code::sha256;
 use supervisor_claude_code::state::{Stored, load_gate, read_contract, save_gate};
+use supervisor_claude_code::status;
 
 const CAPTURES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -90,6 +94,9 @@ fn env_at(d: &Dir, candidate: Box<dyn CandidateProvider>) -> Env {
         state_location: "test",
         candidate,
         clock: || 1_000,
+        level: Level::Full,
+        level_error: None,
+        config_dir: None,
     }
 }
 fn env(d: &Dir, contract: Option<Value>, candidate: Box<dyn CandidateProvider>) -> Env {
@@ -863,4 +870,774 @@ fn chair_stop_after_mcp_completion_counts_its_own_runs() {
     let g = gate(&env);
     assert_eq!(g["state"], "completed");
     assert_eq!(g["receipts"].as_array().unwrap().len(), 2);
+}
+
+const C1_HANDBACK: &str = "VERDICT: PASS\nCHECKS RUN: 1\nCHECK C1 | cargo test | exit 0";
+
+#[test]
+fn gap2_run_before_the_last_change_is_refused_and_a_new_run_is_accepted() {
+    let d = dir("gap2-rerun");
+    let mut env = env(
+        &d,
+        Some(contract(&[("C1", true)], &["src/"])),
+        fake("one", &["src/lib.rs"]),
+    );
+    assert_eq!(
+        handle(&bash("w1", "cargo test", 0), &mut env),
+        Decision::None
+    );
+    let line = fs::read_to_string(env.state_dir.join("runs.jsonl")).unwrap();
+    let run: Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(
+        run["candidate"],
+        json!({"base_commit": "base", "dirty_digest": "one"})
+    );
+    // The worker edits a file after the run: the candidate changes.
+    env.candidate = fake("two", &["src/lib.rs"]);
+    let r = handle(&handback("w1", C1_HANDBACK, false), &mut env);
+    let text = blocked(&r);
+    assert!(
+        text.contains("C1 `cargo test` ran before your last change; run it again"),
+        "{text}"
+    );
+    assert!(!text.contains("re-cite"), "{text}");
+    assert!(gate(&env)["receipts"].as_array().unwrap().is_empty());
+    assert_eq!(gate(&env)["state"], "verifying");
+    // Run again on the current candidate, then hand back: accepted.
+    let mut again = bash("w1", "cargo test", 0);
+    again["tool_use_id"] = json!("toolu_w1_rerun");
+    assert_eq!(handle(&again, &mut env), Decision::None);
+    assert_eq!(
+        handle(&handback("w1", C1_HANDBACK, false), &mut env),
+        Decision::None
+    );
+    assert_eq!(gate(&env)["state"], "ready_for_review");
+}
+
+#[test]
+fn gap2_run_record_without_a_candidate_never_links() {
+    let d = dir("gap2-legacy");
+    let mut env = env(
+        &d,
+        Some(contract(&[("C1", true)], &["src/"])),
+        fake("one", &["src/lib.rs"]),
+    );
+    // A record written before runs carried the candidate.
+    let legacy = json!({"agent_id": "w1", "tool": "Bash", "command": "cargo test",
+        "cwd": "x", "exit_code": 0, "tool_use_id": "toolu_legacy", "t": 1});
+    fs::write(env.state_dir.join("runs.jsonl"), format!("{legacy}\n")).unwrap();
+    let r = handle(&handback("w1", C1_HANDBACK, false), &mut env);
+    assert!(blocked(&r).contains("run it again"), "{r:?}");
+    assert!(gate(&env)["receipts"].as_array().unwrap().is_empty());
+}
+
+/// One mandatory criterion C1 whose only command is `cargo test`.
+fn one_command() -> Value {
+    let mut c = contract(&[("C1", true)], &["src/"]);
+    c["criteria"][0]["command"] = json!("cargo test");
+    c
+}
+
+#[test]
+fn derived_run_after_the_last_change_accepts_a_bare_done() {
+    let d = dir("derived-accept");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    // The worker edits a file, then runs the check.
+    env.candidate = fake("two", &["src/lib.rs"]);
+    assert_eq!(
+        handle(&bash("w1", "cargo test", 0), &mut env),
+        Decision::None
+    );
+    assert_eq!(
+        handle(
+            &handback("w1", "Done, the fix is complete.", false),
+            &mut env
+        ),
+        Decision::None
+    );
+    assert_eq!(gate(&env)["state"], "ready_for_review");
+    let line: Value = serde_json::from_str(&last_reasons(&env)).unwrap();
+    assert_eq!(line["receipts"]["recorded"], json!(["C1"]));
+    assert_eq!(line["header"], Value::Null);
+}
+
+#[test]
+fn derived_chair_run_accepts_a_bare_done_at_stop() {
+    let d = dir("derived-accept-stop");
+    let mut chair = env(&d, Some(one_command()), fake("two", &["src/lib.rs"]));
+    assert_eq!(
+        handle(&bash("main", "cargo test", 0), &mut chair),
+        Decision::None
+    );
+    assert_eq!(
+        handle(&stop("Done, the task is complete.", false), &mut chair),
+        Decision::None
+    );
+    assert_eq!(gate(&chair)["state"], "completed");
+    let line: Value = serde_json::from_str(&last_reasons(&chair)).unwrap();
+    assert_eq!(line["receipts"]["recorded"], json!(["C1"]));
+    assert_eq!(line["accepted"], true);
+}
+
+#[test]
+fn derived_run_before_the_last_change_is_refused() {
+    let d = dir("derived-stale");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    handle(&bash("w1", "cargo test", 0), &mut env);
+    handle(&bash("main", "cargo test", 0), &mut env);
+    env.candidate = fake("two", &["src/lib.rs"]);
+    let r = handle(&handback("w1", "Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: ran before your last change."
+    );
+    let r = handle(&stop("Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: ran before your last change; or report the task as not complete."
+    );
+    assert!(gate(&env)["receipts"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn derived_never_ran_is_refused() {
+    let d = dir("derived-never");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    // Another agent's run does not count.
+    handle(&bash("w2", "cargo test", 0), &mut env);
+    let r = handle(&handback("w1", "Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: never ran."
+    );
+    let r = handle(&stop("Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: never ran; or report the task as not complete."
+    );
+}
+
+#[test]
+fn derived_failing_run_is_refused() {
+    let d = dir("derived-exit");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    handle(&bash("w1", "cargo test", 1), &mut env);
+    handle(&bash("main", "cargo test", 1), &mut env);
+    let r = handle(&handback("w1", "Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: exited 1 on your latest run."
+    );
+    let r = handle(&stop("Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: exited 1 on your latest run; or report the task as not complete."
+    );
+}
+
+#[test]
+fn derived_pass_then_fail_on_the_same_tree_is_refused() {
+    let d = dir("derived-latest");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    // A pass, then a failure of the same command on the same tree: the latest run decides.
+    for agent in ["w1", "main"] {
+        assert_eq!(
+            handle(&bash(agent, "cargo test", 0), &mut env),
+            Decision::None
+        );
+        assert_eq!(
+            handle(&bash(agent, "cargo test", 1), &mut env),
+            Decision::None
+        );
+    }
+    let r = handle(&handback("w1", "Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: exited 1 on your latest run."
+    );
+    let r = handle(&stop("Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: exited 1 on your latest run; or report the task as not complete."
+    );
+    assert!(gate(&env)["receipts"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn derived_pass_stored_then_fail_on_the_same_tree_is_refused() {
+    let d = dir("derived-latest-held");
+    let mut two = one_command();
+    two["criteria"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id": "C2", "check": "lint", "mandatory": true, "command": "cargo clippy"}));
+    let mut env = env(&d, Some(two), fake("one", &["src/lib.rs"]));
+    // A pass, then a refusal for another reason that stores the pass as a receipt.
+    for agent in ["w1", "main"] {
+        handle(&bash(agent, "cargo test", 0), &mut env);
+    }
+    let r = handle(&handback("w1", "Done.", false), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE: handback refused (refusal 1 of 3): missing C2. run `cargo clippy`: never ran."
+    );
+    let r = handle(&stop("Done.", false), &mut env);
+    assert!(blocked(&r).contains("missing C2"), "{r:?}");
+    assert_eq!(gate(&env)["receipts"].as_array().unwrap().len(), 2);
+    // Then a failure of the same command on the same tree, and the other check passes.
+    for agent in ["w1", "main"] {
+        handle(&bash(agent, "cargo test", 1), &mut env);
+        handle(&bash(agent, "cargo clippy", 0), &mut env);
+    }
+    let r = handle(&handback("w1", "Done.", true), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE: handback refused (refusal 2 of 3): failing C1 exit 1. run `cargo test`: exited 1 on your latest run."
+    );
+    let r = handle(&stop("Done.", true), &mut env);
+    assert_eq!(
+        blocked(&r),
+        "GATE refuses completion (refusal 2 of 3, harness cap 8): state verifying; failing C1 exit 1; run `cargo test`: exited 1 on your latest run; or report the task as not complete."
+    );
+    assert_eq!(gate(&env)["state"], "verifying");
+}
+
+#[test]
+fn derived_refusals_release_after_three_and_no_claim_keeps_the_header_refusal() {
+    let d = dir("derived-cap");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    // Not a completion claim: the existing one-time header refusal, then release.
+    let r = handle(&handback("w0", "Still working on it.", false), &mut env);
+    assert!(blocked(&r).starts_with("GATE: handback refused: no header."));
+    assert_eq!(
+        handle(&handback("w0", "Still working on it.", true), &mut env),
+        Decision::None
+    );
+    for k in 1..=3 {
+        let r = handle(&handback("w1", "Done.", k > 1), &mut env);
+        assert!(blocked(&r).contains(&format!("refusal {k} of 3")), "{r:?}");
+    }
+    assert_eq!(
+        handle(&handback("w1", "Done.", true), &mut env),
+        Decision::None
+    );
+    assert!(last_reasons(&env).contains("UNVERIFIED after 3 refusals"));
+    for k in 1..=3 {
+        let r = handle(&stop("Done.", k > 1), &mut env);
+        assert!(blocked(&r).contains(&format!("refusal {k} of 3")), "{r:?}");
+    }
+    assert_eq!(
+        handle(&stop("Done.", true), &mut env),
+        Decision::System("GATE: refusal cap reached; task remains verifying".into())
+    );
+}
+
+fn at(
+    level: Level,
+    d: &Dir,
+    contract: Option<Value>,
+    candidate: Box<dyn CandidateProvider>,
+) -> Env {
+    let mut env = env(d, contract, candidate);
+    env.level = level;
+    env
+}
+fn prompt() -> Value {
+    template(FOREGROUND, "UserPromptSubmit", None)
+}
+const NEVER_RAN: &str = "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: never ran; or report the task as not complete.";
+
+#[test]
+fn lite_reports_a_missing_check_without_blocking_and_tells_the_next_prompt_once() {
+    let d = dir("lite");
+    let mut env = at(
+        Level::Lite,
+        &d,
+        Some(one_command()),
+        fake("one", &["src/lib.rs"]),
+    );
+    // Same text as full, never blocking and never counted: the refusal number does not advance.
+    for _ in 0..2 {
+        assert_eq!(
+            handle(&stop("Done.", false), &mut env),
+            Decision::System(NEVER_RAN.into())
+        );
+    }
+    assert_eq!(gate(&env)["continuations"], 0);
+    assert_eq!(
+        handle(&prompt(), &mut env),
+        Decision::Context {
+            event: "UserPromptSubmit",
+            text: format!("GATE (lite, not blocking) at the last stop: {NEVER_RAN}"),
+        }
+    );
+    assert_eq!(handle(&prompt(), &mut env), Decision::None);
+    assert_eq!(
+        handle(&handback("w1", "Done.", false), &mut env),
+        Decision::System(
+            "GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: never ran."
+                .into()
+        )
+    );
+    assert_eq!(gate(&env)["handback_refusals"], json!({}));
+    let line: Value = serde_json::from_str(&last_reasons(&env)).unwrap();
+    assert_eq!(line["decision"]["kind"], "system");
+}
+
+/// C1 quick (`cargo test`), C2 full tier (`cargo test --workspace`), both mandatory.
+fn tiered() -> Value {
+    json!({
+        "id": "t4-test",
+        "goal": "tiers",
+        "criteria": [
+            {"id": "C1", "check": "quick", "mandatory": true, "command": "cargo test"},
+            {"id": "C2", "check": "suite", "mandatory": true, "command": "cargo test --workspace", "tier": "full"}
+        ],
+        "forbidden_effects": [],
+        "scope": ["src/"],
+        "max_repair_rounds": 2
+    })
+}
+
+#[test]
+fn full_tier_criterion_is_required_at_ultra_and_not_at_full() {
+    let d = dir("tier-full");
+    let mut env = at(
+        Level::Full,
+        &d,
+        Some(tiered()),
+        fake("one", &["src/lib.rs"]),
+    );
+    handle(&bash("main", "cargo test", 0), &mut env);
+    assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+
+    let d = dir("tier-ultra");
+    let mut env = at(
+        Level::Ultra,
+        &d,
+        Some(tiered()),
+        fake("one", &["src/lib.rs"]),
+    );
+    handle(&bash("main", "cargo test", 0), &mut env);
+    assert_eq!(
+        blocked(&handle(&stop("Done.", false), &mut env)),
+        "GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C2; run `cargo test --workspace`: never ran; or report the task as not complete."
+    );
+}
+
+#[test]
+fn level_change_between_calls_keeps_the_chain_and_judges_at_the_new_level() {
+    let d = dir("tier-switch");
+    let mut env = at(
+        Level::Full,
+        &d,
+        Some(tiered()),
+        fake("one", &["src/lib.rs"]),
+    );
+    handle(&bash("main", "cargo test", 0), &mut env);
+    assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
+    // Raised to ultra: the completed task now also needs the full-tier check.
+    env.level = Level::Ultra;
+    let r = handle(&stop("Done.", false), &mut env);
+    assert!(
+        blocked(&r)
+            .contains("state completed; missing C2; run `cargo test --workspace`: never ran"),
+        "{r:?}"
+    );
+    handle(&bash("main", "cargo test --workspace", 0), &mut env);
+    assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
+    // Back to full: nothing tampered, still completed.
+    env.level = Level::Full;
+    assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
+    let line: Value = serde_json::from_str(&last_reasons(&env)).unwrap();
+    assert_eq!(line["tampered"], false);
+    assert_eq!(gate(&env)["state"], "completed");
+}
+
+#[test]
+fn ultra_judges_a_stop_without_a_claim_after_a_change() {
+    let d = dir("ultra-stop");
+    let mut env = at(
+        Level::Ultra,
+        &d,
+        Some(one_command()),
+        fake("one", &["src/lib.rs"]),
+    );
+    let summary = "Here is what I found.";
+    assert_eq!(handle(&prompt(), &mut env), Decision::None);
+    // Nothing changed in the session yet: not judged.
+    assert_eq!(handle(&stop(summary, false), &mut env), Decision::None);
+    env.candidate = fake("two", &["src/lib.rs"]);
+    assert_eq!(blocked(&handle(&stop(summary, false), &mut env)), NEVER_RAN);
+    // At full the same stop is not judged.
+    env.level = Level::Full;
+    assert_eq!(handle(&stop(summary, false), &mut env), Decision::None);
+    // Judged and accepted once the check ran; the next stop at that candidate is free.
+    env.level = Level::Ultra;
+    handle(&bash("main", "cargo test", 0), &mut env);
+    assert_eq!(handle(&stop(summary, false), &mut env), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+    assert_eq!(handle(&stop(summary, false), &mut env), Decision::None);
+    assert!(last_reasons(&env).contains("\"no completion claim\""));
+}
+
+fn write_to(path: &str) -> Value {
+    let mut p = pre("Write");
+    p["tool_input"] = json!({ "file_path": path, "content": "x" });
+    p
+}
+
+#[test]
+fn ultra_denies_a_write_outside_the_contract_scope() {
+    let d = dir("ultra-scope");
+    let mut env = at(Level::Ultra, &d, Some(one_command()), fake("one", &[]));
+    let cwd = pre("Write")["cwd"].as_str().unwrap().to_owned();
+    let outside = format!("{cwd}\\docs\\notes.md");
+    assert_eq!(
+        handle(&write_to(&outside), &mut env),
+        Decision::Deny(format!(
+            "GATE: Write refused: {outside} is out of scope; the contract scope is src/ (level ultra)"
+        ))
+    );
+    assert_eq!(
+        handle(&write_to(&format!("{cwd}\\src\\lib.rs")), &mut env),
+        Decision::None
+    );
+    assert_eq!(handle(&write_to("src/new.rs"), &mut env), Decision::None);
+    env.level = Level::Full;
+    assert_eq!(handle(&write_to(&outside), &mut env), Decision::None);
+
+    // An empty scope allows everything at ultra.
+    let d = dir("ultra-scope-empty");
+    let mut open = one_command();
+    open["scope"] = json!([]);
+    let mut env = at(Level::Ultra, &d, Some(open), fake("one", &[]));
+    assert_eq!(handle(&write_to(&outside), &mut env), Decision::None);
+}
+
+/// A failing check on the untouched tree is recorded, never a demotion (owner's ruling).
+#[test]
+fn a_baseline_failure_fixed_in_the_session_is_accepted_at_full() {
+    let d = dir("baseline-fixed");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    assert_eq!(handle(&prompt(), &mut env), Decision::None);
+    assert_eq!(
+        handle(&bash("main", "cargo test", 101), &mut env),
+        Decision::None
+    );
+    // The agent fixes it and runs the check green.
+    env.candidate = fake("two", &["src/lib.rs"]);
+    assert_eq!(
+        handle(&bash("main", "cargo test", 0), &mut env),
+        Decision::None
+    );
+    assert_eq!(handle(&stop("Done.", false), &mut env), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+    let line: Value = serde_json::from_str(&last_reasons(&env)).unwrap();
+    assert_eq!(line["accepted"], true);
+    assert!(!line.to_string().contains("level lite"), "{line}");
+    let session = prompt()["session_id"].as_str().unwrap().to_owned();
+    let text = status::render(&env.state_dir, None).unwrap();
+    assert!(
+        text.contains(&format!("baseline failure: session {session}, C1: `cargo test` exited 101 on the untouched tree at session start")),
+        "{text}"
+    );
+    assert!(text.contains("completions accepted: 1"), "{text}");
+    assert!(
+        text.contains("completions reported, not blocked (lite): 0"),
+        "{text}"
+    );
+}
+
+const BASELINE_NOTE: &str = "(this check already failed before your changes)";
+
+#[test]
+fn a_baseline_failure_never_fixed_is_refused_with_the_note_until_the_release() {
+    let d = dir("baseline-red");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    assert_eq!(handle(&prompt(), &mut env), Decision::None);
+    for agent in ["main", "w1"] {
+        handle(&bash(agent, "cargo test", 101), &mut env);
+    }
+    // A change, and the check is still red.
+    env.candidate = fake("two", &["src/lib.rs"]);
+    for agent in ["main", "w1"] {
+        let mut again = bash(agent, "cargo test", 101);
+        again["tool_use_id"] = json!(format!("toolu_{agent}_again"));
+        handle(&again, &mut env);
+    }
+    for k in 1..=3 {
+        assert_eq!(
+            blocked(&handle(&handback("w1", "Done.", k > 1), &mut env)),
+            format!(
+                "GATE: handback refused (refusal {k} of 3): missing C1. run `cargo test`: exited 101 on your latest run {BASELINE_NOTE}."
+            )
+        );
+    }
+    assert_eq!(
+        handle(&handback("w1", "Done.", true), &mut env),
+        Decision::None
+    );
+    assert!(last_reasons(&env).contains("UNVERIFIED after 3 refusals"));
+    for k in 1..=3 {
+        assert_eq!(
+            blocked(&handle(&stop("Done.", k > 1), &mut env)),
+            format!(
+                "GATE refuses completion (refusal {k} of 3, harness cap 8): state verifying; missing C1; run `cargo test`: exited 101 on your latest run {BASELINE_NOTE}; or report the task as not complete."
+            )
+        );
+    }
+    assert_eq!(
+        handle(&stop("Done.", true), &mut env),
+        Decision::System("GATE: refusal cap reached; task remains verifying".into())
+    );
+}
+
+#[test]
+fn a_gate_json_sealed_before_the_level_fields_still_loads() {
+    // Sealed by the adapter in the run5 live run, before `sessions`/`accepted_candidate` existed.
+    // The chain binds gate.json to these contract bytes (git show f44a746, before Gap 1 added
+    // `command`); only their digest is needed.
+    const SEALED_WITH: &str = r#"{
+  "id": "fixture-t4",
+  "goal": "Prove the candidate file carries the fix",
+  "criteria": [
+    {
+      "id": "C2",
+      "check": "candidate_passes_reported_test",
+      "mandatory": true
+    }
+  ],
+  "forbidden_effects": [],
+  "scope": [
+    "candidate.txt",
+    "captures/"
+  ],
+  "max_repair_rounds": 2
+}
+"#;
+    let gate_json = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/claude-code-enforcement/captures/run5/L6.gate.json"
+    );
+    let d = dir("old-gate");
+    let state = d.0.join(".supervisor");
+    fs::create_dir_all(&state).unwrap();
+    fs::copy(gate_json, state.join("gate.json")).unwrap();
+    let old: Value =
+        serde_json::from_str(&fs::read_to_string(state.join("gate.json")).unwrap()).unwrap();
+    assert!(old.get("sessions").is_none() && old.get("accepted_candidate").is_none());
+    let digest = sha256::hex(SEALED_WITH.as_bytes());
+    let Stored::Valid(mut g) = load_gate(&state, &digest).unwrap() else {
+        panic!("an old gate.json no longer verifies")
+    };
+    assert!(g.sessions.is_empty() && g.accepted_candidate.is_none());
+    // Saved again, the added fields are written and covered by the chain from then on.
+    g.accepted_candidate = g.checkpoint.candidate.clone();
+    save_gate(&state, &g, &digest).unwrap();
+    assert!(matches!(
+        load_gate(&state, &digest).unwrap(),
+        Stored::Valid(_)
+    ));
+    let mut v: Value =
+        serde_json::from_str(&fs::read_to_string(state.join("gate.json")).unwrap()).unwrap();
+    v["accepted_candidate"] = Value::Null;
+    fs::write(state.join("gate.json"), v.to_string()).unwrap();
+    assert!(
+        matches!(load_gate(&state, &digest).unwrap(), Stored::Tampered(ref w) if w == "checkpoint")
+    );
+}
+
+#[test]
+fn an_agent_cannot_change_the_level_at_any_level() {
+    let d = dir("level-guard");
+    let config = d.0.join("config");
+    for level in [Level::Off, Level::Lite, Level::Full, Level::Ultra] {
+        let mut env = at(level, &d, Some(one_command()), fake("one", &[]));
+        env.config_dir = Some(config.clone());
+        let mut set = pre("Bash");
+        set["tool_input"] = json!({"command": "supervisor level off"});
+        assert!(
+            matches!(handle(&set, &mut env), Decision::Deny(ref m) if m.ends_with("(supervisor level off)")),
+            "{level:?}"
+        );
+        let global = write_to(&config.join("level").to_string_lossy());
+        assert!(
+            matches!(handle(&global, &mut env), Decision::Deny(_)),
+            "{level:?}"
+        );
+        let mut read = pre("Bash");
+        read["tool_input"] = json!({"command": "supervisor level"});
+        assert_eq!(handle(&read, &mut env), Decision::None, "{level:?}");
+    }
+}
+
+/// A SessionStart payload as Claude Code sends it, for the project at `cwd`.
+fn session_start(sid: &str, cwd: &Path) -> Value {
+    json!({"hook_event_name": "SessionStart", "session_id": sid, "source": "startup",
+        "cwd": cwd.to_string_lossy(), "transcript_path": "t.jsonl"})
+}
+fn in_session(mut payload: Value, sid: &str) -> Value {
+    payload["session_id"] = json!(sid);
+    payload
+}
+fn start_text(d: &Decision) -> &str {
+    match d {
+        Decision::Context {
+            event: "SessionStart",
+            text,
+        } => text,
+        other => panic!("expected SessionStart context, got {other:?}"),
+    }
+}
+
+const CARGO_CONTEXT: &str = "GATE (full): before saying done, run with exit 0 after your last change: `cargo clippy --all-targets -- -D warnings`, `cargo test`.\nThe gate reads your runs; no header or tool call is needed.";
+
+#[test]
+fn session_start_infers_a_cargo_contract_and_names_the_commands() {
+    let d = dir("infer-cargo");
+    fs::write(d.0.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+    let mut env = env(&d, None, fake("one", &[]));
+    let r = handle(&session_start("s1", &d.0), &mut env);
+    assert_eq!(start_text(&r), CARGO_CONTEXT);
+    assert!(start_text(&r).lines().count() <= 3);
+    let written: Value =
+        serde_json::from_str(&fs::read_to_string(env.state_dir.join("contract.json")).unwrap())
+            .unwrap();
+    let name = d.0.file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(
+        written,
+        json!({
+            "id": format!("inferred-{name}"),
+            "goal": "The project's declared checks pass after the last change.",
+            "inferred": true,
+            "criteria": [
+                {"id": "C1", "check": "lint", "mandatory": true, "command": "cargo clippy --all-targets -- -D warnings"},
+                {"id": "C2", "check": "test", "mandatory": true, "command": "cargo test"},
+                {"id": "C3", "check": "suite", "mandatory": true, "command": "cargo test --workspace", "tier": "full"}
+            ],
+            "forbidden_effects": [],
+            "scope": [""],
+            "max_repair_rounds": 2
+        })
+    );
+    // It loads through the contract parser, and the task belongs to the session.
+    let (contract, _) = read_contract(&env.state_dir).unwrap();
+    assert_eq!(contract.unwrap().criteria.len(), 3);
+    assert_eq!(gate(&env)["session_id"], "s1");
+    assert!(last_reasons(&env).contains("contract inferred from the project's declared checks"));
+    // The quick checks complete at full; the whole project is in scope.
+    env.candidate = fake("two", &["src/lib.rs", "README.md"]);
+    for command in ["cargo clippy --all-targets -- -D warnings", "cargo test"] {
+        handle(&in_session(bash("main", command, 0), "s1"), &mut env);
+    }
+    assert_eq!(
+        handle(&in_session(stop("Done.", false), "s1"), &mut env),
+        Decision::None
+    );
+    assert_eq!(gate(&env)["state"], "completed");
+    // At ultra the full-tier check is named as well.
+    env.level = Level::Ultra;
+    let r = handle(&session_start("s2", &d.0), &mut env);
+    assert!(
+        start_text(&r).starts_with("GATE (ultra): before saying done, run with exit 0 after your last change: `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo test --workspace`."),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn inferred_checks_are_the_union_of_the_declared_ones() {
+    let d = dir("infer-union");
+    assert_eq!(infer::contract(&d.0), None);
+    fs::write(
+        d.0.join("package.json"),
+        r#"{"scripts": {"test": "jest", "build": "tsc"}}"#,
+    )
+    .unwrap();
+    fs::write(d.0.join("pyproject.toml"), "[project]\n").unwrap();
+    let c = infer::contract(&d.0).unwrap();
+    let commands: Vec<&str> = c["criteria"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["command"].as_str().unwrap())
+        .collect();
+    assert_eq!(commands, ["npm test", "pytest"]);
+}
+
+#[test]
+fn a_project_without_declared_checks_or_git_stays_dormant() {
+    let d = dir("dormant");
+    // Located, not created: the state dir must not appear.
+    let mut env = env_at(&d, fake("one", &[]));
+    assert_eq!(handle(&session_start("s1", &d.0), &mut env), Decision::None);
+    assert!(!env.state_dir.exists());
+    // Declared checks, but not a git repository.
+    fs::write(d.0.join("Cargo.toml"), "[package]\n").unwrap();
+    env.candidate = Box::new(Unobservable);
+    assert_eq!(handle(&session_start("s1", &d.0), &mut env), Decision::None);
+    assert!(!env.state_dir.exists());
+    // Level off infers nothing either.
+    env.candidate = fake("one", &[]);
+    env.level = Level::Off;
+    assert_eq!(handle(&session_start("s1", &d.0), &mut env), Decision::None);
+    assert!(!env.state_dir.exists());
+}
+
+#[test]
+fn each_session_gets_a_new_task_and_the_journals_are_kept() {
+    let d = dir("sessions");
+    let mut env = env(&d, Some(one_command()), fake("one", &["src/lib.rs"]));
+    let r = handle(&session_start("s1", &d.0), &mut env);
+    assert_eq!(
+        start_text(&r),
+        "GATE (full): before saying done, run with exit 0 after your last change: `cargo test`.\nThe gate reads your runs; no header or tool call is needed."
+    );
+    handle(&in_session(bash("main", "cargo test", 0), "s1"), &mut env);
+    assert_eq!(
+        handle(&in_session(stop("Done.", false), "s1"), &mut env),
+        Decision::None
+    );
+    assert_eq!(gate(&env)["state"], "completed");
+    let first = fs::read_to_string(env.state_dir.join("events.jsonl")).unwrap();
+    let runs = fs::read_to_string(env.state_dir.join("runs.jsonl")).unwrap();
+
+    // A new session: a new task on the same contract, its baseline taken at SessionStart.
+    env.candidate = fake("two", &["src/lib.rs"]);
+    handle(&session_start("s2", &d.0), &mut env);
+    let g = gate(&env);
+    assert_eq!(g["state"], "verifying");
+    assert_eq!(g["session_id"], "s2");
+    assert_eq!(g["receipts"], json!([]));
+    assert_eq!(g["sessions"]["s2"]["baseline"]["dirty_digest"], "two");
+    assert!(g["sessions"].get("s1").is_none());
+    assert!(
+        last_reasons(&env)
+            .contains("new session: new task; the task of session s1 ended in state completed")
+    );
+    // A worker carries its parent's session_id and stays in that task.
+    let r = handle(&in_session(handback("w1", "Done.", false), "s2"), &mut env);
+    assert!(blocked(&r).contains("run `cargo test`: never ran"), "{r:?}");
+    let g = gate(&env);
+    assert_eq!(
+        (&g["session_id"], &g["handback_refusals"]),
+        (&json!("s2"), &json!({"w1": 1}))
+    );
+    // The earlier task's journal lines are kept.
+    let journal = fs::read_to_string(env.state_dir.join("events.jsonl")).unwrap();
+    assert!(journal.starts_with(&first));
+    assert_eq!(journal.lines().count(), first.lines().count() + 2);
+    assert!(
+        fs::read_to_string(env.state_dir.join("runs.jsonl"))
+            .unwrap()
+            .starts_with(&runs)
+    );
+
+    // The chain holds across the rollover: a hand edit is detected, and a new session does
+    // not start over from an edited gate.json.
+    let edited = edit_gate(&env, |g| g["state"] = json!("completed"));
+    assert_eq!(handle(&session_start("s3", &d.0), &mut env), Decision::None);
+    assert!(last_reasons(&env).contains("state tampered: checkpoint"));
+    assert_eq!(fs::read(env.state_dir.join("gate.json")).unwrap(), edited);
 }

@@ -3,6 +3,7 @@
 
 mod init;
 mod install;
+mod level;
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -13,7 +14,10 @@ use supervisor_claude_code::adapter::{fail_open, run_hook};
 const USAGE: &str = "usage: supervisor mcp [--project <dir>]  (serve the gate as an MCP server on stdin/stdout)
        supervisor hook  (one Claude Code hook payload on stdin, at most one decision on stdout)
        supervisor init [--project <dir>]  (write a starting contract into the gate's state directory)
-       supervisor install --harness <claude-code|codex|cursor|omp|grok> [--project <dir>] [--home <dir>] [--binary <path>] [--dry-run]";
+       supervisor install --harness <claude-code|codex|cursor|omp|grok> [--project <dir>] [--home <dir>] [--binary <path>] [--dry-run]
+       supervisor level [off|lite|full|ultra] [--project <dir>] [--home <dir>]  (show the effective level, or set the global default; with --project, that project's override)
+       supervisor status [--project <dir>] [--home <dir>]  (level, required checks, completions accepted and refused)
+       --home <dir> for level and status: the user config directory (default SUPERVISOR_CONFIG_DIR, else %APPDATA%, $XDG_CONFIG_HOME or ~/.config, plus coding-supervisor)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,6 +38,8 @@ fn main() -> ExitCode {
             &["--dry-run"],
         )
         .and_then(|f| install::run(&f)),
+        Some((command, rest)) if command == "level" => level::run(rest),
+        Some((command, rest)) if command == "status" => level::status(rest),
         _ => Err(Failure::Usage(String::new())),
     };
     match result {

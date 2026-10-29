@@ -72,6 +72,27 @@ pub struct Gate {
     pub continuations: u32,
     /// SubagentStop refusals per worker agent id.
     pub handback_refusals: BTreeMap<String, u32>,
+    /// Per payload `session_id`. Absent in a gate.json written before levels existed.
+    // shortcut: never pruned, one small entry per session; prune by age once gate.json grows noticeably
+    pub sessions: BTreeMap<String, SessionRecord>,
+    /// The candidate at the last Stop that completed or confirmed completion.
+    pub accepted_candidate: Option<CandidateId>,
+    /// The Claude Code session that owns this task: a call from another session starts a new
+    /// task. `None` in a gate.json written before per-session tasks, or by the MCP server; the
+    /// next hook call with a session adopts it.
+    pub session_id: Option<String>,
+}
+
+/// What the gate remembers about one Claude Code session.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionRecord {
+    /// The first candidate observed in the session.
+    pub baseline: Option<CandidateId>,
+    /// Per criterion id, how its command failed on the baseline (the untouched starting tree).
+    /// Noted on refusals and in `supervisor status`; the level is never lowered for it.
+    pub baseline_failures: BTreeMap<String, String>,
+    /// A lite-level notice for the next UserPromptSubmit, injected once.
+    pub notice: Option<String>,
 }
 
 impl Gate {
@@ -83,6 +104,9 @@ impl Gate {
             receipts: Vec::new(),
             continuations: 0,
             handback_refusals: BTreeMap::new(),
+            sessions: BTreeMap::new(),
+            accepted_candidate: None,
+            session_id: None,
         }
     }
 
@@ -113,6 +137,35 @@ impl Gate {
                         .collect(),
                 ),
             ),
+            (
+                "sessions",
+                Value::Object(
+                    self.sessions
+                        .iter()
+                        .map(|(k, s)| {
+                            let record = obj([
+                                ("baseline", s.baseline.as_ref().map(candidate_json).into()),
+                                (
+                                    "baseline_failures",
+                                    Value::Object(
+                                        s.baseline_failures
+                                            .iter()
+                                            .map(|(id, why)| (id.clone(), why.clone().into()))
+                                            .collect(),
+                                    ),
+                                ),
+                                ("notice", s.notice.clone().into()),
+                            ]);
+                            (k.clone(), record)
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                "accepted_candidate",
+                self.accepted_candidate.as_ref().map(candidate_json).into(),
+            ),
+            ("session_id", self.session_id.clone().into()),
         ])
     }
 
@@ -154,8 +207,52 @@ impl Gate {
                         .ok_or_else(|| format!("handback_refusals.{k} is not a count"))
                 })
                 .collect::<Result<_, _>>()?,
+            sessions: match v.get("sessions") {
+                None => BTreeMap::new(),
+                Some(sessions) => sessions
+                    .as_object()
+                    .ok_or("sessions is not an object")?
+                    .iter()
+                    .map(|(k, s)| Ok((k.clone(), session_from(s)?)))
+                    .collect::<Result<_, String>>()?,
+            },
+            accepted_candidate: optional_candidate(v.get("accepted_candidate"))?,
+            session_id: optional_string(v, "session_id")?,
         })
     }
+}
+
+fn optional_candidate(v: Option<&Value>) -> Result<Option<CandidateId>, String> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(c) => candidate_from(c).map(Some),
+    }
+}
+fn optional_string(v: &Value, key: &str) -> Result<Option<String>, String> {
+    match v.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(format!("field {key} is not a string")),
+    }
+}
+fn session_from(v: &Value) -> Result<SessionRecord, String> {
+    Ok(SessionRecord {
+        baseline: optional_candidate(v.get("baseline"))?,
+        baseline_failures: match v.get("baseline_failures") {
+            None => BTreeMap::new(),
+            Some(map) => map
+                .as_object()
+                .ok_or("baseline_failures is not an object")?
+                .iter()
+                .map(|(id, why)| {
+                    why.as_str()
+                        .map(|w| (id.clone(), w.to_owned()))
+                        .ok_or_else(|| format!("baseline_failures.{id} is not a string"))
+                })
+                .collect::<Result<_, String>>()?,
+        },
+        notice: optional_string(v, "notice")?,
+    })
 }
 
 /// One observed command run from `runs.jsonl`.
@@ -166,6 +263,8 @@ pub(crate) struct Run {
     /// The tool_use_id, or `runs.jsonl:<line>` when there is none.
     pub reference: String,
     pub t: u64,
+    /// The candidate observed at the run; `None` for a record written before it was journaled.
+    pub candidate: Option<CandidateId>,
 }
 
 fn field<'a>(v: &'a Value, key: &str) -> Result<&'a Value, String> {
@@ -299,11 +398,28 @@ fn commands(c: &Value, id: &str) -> Result<Vec<String>, String> {
     Ok(list)
 }
 
+/// Ids of the criteria declared `"tier": "full"`; the default tier is `quick`.
+pub fn full_tier(v: &Value) -> Vec<String> {
+    v.get("criteria")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|c| c.get("tier").and_then(Value::as_str) == Some("full"))
+        .filter_map(|c| c.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect()
+}
+
 pub fn contract_from(v: &Value) -> Result<TaskContract, String> {
     let criteria = array(v, "criteria")?
         .iter()
         .map(|c| {
             let id = string(c, "id")?;
+            if !matches!(
+                c.get("tier").map(Value::as_str),
+                None | Some(Some("quick" | "full"))
+            ) {
+                return Err(format!("criterion {id} tier is not quick or full"));
+            }
             Ok(Criterion {
                 check: CheckName(string(c, "check")?),
                 mandatory: field(c, "mandatory")?
@@ -336,6 +452,15 @@ fn read_optional(path: &Path) -> Result<Option<String>, String> {
 
 /// The contract (if present) and the SHA-256 of contract.json's bytes (of nothing when absent).
 pub fn read_contract(dir: &Path) -> Result<(Option<TaskContract>, String), String> {
+    let (contract, digest) = read_contract_tiers(dir)?;
+    Ok((contract.map(|(c, _)| c), digest))
+}
+
+/// A contract and the ids of its full-tier criteria.
+pub type Tiered = (TaskContract, Vec<String>);
+
+/// `read_contract` plus the ids of the full-tier criteria (see [`full_tier`]).
+pub fn read_contract_tiers(dir: &Path) -> Result<(Option<Tiered>, String), String> {
     let path = dir.join("contract.json");
     let Some(text) = read_optional(&path)? else {
         return Ok((None, sha256::hex(b"")));
@@ -343,10 +468,12 @@ pub fn read_contract(dir: &Path) -> Result<(Option<TaskContract>, String), Strin
     let digest = sha256::hex(text.as_bytes());
     let v: Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     let contract = contract_from(&v).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok((Some(contract), digest))
+    Ok((Some((contract, full_tier(&v))), digest))
 }
 
 /// What gate.json holds after its hash chain was checked.
+// One value per hook call, moved out at once: boxing the gate would buy nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum Stored {
     Absent,
     Valid(Gate),
@@ -387,6 +514,17 @@ pub fn save_gate(dir: &Path, gate: &Gate, contract_sha256: &str) -> Result<(), S
     fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Write `path` whole: a temp file beside it, then a rename, so a reader never sees half of it.
+pub fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    fs::write(&tmp, text).map_err(|e| format!("{}: {e}", path.display()))?;
+    fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 pub fn append_line(path: &Path, line: &Value) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -423,6 +561,7 @@ pub(crate) fn read_runs(dir: &Path) -> Result<Vec<Run>, String> {
                     .filter(|s| !s.is_empty())
                     .map_or(line_ref, str::to_owned),
                 t: v.get("t").and_then(Value::as_u64).unwrap_or(0),
+                candidate: v.get("candidate").and_then(|c| candidate_from(c).ok()),
             })
         })
         .collect())

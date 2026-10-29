@@ -20,9 +20,28 @@ pub fn resolve_state_dir(
     cwd: &Path,
     env_lookup: &dyn Fn(&str) -> Option<String>,
 ) -> (PathBuf, &'static str) {
+    match chosen_state_dir(cwd, env_lookup) {
+        Some((dir, label)) if fs::create_dir_all(&dir).is_ok() => (dir, label),
+        _ => (cwd.join(".supervisor"), "cwd-fallback"),
+    }
+}
+
+/// The directory `resolve_state_dir` would pick, without creating anything (level `off`
+/// writes nothing, not even this directory).
+pub fn state_dir_path(
+    cwd: &Path,
+    env_lookup: &dyn Fn(&str) -> Option<String>,
+) -> (PathBuf, &'static str) {
+    chosen_state_dir(cwd, env_lookup).unwrap_or_else(|| (cwd.join(".supervisor"), "cwd-fallback"))
+}
+
+fn chosen_state_dir(
+    cwd: &Path,
+    env_lookup: &dyn Fn(&str) -> Option<String>,
+) -> Option<(PathBuf, &'static str)> {
     let var = |name: &str| env_lookup(name).filter(|v| !v.is_empty());
     let key = project_key(cwd);
-    let chosen = match var("SUPERVISOR_STATE_DIR") {
+    match var("SUPERVISOR_STATE_DIR") {
         Some(dir) => Some((PathBuf::from(dir).join(&key), "env")),
         None => {
             let local_app_data = if cfg!(windows) {
@@ -42,9 +61,5 @@ pub fn resolve_state_dir(
                     )
                 })
         }
-    };
-    match chosen {
-        Some((dir, label)) if fs::create_dir_all(&dir).is_ok() => (dir, label),
-        _ => (cwd.join(".supervisor"), "cwd-fallback"),
     }
 }

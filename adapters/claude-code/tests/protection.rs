@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use supervisor_claude_code::adapter::Decision;
-use supervisor_claude_code::guard::state_write_denial;
+use supervisor_claude_code::guard::{gate_write_denial, state_write_denial};
 use supervisor_claude_code::location::{project_key, resolve_state_dir};
 
 struct Dir(PathBuf);
@@ -280,5 +280,83 @@ fn ordinary_calls_are_allowed() {
     assert_eq!(
         call("Write", json!({"file_path": "E:\\x\\.supervisord\\conf"})),
         None
+    );
+}
+
+const CONFIG: &str = "C:\\Users\\u\\AppData\\Roaming\\coding-supervisor";
+
+fn gate_call(tool: &str, input: serde_json::Value) -> Option<Decision> {
+    gate_write_denial(
+        &json!({"tool_name": tool, "tool_input": input}),
+        Path::new(STATE),
+        Some(Path::new(CONFIG)),
+    )
+}
+
+#[test]
+fn level_files_are_gate_state() {
+    // The global level file in the user config dir.
+    let r = denied(gate_call(
+        "Write",
+        json!({"file_path": format!("{CONFIG}\\level"), "content": "off"}),
+    ));
+    assert!(r.starts_with("GATE: Write refused"), "{r}");
+    let r = denied(gate_call(
+        "Bash",
+        json!({"command": "echo off > c:/users/u/appdata/roaming/coding-supervisor/level"}),
+    ));
+    assert!(r.starts_with("GATE: Bash refused"), "{r}");
+    // The per-project level file lives in the state dir, already covered.
+    let r = denied(call(
+        "Edit",
+        json!({"file_path": format!("{STATE}\\level")}),
+    ));
+    assert!(r.starts_with("GATE: Edit refused"), "{r}");
+}
+
+#[test]
+fn setting_a_level_from_a_shell_is_denied_and_reading_it_is_allowed() {
+    for (tool, input) in [
+        ("Bash", json!({"command": "supervisor level off"})),
+        (
+            "Bash",
+            json!({"command": "cd x && npx supervisor level lite --project ."}),
+        ),
+        (
+            "PowerShell",
+            json!({"command": "& \"C:\\Program Files\\x\\supervisor.exe\" level full"}),
+        ),
+        (
+            "mcp__terminal_commander__run_and_watch",
+            json!({"argv": ["supervisor", "level", "ultra"]}),
+        ),
+    ] {
+        let r = denied(gate_call(tool, input));
+        assert!(
+            r.starts_with(&format!("GATE: {tool} refused")) && r.contains("(supervisor level "),
+            "{r}"
+        );
+    }
+    for command in [
+        "supervisor level",
+        "supervisor level --project .",
+        "supervisor status",
+        "echo the level is full",
+        "cargo test",
+    ] {
+        assert_eq!(
+            gate_call("Bash", json!({ "command": command })),
+            None,
+            "{command}"
+        );
+    }
+    // Without a config dir the command rule still applies.
+    assert!(
+        gate_write_denial(
+            &json!({"tool_name": "Bash", "tool_input": {"command": "supervisor level off"}}),
+            Path::new(STATE),
+            None,
+        )
+        .is_some()
     );
 }

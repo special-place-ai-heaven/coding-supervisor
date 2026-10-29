@@ -1,9 +1,11 @@
-//! `supervisor init`: a starting contract in the gate's state directory, never overwritten.
+//! `supervisor init`: a starting contract in the gate's state directory. It replaces a
+//! contract the gate inferred and never overwrites one written by hand.
 
 use std::fs;
 
 use serde_json::json;
 use supervisor_claude_code::location::resolve_state_dir;
+use supervisor_claude_code::state::write_atomic;
 
 use crate::install::HARNESSES;
 use crate::{Failure, Flags};
@@ -15,9 +17,24 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
     println!("state directory: {} (rule: {rule})", state_dir.display());
 
     let path = state_dir.join("contract.json");
-    if path.exists() {
+    // An inferred contract (written at SessionStart) is replaced; a hand-written one never is.
+    let inferred = fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|v| v["inferred"] == true);
+    if path.exists() && !inferred {
         println!("contract exists, left unchanged: {}", path.display());
     } else {
+        let gate = state_dir.join("gate.json");
+        if inferred && gate.exists() {
+            // gate.json is chained to the contract's bytes: keep the inferred task's state
+            // beside it, so the next hook call starts a task on the new contract instead of
+            // reporting tampering.
+            let aside = state_dir.join("gate.json.inferred");
+            fs::rename(&gate, &aside)
+                .map_err(|e| Failure::Error(format!("{}: {e}", gate.display())))?;
+            println!("inferred task state moved to {}", aside.display());
+        }
         let id = project
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -40,10 +57,15 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         });
         let text = serde_json::to_string_pretty(&contract)
             .map_err(|e| Failure::Error(format!("contract: {e}")))?;
-        fs::create_dir_all(&state_dir)
-            .and_then(|()| fs::write(&path, text + "\n"))
-            .map_err(|e| Failure::Error(format!("{}: {e}", path.display())))?;
-        println!("contract written: {}", path.display());
+        write_atomic(&path, &(text + "\n")).map_err(Failure::Error)?;
+        if inferred {
+            println!(
+                "contract written (replaces the inferred one): {}",
+                path.display()
+            );
+        } else {
+            println!("contract written: {}", path.display());
+        }
     }
     println!(
         "Edit the contract's goal, criteria and scope there, then register the gate with one of:"

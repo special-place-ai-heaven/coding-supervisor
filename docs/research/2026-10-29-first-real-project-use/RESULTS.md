@@ -250,3 +250,192 @@ A crash between write and rename is not simulated. What is shown is the mechanis
 | `npm test` in `npm/` | `job_01a187e0ab467474bdeec1a08674a476` | 0 | 34 tests: 31 pass, 3 skipped (symlinks unavailable on this Windows account) |
 
 The Unix-only symlink test runs on the Linux CI job, not on this machine.
+
+## Autonomous gate, phase 1: run-time candidate (gap 2)
+
+Branch `feat/autonomous-gate`, commit `2f662d4`. Every run record in `runs.jsonl` now carries `"candidate":{"base_commit","dirty_digest"}`, observed by the same `GitCandidate` call the hook uses for its decision (once per hook call, before the run is written; `null` when it cannot be observed). `Session::link_checks` links a CHECK line only to a run whose recorded candidate equals the current one. A run that matches on everything else is refused with a "run it again" reason. A record without a candidate never links. Core unchanged.
+
+Observed refusal text (replay test):
+
+```
+GATE: handback refused (refusal 1 of 3): C1 `cargo test` ran before your last change; run it again; missing C1. Run `cargo test` again in this session, then cite the new run as CHECK C1 | cargo test | exit <code>.
+```
+
+| Check | Job or run | Exit | Evidence |
+|---|---|---|---|
+| `cargo test --workspace` before the change | `job_01a188100259720798e2819cb517ae99` | 0 | 136 passed |
+| `cargo test --workspace` after | `job_01a18812257c711aa8f8a67ca1389378` | 0 | 138 passed (replay 29 to 31), no existing assertion edited |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a18811f06177659330e60e422ae59d` | 0 | no warnings |
+| `cargo fmt --all -- --check` | `job_01a1881213b075cc81789405ee7b22c6` | 0 | no diff |
+| Branch CI | run 40892299747 | success | Linux fresh and hosted Windows |
+
+New tests: `gap2_run_before_the_last_change_is_refused_and_a_new_run_is_accepted`, `gap2_run_record_without_a_candidate_never_links`.
+
+Open: the candidate stays scoped to the hook's cwd (`git status -- .`), so a change outside that directory does not make a run stale. It is observed at PostToolUse, so a command that itself edits files is recorded against the tree after it ran. Stop with an old run has no dedicated test (same `link_checks` path). Not run live in Claude Code.
+
+## Autonomous gate, phase 2: derived receipts
+
+Branch `feat/autonomous-gate`, commit `5365178`. At `Stop` (agent `main`) and `SubagentStop` (that worker), a message that claims completion and carries no CHECK header gets a derived PASS header: per criterion, the latest run by that agent of one of the criterion's commands with exit 0 on the current candidate, not already backing a receipt. The derived header goes through the existing `link_checks` path and the core; there is no second acceptance path. A written header behaves as before. A message with no header and no completion claim also behaves as before (SubagentStop refuses once for the missing header, then releases). The refusal caps are unchanged. The journal gains one reason line (`header derived from observed runs of agent <id>: <n> CHECK lines`) and no new field.
+
+| Case | Observed (exact-match assertions) |
+|---|---|
+| edit, run `cargo test`, bare "done" | SubagentStop: no decision, `ready_for_review`. Stop: no decision, `completed`, `accepted: true`. |
+| run, edit, "done" | ``GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: ran before your last change.`` |
+| never ran | ``GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: never ran; or report the task as not complete.`` |
+| exit 1 on the current candidate | ``… run `cargo test`: exited 1 on your latest run …`` at both events |
+| three refusals | SubagentStop releases (journaled UNVERIFIED), Stop answers `GATE: refusal cap reached; task remains verifying` |
+
+| Check | Job or run | Exit | Evidence |
+|---|---|---|---|
+| `cargo test --workspace` before | `job_01a188145c5b76f5bcca50fd8ea273ca` | 0 | 138 passed |
+| `cargo test --workspace` after | `job_01a18818d3ea76119032ceada6c765a8` | 0 | 144 passed (replay 31 to 37), no existing assertion edited |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a18818b1fc7552b191063b3f7ca77d` | 0 | no warnings |
+| `cargo fmt --all -- --check` | `job_01a18818cd7d74b19ee5f69ba4d28173` | 0 | no diff |
+| Branch CI | run 40893561661 | success | Linux fresh and hosted Windows |
+
+Open:
+- Resolved (owner's ruling, commit dc90f60): the latest run of the command on the current candidate decides; a pass followed by a failure on the same tree is refused with ``run `<command>`: exited <n> on your latest run``.
+- For a criterion with several commands, the reason is drawn from the first command's runs only.
+- Two edge reasons were added: "its run already backs another check; run it again" and "its exit code was not observed".
+- Not run live in Claude Code.
+
+## Autonomous gate, phase 3: levels and status
+
+Branch `feat/autonomous-gate`, commits `de0505e` (claude-code) and `ec808ba` (cli), on top of the ruling fix `dc90f60`.
+
+| Level | Hook behaviour |
+|---|---|
+| `off` | Every hook returns at once with no decision and writes nothing. The state directory is located without being created. The state-path guard stays. |
+| `lite` | Claims are judged as at `full`, but nothing blocks. The would-be refusal becomes a `systemMessage`, and the next `UserPromptSubmit` injects ``GATE (lite, not blocking) at the last stop: <text>`` once. Refusal counters do not move. |
+| `full` | Phase 2 behaviour (default). |
+| `ultra` | Full, plus: criteria with `"tier": "full"` are required (below ultra they count as not mandatory, in memory only, so the contract hash is unchanged); every `Stop` after a file change is judged even without a claim; Write, Edit, MultiEdit and NotebookEdit outside the contract scope are denied (`GATE: Write refused: <path> is out of scope; the contract scope is src/ (level ultra)`). |
+
+- **Where the level comes from:** the `level` file in the project's state directory beats the global `level` file in the user config directory (`SUPERVISOR_CONFIG_DIR`, else `%APPDATA%` / `$XDG_CONFIG_HOME` / `$HOME/.config`, plus `coding-supervisor`). With neither, the level is `full`. An unreadable level file makes the hook run at `full` and journal why; the CLI errors.
+- **Baseline failure (owner's ruling, commit `96cc624`):** the session baseline is the candidate at the session's first `UserPromptSubmit`. A nonzero run of a check's command on that baseline is recorded as a baseline failure (``<command> exited <n> on the untouched tree at session start``); the session stays at its configured level. A refusal naming that check ends with "(this check already failed before your changes)", `supervisor status` lists the failure, and the release after three refusals is the only escape.
+- **Additions to `gate.json`:** `sessions` (baseline, degraded reason, pending notice) and `accepted_candidate`. Both are covered by the chain when present. A capture sealed by the earlier code still verifies.
+- **`supervisor status [--project] [--home]`:** prints the level and its source, the degraded reason, the required checks (id, command, tier, mandatory, required now) and the accepted and refused completions with refusal reasons from `events.jsonl`.
+
+| Check | Job or run | Exit | Evidence |
+|---|---|---|---|
+| Ruling fix: `cargo test --workspace` | `job_01a188205c0076438f86dbd675178813` | 0 | 145 passed (new `derived_pass_then_fail_on_the_same_tree_is_refused`) |
+| Ruling fix: branch CI | run 40894901371 | success | Linux fresh and hosted Windows |
+| `cargo test --workspace` after phase 3 | `job_01a188291fc7707987139f16cd29333a` | 0 | 155 passed (replay 38 to 45, `cli/tests/level.rs` 3), no existing assertion edited |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a18828f93175579c0bbd5ef944f17e` | 0 | no warnings |
+| `cargo fmt --all -- --check` | `job_01a1882918c0767c9e0975fedbef9a7a` | 0 | no diff |
+| Branch CI | run 40896578998 | success | Linux fresh and hosted Windows |
+
+Open:
+- An agent could lower the level from a shell (`supervisor level off`, or by writing the global file). Phase 4 treats the level files as gate state.
+- Resolved (owner's ruling, commit `96cc624`): no demotion; a refusal naming a check that failed at baseline carries '(this check already failed before your changes)', status lists the baseline failure, and the three-refusal release is the only escape.
+- At `ultra`, writes outside the project are denied too.
+- The installer's PreToolUse matcher has no `MultiEdit` (phase 5).
+- The MCP server ignores levels.
+- Whether a lite `systemMessage` at SubagentStop keeps a worker running is unverified.
+- The `sessions` map is never pruned (`shortcut:`).
+- Ruling fix: a passing run that already backs a stored receipt still satisfies a later failing run on the same tree (phase 4 closes it).
+- Not run live in Claude Code.
+
+## Autonomous gate, phase 4: no setup per project
+
+Branch `feat/autonomous-gate`, rebased onto main `8c2b77a` (README status table) with no conflicts. `cargo test --workspace` after the rebase passed 158 (`job_01a1883601927259b01698e471dc372a`). Commits:
+
+| Commit | Change | CI |
+|---|---|---|
+| `a85a656` fix | A later failing run outranks a stored passing receipt on the same tree (owner's latest-run ruling, closing the stored-receipt gap) | run 40898887938, success |
+| `23eb086` fix | The global level file, and `supervisor level <off\|lite\|full\|ultra>` run from Bash, PowerShell or Terminal Commander, are gate state; the PreToolUse guard denies them. Reading the level and `supervisor status` stay allowed. | run 40898887938, success |
+| `96cc624` fix, `c4dabf8` docs | Owner's ruling: no demotion to lite on a baseline failure (see the phase 3 section) | run 40899255020, success |
+| `477376d` feat | Inferred contract, a task per session, SessionStart context | run 40900299450, success (Linux fresh and hosted Windows) |
+
+Baseline note (exact):
+
+```
+GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: exited 101 on your latest run (this check already failed before your changes); or report the task as not complete.
+```
+
+The inferred contract for a Cargo project:
+- `id`: `inferred-<dir>`, with `"inferred": true`.
+- Criteria:
+  - C1: `cargo clippy --all-targets -- -D warnings`;
+  - C2: `cargo test`;
+  - C3: `cargo test --workspace` with `"tier": "full"`.
+- `package.json` adds `npm run lint` and `npm test` for the scripts that exist. `pyproject.toml` adds `pytest`.
+- `scope` is `[""]`: the core reads an empty list as nothing in scope, and an empty prefix matches every path.
+- `supervisor init` replaces an inferred contract (never a hand-written one) and sets its `gate.json` aside as `gate.json.inferred`.
+- No declared checks, or not a git repository: dormant, and the state root is untouched (tested byte for byte).
+
+SessionStart context at `full` (at `ultra` the first line also names `cargo test --workspace`; nothing when dormant or off):
+
+```
+GATE (full): before saying done, run with exit 0 after your last change: `cargo clippy --all-targets -- -D warnings`, `cargo test`.
+The gate reads your runs; no header or tool call is needed.
+```
+
+A task per session:
+- `gate.json` records its owning `session_id`, and the chain covers it.
+- The chain is verified before anything else, so a hand-edited gate is refused and never rolled over.
+- A verified gate owned by another session is replaced by a fresh task.
+- Workers' SubagentStop payloads carry the parent's `session_id`, so they stay in the parent's task.
+- `events.jsonl` and `runs.jsonl` are append-only, so earlier tasks' lines are kept (tested).
+
+| Check | Job or run | Exit | Evidence |
+|---|---|---|---|
+| `cargo test --workspace` | `job_01a1883d48ef7036807505058942a53a` | 0 | 165 passed (155 before the fixes; no original assertion edited) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a1883d030476beb6a6374fac01784e` | 0 | no warnings (before a comment-only rewrap; CI reran clippy on the final head) |
+| `cargo fmt --all -- --check` | `job_01a1883d41a17446b471d4f4846fde87` | 0 | no diff |
+| Branch CI on `477376d` | run 40900299450 | success | Linux fresh and hosted Windows |
+
+Phase 3 tests that changed under the no-demotion ruling, both added on this branch:
+- The degraded-session test is replaced by `a_baseline_failure_fixed_in_the_session_is_accepted_at_full` and `a_baseline_failure_never_fixed_is_refused_with_the_note_until_the_release`.
+- The status test's `degraded:` line became `baseline failures: none (no gate state yet)`.
+
+Not landed:
+- `supervisor install` still writes six hook events, without `SessionStart`, and its PreToolUse matcher has no `MultiEdit`. Adding either would change an original assertion in `cli/tests/install.rs` (`claude_settings_keep_foreign_hooks_and_permissions_and_gain_the_fixture_hooks`, lines 193 and 202, which compare against the proven fixture). The plugin (phase 5) carries both. Until then, an installed project never sees SessionStart, so it gets no inference and no context lines.
+
+Open:
+- The baseline note is added only to derived "run `<cmd>`" items, not to refusals of a written header.
+- A failing run without an observed exit code cannot outrank a stored pass.
+- Two concurrent sessions on one project take the task from each other (`shortcut:`).
+- `runs.jsonl` is shared across sessions, so a run from an earlier session on the identical tree counts.
+- A git project with declared checks and no contract pays a second git observation per hook call.
+- Not run live in Claude Code.
+
+## Autonomous gate, phase 5: Claude Code plugin
+
+Branch `feat/autonomous-gate`, commits `0655031` (plugin), `ea92754` (install) and `e5e664b` (CI). The gate is packaged as a Claude Code plugin; the user runs `npm install -g coding-supervisor`, `/plugin marketplace add special-place-ai-heaven/coding-supervisor`, `/plugin install coding-supervisor`, `/supervisor full`.
+
+Files at the repository root:
+- `.claude-plugin/plugin.json`: name `coding-supervisor`, the Cargo version, MIT, and the MCP server declared inline (`mcpServers.supervisor`: command `supervisor`, args `["mcp"]`). There is no root `.mcp.json`, so the server is not registered for people working in this repository.
+- `.claude-plugin/marketplace.json`: marketplace `coding-supervisor`, one plugin at source `./`.
+- `hooks/hooks.json`: the seven events the adapter handles. Matchers are the installer's, with `MultiEdit` added to the PreToolUse matcher; PostToolUse is unchanged. Each hook runs `node` on `${CLAUDE_PLUGIN_ROOT}/hooks/supervisor-hook.js hook` in exec form (`command` plus `args`, which the hooks page prefers for a path placeholder), timeout 30 seconds.
+- `hooks/supervisor-hook.js`: a dependency-free node wrapper. It finds the native binary from `SUPERVISOR_BIN`, then the path cached in `$CLAUDE_PLUGIN_DATA/binary-path` (when that file still exists), then `npm root -g` plus the global package's own `lib/resolve-binary.js`, and caches the result. It spawns the binary with stdio passed through and returns its exit code. When it cannot resolve or start the binary it exits 0 and prints, on the first call only (marker `gate-not-active-notified` in the plugin data directory, or the temp directory), `{"systemMessage":"coding-supervisor: the gate is not active; run npm install -g coding-supervisor"}`. `slash` arguments map to `supervisor level <off|lite|full|ultra>`, `supervisor status`, or `supervisor level` for no argument; anything else prints `usage: /supervisor off|lite|full|ultra|status`. When a typed `/supervisor` finds no binary, it says so every time (a hook says it once). No new Rust subcommand.
+- `commands/supervisor.md`: `disable-model-invocation: true`, `argument-hint: off|lite|full|ultra|status`, body runs the wrapper with `slash $ARGUMENTS` through the `!` form.
+
+Docs relied on (code.claude.com, fetched 2026-10-29):
+- `mcpServers`, plugin manifest reference: "`mcpServers` takes a `.json` file path, an MCP bundle path or URL, an inline map, or an array mixing them. ... Claude Code loads `.mcp.json` at the plugin root first, then each declared shape in order." Inline map example: `{ "deploy-api": { "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/server.js"] } }`.
+- `${CLAUDE_PLUGIN_ROOT}` in commands, same page, "Where each variable resolves": "Skill, command, and agent content: Anywhere in the Markdown body", and "In skill, command, and agent content, write the `${...}` reference in the Markdown body instead, and Claude Code substitutes the path inline when it loads the content." The skills page says it more narrowly: "The plugin's installation directory. Substituted only in plugin skills." A command file is read as a skill with the same frontmatter and the manifest page lists commands, so the command relies on the manifest page; this is not run live.
+- Hook environment, same table: hook commands get `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA` and `CLAUDE_PROJECT_DIR` exported. Hook `timeout` is in seconds.
+- `disable-model-invocation`, skills page: "To keep a personal or project skill but stop Claude from invoking it on its own, set `disable-model-invocation: true` in its frontmatter".
+- Plugin commands are namespaced: a command in `commands/supervisor.md` runs as `/coding-supervisor:supervisor`; the bare `/supervisor` is not documented for plugins and is not verified.
+
+| Check | Job or run | Exit | Evidence |
+|---|---|---|---|
+| `claude plugin validate .` (2.1.312) | `job_01a1884baa69720e911a58eb3dedee85` | 0 | "Validation passed with warnings": no icon, and a note that `CLAUDE.md` at the plugin root is not loaded as context |
+| Wrapper tests, `node --test hooks/supervisor-hook.test.js` | `job_01a1884b7ee872d08d935bb00b66199b` | 0 | 9 passed, 0 failed, 0 skipped: resolution order, cached path, stale cache, missing binary announced once, stdio and exit code passed through, slash mapping and usage |
+| `npm test` in `npm/` | `job_01a1884b82ac7548ab6b3cc0b3a8311d` | 0 | 31 passed, 3 skipped (unchanged) |
+| `cargo test --workspace` | `job_01a1884c850876e98bd71f4760bedc3a` | 0 | 169 passed; the same command on the tree without the install change passed 166 (`job_01a1884d057676288d7a7e4252c1b5c2`); the 3 new tests are in `cli/tests/install.rs`; no original assertion edited |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `job_01a1884d7eb375febd1886d7b58d41fd` | 0 | no warnings |
+| `cargo fmt --all -- --check` | `job_01a1884f158b77e8af7987e753fb69ca` | 0 | no diff (a first check found formatting in the new lines only; `cargo fmt --all` fixed them) |
+| Wrapper against the real debug binary, Windows | local, throwaway directories under `C:\temp`, `SUPERVISOR_CONFIG_DIR` and `SUPERVISOR_STATE_DIR` redirected | 0 | `slash full` wrote the level file, `slash` printed `level: full (global)`, `slash status` printed the status, `slash bogus` the usage line, a hook with no binary printed the message once and then nothing |
+| Wrapper resolution through a fake global prefix | same, `npm_config_prefix` pointed at a temp tree holding `coding-supervisor` and `coding-supervisor-windows-x64` | 0 | `npm root -g`, then `resolve-binary.js`, found `supervisor.exe` and cached it; a second call with a wrong prefix used the cache |
+| Branch CI on `e5e664b` | run 40903326714 | success | Linux fresh (including the new node test step) and hosted Windows; the pull-request Linux job is skipped on a push |
+
+Install behaviour (`cli/src/install.rs`, `plugin_enabled`): for `--harness claude-code`, when `enabledPlugins["coding-supervisor@coding-supervisor"]` is `true` in the project's `.claude/settings.json` or `.claude/settings.local.json`, or in `<home>/.claude/settings.json`, install prints `claude-code: the coding-supervisor plugin is enabled for this project; it carries the hooks and the MCP server, so nothing was written.` and exits 0 without writing. A file that does not parse counts as not enabled. Tests in `cli/tests/install.rs`: all three locations write nothing, a disabled or other-named plugin or a garbage settings file leaves install working, and another harness is unaffected.
+
+Open:
+- Not run live in Claude Code: the plugin was not installed or enabled in a real `~/.claude`, and no session was started. Unverified: the marketplace add and plugin install steps, that `${CLAUDE_PLUGIN_ROOT}` is substituted in `commands/supervisor.md`, that the `!` command passes the permission check with the `allowed-tools` rule written there, that the bare `/supervisor` name resolves (the documented name is `/coding-supervisor:supervisor`), that the exec-form hooks start on Windows, and that the plugin's MCP server `supervisor` starts without `--project` and shares the hooks' gate state.
+- Duplicate hooks: Claude Code merges plugin hooks with the project's; a project that also ran `supervisor install` earlier runs both sets, and the hooks page says a plugin's copy of the same handler stays separate. The installer only reports the plugin when it is enabled; it does not remove an earlier install's hooks, and the plugin does not detect them. The README tells the user not to have both.
+- Without the npm package, every hook call that cannot find the binary runs `npm root -g` (about a second) because only a hit is cached (`shortcut:` in the wrapper).
+- `/supervisor <level>` sets the global default, so a project-level level file still wins over it; `supervisor level <word> --project <dir>` sets that one, and the slash command does not offer it.
+- The plugin's PostToolUse matcher has no `MultiEdit`, as with the installer; the adapter derives the candidate at run time, so it was left alone.
+- `claude plugin validate` advises an icon and a README install line in its own form (`/plugin install coding-supervisor --marketplace special-place-ai-heaven/coding-supervisor`); not done.
+- The repository root is the plugin root, so the whole repository is copied into the plugin cache on install.
