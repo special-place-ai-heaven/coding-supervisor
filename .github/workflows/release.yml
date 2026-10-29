@@ -5,8 +5,7 @@
 # Tags are pushed by the owner only; the owner has set a tag ruleset on the
 # repository, so nobody else can create a v* tag and trigger a release.
 #
-# The x86_64 macOS build runs on macos-15-intel, not macos-13: GitHub retired the
-# macos-13 image in December 2025, and macos-latest is arm64 only.
+# Targets (owner's decision, 2026-10-29): Windows and Linux x86_64 only.
 name: Release
 
 on:
@@ -27,27 +26,17 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.best_effort }}
     strategy:
       fail-fast: false
       matrix:
         include:
           # Owner's rule (2026-10-29): Linux builds on the five self-hosted
-          # runners labelled fresh; Windows and macOS on GitHub-hosted runners
-          # (the repository is public). The x86_64 macOS runner label is
-          # unverified, so that entry is best effort and never blocks the release.
+          # runners labelled fresh; Windows on a GitHub-hosted runner (the
+          # repository is public).
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            best_effort: false
           - target: x86_64-unknown-linux-gnu
             os: [self-hosted, Linux, X64, fresh]
-            best_effort: false
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            best_effort: false
-          - target: x86_64-apple-darwin
-            os: macos-15-intel
-            best_effort: true
     defaults:
       run:
         shell: bash
@@ -72,9 +61,7 @@ jobs:
       - name: Check the runner matches the target
         run: |
           rustc -vV
-          # grep without -q reads the whole input: with -q it closed the pipe
-          # early and rustc died of SIGPIPE under pipefail (exit 141 on macOS).
-          rustc -vV | grep -x "host: ${{ matrix.target }}" > /dev/null
+          rustc -vV | grep -qx "host: ${{ matrix.target }}"
 
       - name: Build release binaries
         run: cargo build --release --workspace
@@ -100,11 +87,7 @@ jobs:
             tar -czf "$archive" "$name"
           fi
           rm -rf "$name"
-          if command -v sha256sum > /dev/null; then
-            sha256sum "$archive" > "$archive.sha256"
-          else
-            shasum -a 256 "$archive" > "$archive.sha256"
-          fi
+          sha256sum "$archive" > "$archive.sha256"
           cat "$archive.sha256"
 
       - uses: actions/upload-artifact@v7

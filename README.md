@@ -19,7 +19,7 @@ It sits beside an existing coding harness. The harness keeps the model, the tool
 | Command-line installer | `cli/` | The `supervisor` binary: `init`, `install --harness`, `hook`, `mcp`. Writes the two skills and the gate's registration into a project for one of five harnesses | 10 tests (9 install, 1 init; `#[test]` count, not rerun for this edit); Claude Code installed configuration run live in `A-RESULTS.md` |
 | Skill templates | `skills/` | `supervisor-chair` and `supervisor-worker`, rendered per harness by `install` | rendered text shown in the install runs below |
 | Install fixture | `fixtures/claude-code-install/` | The runner, contract and captured hook and tool journals from the live sessions through the installed configuration | `docs/research/2026-10-29-installable/A-RESULTS.md` |
-| CI and release workflows | `.github/workflows/ci.yml`, `release.yml` | CI on every push and pull request: format, lint, tests, and a check that the core has no dependencies. Release on a `v*` tag: native release builds for four targets, archives with checksums, a GitHub release | **Unverified.** No tag exists, no workflow run has been observed, and no remote-tracking branch for `phase-a-installable` exists locally (as_of 2026-10-29) |
+| CI and release workflows | `.github/workflows/ci.yml`, `release.yml` | CI on every push and pull request: format, lint, tests, and a check that the core has no dependencies. Release on a `v*` tag: native release builds for two targets (Windows and Linux x86_64), archives with checksums, a GitHub release | CI green on every push to main. Release: two targets, **unverified until the first tag** publishes a release; the one release-candidate run (`v0.1.0-rc1`) built both archives but published nothing because jobs for two since-removed targets failed (as_of 2026-10-29) |
 
 The core has no dependencies; its dependency tree is one line. The only dependency in the workspace is `serde_json`, used by the Claude Code adapter (to read hook payloads from stdin), by the MCP server and by the command-line installer.
 
@@ -39,7 +39,7 @@ Harness names for `--harness`: `claude-code`, `codex`, `cursor`, `omp`, `grok`.
 
 ### Get the binaries
 
-- **From a release.** The release workflow builds on a `v*` tag for `x86_64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` and `x86_64-apple-darwin`, and attaches `coding-supervisor-<tag>-<target>.zip` (Windows) or `.tar.gz` holding the three binaries, a `.sha256` file per archive and a combined `SHA256SUMS`. **No release exists yet**: no tag has been pushed and the workflow has never run.
+- **From a release.** The release workflow builds on a `v*` tag for `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` only, by the owner's decision, and attaches `coding-supervisor-<tag>-<target>.zip` (Windows) or `.tar.gz` holding the three binaries, a `.sha256` file per archive and a combined `SHA256SUMS`. **No release exists yet**: the only tag so far, `v0.1.0-rc1`, published nothing.
 - **From source.** With the toolchain pinned in `rust-toolchain.toml` (Rust 1.99.1): `cargo build --release --workspace`. The binaries are in `target/release/` under your `CARGO_TARGET_DIR`, or under `target/` if it is unset.
 
 Put the binaries where they will stay. `install` writes the absolute path of the running `supervisor` into the hook and MCP files (override with `--binary <path>`), so moving the binary later breaks the installed configuration.
@@ -266,7 +266,7 @@ The first line of `adapters/claude-code/src/lib.rs` declares the mode, measured 
 3. **Decide blocked-state semantics** and implement unblock if paused is chosen, with the rule that unblocking never grants acceptance, resets the repair budget, or restores stale evidence.
 4. **Effects.** Design the observation contract before implementing enforcement of `forbidden_effects`.
 5. **Close two receipt gaps found by review** (`docs/research/2026-10-29-receipt-relevance-and-run-time-freshness/PROPOSAL.md`). Gap 1, in progress on main: a receipt today proves a command ran, not that the contract's command ran, so each criterion gains a required `command` and a mismatched citation is refused by name. Gap 2, sequenced after the first real-project use: bind each observed run to the candidate at run time, so a check run before an edit cannot be cited after it.
-6. **Finish the release.** CI is proven on main (Linux on the owner's self-hosted runners, Windows on a hosted runner). The first release-candidate tag failed its macOS host check on a broken pipe; the fix is on main and unverified until the next tag is pushed.
+6. **Finish the release.** CI is proven on main (Linux on the owner's self-hosted runners, Windows on a hosted runner). The release builds two targets, Windows and Linux x86_64, and is unverified until the owner pushes the next tag.
 7. **Live re-runs where quotas or sign-in blocked them.** Codex CLI with a live model after 2026-11-04, Cursor after its weekly reset, Grok Build after a sign-in. Until then their mode lines say "scripted model" or "advisory".
 
 ## Build and test
