@@ -1,0 +1,3 @@
+{"agent_id":"main","decision":null,"event":"UserPromptSubmit","reasons":[],"t":1793261619}
+{"agent_id":"main","decision":{"decision":"block","reason":"GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C2; record the check with CHECK lines or report the task as not complete."},"event":"Stop","reasons":["replay: 0 receipts restored, 0 for another candidate","missing C2"],"t":1793261624}
+{"agent_id":"main","decision":null,"event":"Stop","reasons":["replay: 0 receipts restored, 0 for another candidate","no completion claim"],"t":1793261629}

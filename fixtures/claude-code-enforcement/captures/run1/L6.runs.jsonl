@@ -1,0 +1,4 @@
+{"agent_id":"a6134f2b22c6b803c","command":"echo check-ok","cwd":"E:\\project\\coding-supervisor\\fixtures\\claude-code-enforcement","exit_code":0,"t":1793261653,"tool":"Bash","tool_use_id":"toolu_011erSuK1Jr5H9H3dPWsUQXw"}
+{"agent_id":"a6134f2b22c6b803c","command":"echo check-ok","cwd":"E:\\project\\coding-supervisor\\fixtures\\claude-code-enforcement","exit_code":0,"t":1793261660,"tool":"Bash","tool_use_id":"toolu_01TesokHa7qCKVppm1boeSNy"}
+{"agent_id":"a6134f2b22c6b803c","command":"echo check-ok","cwd":"E:\\project\\coding-supervisor\\fixtures\\claude-code-enforcement","exit_code":0,"t":1793261666,"tool":"Bash","tool_use_id":"toolu_01TNycxnJQoWJRkguz12Bjeg"}
+{"agent_id":"a6134f2b22c6b803c","command":"echo check-ok","cwd":"E:\\project\\coding-supervisor\\fixtures\\claude-code-enforcement","exit_code":0,"t":1793261671,"tool":"Bash","tool_use_id":"toolu_01397ZSxNrUmqqf1FUzaDfFF"}

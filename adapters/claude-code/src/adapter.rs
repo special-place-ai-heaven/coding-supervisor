@@ -442,13 +442,14 @@ impl Session {
         }
         reasons.extend(problems.iter().cloned());
         if active && prior >= 3 {
-            return Ok(Decision::Context {
-                event: "SubagentStop",
-                text: format!(
-                    "GATE: handback recorded as UNVERIFIED after 3 refusals: {}.",
-                    problems.join("; ")
-                ),
-            });
+            // Silent release: additionalContext on SubagentStop keeps the worker running
+            // (measured in the L1 live run), so the cap must answer with nothing. The
+            // chair learns the outcome from the PostToolUse annotation.
+            reasons.push(format!(
+                "handback recorded as UNVERIFIED after 3 refusals: {}",
+                problems.join("; ")
+            ));
+            return Ok(Decision::None);
         }
         let k = prior + 1;
         self.gate.handback_refusals.insert(agent.to_owned(), k);
@@ -569,9 +570,11 @@ impl Session {
 
 /// Rebuild the receipt set of a resumed task, then observe the current candidate.
 ///
-/// The checkpoint identity is observed first so that stored receipts for it are accepted again;
-/// the real observation that follows lets the core itself mark them stale when the candidate
-/// changed. Receipts for older candidates are rejected by the core and stay only in gate.json.
+/// Stored receipts are replayed in journal order, grouped by the candidate they were bound to:
+/// each group's identity is observed first, then its receipts are recorded. Every identity
+/// change marks the earlier receipts stale, so after the final observation of the current
+/// candidate the core itself reports `StaleReceipt` for evidence from an older candidate
+/// instead of `MissingReceipt` (the L4 live run showed the difference).
 fn restore(
     task: &mut Task,
     gate: &Gate,
@@ -579,22 +582,39 @@ fn restore(
     reasons: &mut Vec<String>,
 ) -> Result<(), GateError> {
     let previous = gate.checkpoint.candidate.clone();
-    if let Some(id) = previous.clone().filter(|_| !task.state().is_terminal()) {
-        task.observe_candidate(Candidate {
-            id,
-            provenance: "checkpoint".to_owned(),
-            changed_paths: current.changed_paths.clone(),
-        })?;
-        let (mut restored, mut other) = (0, 0);
+    if previous.is_some() && !task.state().is_terminal() {
+        let mut groups: Vec<(coding_supervisor::CandidateId, Vec<&VerificationReceipt>)> =
+            Vec::new();
         for receipt in &gate.receipts {
-            match task.record_receipt(receipt.clone()) {
-                Ok(()) => restored += 1,
-                Err(GateError::ReceiptForOtherCandidate { .. }) => other += 1,
-                Err(e) => reasons.push(format!("replay rejected: {}", render(&e))),
+            match groups.iter_mut().find(|(id, _)| *id == receipt.candidate) {
+                Some((_, list)) => list.push(receipt),
+                None => groups.push((receipt.candidate.clone(), vec![receipt])),
+            }
+        }
+        if groups.is_empty()
+            && let Some(id) = previous.clone()
+        {
+            groups.push((id, Vec::new()));
+        }
+        let (mut restored, mut rejected) = (0, 0);
+        for (id, list) in groups {
+            task.observe_candidate(Candidate {
+                id,
+                provenance: "journal".to_owned(),
+                changed_paths: current.changed_paths.clone(),
+            })?;
+            for receipt in list {
+                match task.record_receipt(receipt.clone()) {
+                    Ok(()) => restored += 1,
+                    Err(e) => {
+                        rejected += 1;
+                        reasons.push(format!("replay rejected: {}", render(&e)));
+                    }
+                }
             }
         }
         reasons.push(format!(
-            "replay: {restored} receipts restored, {other} for another candidate"
+            "replay: {restored} receipts restored, {rejected} rejected"
         ));
     }
     task.observe_candidate(current.clone())?;

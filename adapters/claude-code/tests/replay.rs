@@ -348,8 +348,11 @@ fn handback_refusals_release_after_three() {
         let r = handle(&handback("w1", message, k > 1), &mut env);
         assert!(blocked(&r).contains(&format!("refusal {k} of 3")));
     }
+    // Silent release: any output on SubagentStop keeps the worker running (L1 live run).
     let r = handle(&handback("w1", message, true), &mut env);
-    assert!(context(&r).contains("UNVERIFIED"));
+    assert_eq!(r, Decision::None);
+    let journal = std::fs::read_to_string(env.state_dir.join("events.jsonl")).unwrap();
+    assert!(journal.contains("UNVERIFIED after 3 refusals"), "{journal}");
 }
 
 #[test]
