@@ -28,16 +28,16 @@
   },
   {
     "name": "candidate_observe",
-    "description": "Report the candidate under test. A new identity marks every earlier receipt stale. In state repairing this also ends the repair round and returns the task to verifying. The identity is caller-asserted.",
+    "description": "Report the candidate under test; omit the identity to let the gate derive it from git. Without base_commit and dirty_digest the gate reads the project's git state the same way its hooks do, and takes the changed paths from git unless changed_paths is given. With them, the identity and changed_paths are caller-asserted. A new identity marks every earlier receipt stale. In state repairing this also ends the repair round and returns the task to verifying.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "base_commit": {"type": "string"},
         "dirty_digest": {"type": "string"},
         "changed_paths": {"type": "array", "items": {"type": "string"}},
-        "provenance": {"type": "string", "description": "Who observed the candidate; default mcp-caller."}
+        "provenance": {"type": "string", "description": "Who observed the candidate; default git when derived, mcp-caller when given."}
       },
-      "required": ["base_commit", "dirty_digest", "changed_paths"]
+      "required": []
     }
   },
   {

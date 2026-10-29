@@ -16,9 +16,12 @@ accepted. You decide what to do about its answer. You never override it.
 
 ## Before you say "done"
 
-1. Observe the candidate: `candidate_observe` with the current commit and a
-   digest of the uncommitted changes, plus the changed paths. If the files
-   changed since the last receipt, the gate marks those receipts stale.
+1. Observe the candidate: call `candidate_observe` with no identity fields.
+   The gate reads git itself (the current commit, a digest of the uncommitted
+   changes and the changed paths), the same way its hooks do. Pass
+   `base_commit`, `dirty_digest` and `changed_paths` only on a harness
+   without git. If the files changed since the last receipt, the gate marks
+   those receipts stale.
 2. Record each check as a receipt: `receipt_record` with the criterion id,
    the exact command, its working directory, its exit code and whether it
    supports the claim. Only commands that ran in this session. A command you

@@ -148,6 +148,9 @@ const HOOK_EVENTS: [(&str, Option<&str>); 6] = [
     ("Stop", None),
 ];
 
+/// Claude Code permission rule that allows every tool of the MCP server `supervisor`.
+const MCP_ALLOW: &str = "mcp__supervisor";
+
 const CREDENTIAL_WORDS: [&str; 4] = ["token", "key", "secret", "password"];
 
 struct Change {
@@ -212,7 +215,7 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
             format!("{binary} hook")
         };
         let settings = under(&project, ".claude/settings.json");
-        changes.push(change(settings, |before| merge_hooks(before, &command))?);
+        changes.push(change(settings, |before| merge_settings(before, &command))?);
         let path = project.join(".gitignore");
         if let Some(before) = read_existing(&path)? {
             let listed = before.lines().any(|l| {
@@ -364,8 +367,10 @@ fn merge_mcp_json(before: Option<&str>, binary: &str, project: &str) -> Result<S
     pretty(root)
 }
 
-/// Appends our group to each event unless a hook with our command is already there.
-fn merge_hooks(before: Option<&str>, command: &str) -> Result<String, String> {
+/// Appends our group to each event unless a hook with our command is already there, and
+/// adds `mcp__supervisor` to `permissions.allow` (Claude Code otherwise refuses the gate's MCP
+/// tools under acceptEdits). No other permission key is written.
+fn merge_settings(before: Option<&str>, command: &str) -> Result<String, String> {
     let mut root = json_object(before)?;
     let hooks = root
         .entry("hooks")
@@ -394,6 +399,18 @@ fn merge_hooks(before: Option<&str>, command: &str) -> Result<String, String> {
             );
             groups.push(Value::Object(group));
         }
+    }
+    let allow = root
+        .entry("permissions")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or("\"permissions\" is not an object")?
+        .entry("allow")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .ok_or("permissions.allow is not an array")?;
+    if !allow.iter().any(|rule| rule == MCP_ALLOW) {
+        allow.push(MCP_ALLOW.into());
     }
     pretty(root)
 }

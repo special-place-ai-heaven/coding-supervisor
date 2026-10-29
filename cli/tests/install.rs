@@ -153,7 +153,10 @@ fn claude_settings_keep_foreign_hooks_and_permissions_and_gain_the_fixture_hooks
     install(&project, &home, "claude-code", &[]);
 
     let v = read_json(&settings);
-    assert_eq!(v["permissions"], json!({ "allow": ["Read"] }));
+    assert_eq!(
+        v["permissions"],
+        json!({ "allow": ["Read", "mcp__supervisor"] })
+    );
     assert_eq!(
         v["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
         "foreign-guard"
@@ -176,6 +179,40 @@ fn claude_settings_keep_foreign_hooks_and_permissions_and_gain_the_fixture_hooks
         assert_eq!(ours[0]["matcher"], groups[0]["matcher"], "{event} matcher");
         assert_eq!(ours[0]["hooks"][0]["type"], "command");
     }
+}
+
+#[test]
+fn claude_settings_allow_the_gate_tools_once_and_touch_no_other_permission() {
+    let (project, home) = dirs("allow");
+    install(&project, &home, "claude-code", &[]);
+    let settings = project.join(".claude").join("settings.json");
+    assert_eq!(
+        read_json(&settings)["permissions"],
+        json!({ "allow": ["mcp__supervisor"] })
+    );
+
+    let existing = json!({
+        "permissions": {
+            "allow": ["Read", "mcp__supervisor", "Bash(git status)"],
+            "deny": ["WebFetch"],
+            "defaultMode": "acceptEdits"
+        }
+    });
+    fs::write(&settings, existing.to_string()).unwrap();
+    install(&project, &home, "claude-code", &[]);
+    install(&project, &home, "claude-code", &[]);
+    assert_eq!(read_json(&settings)["permissions"], existing["permissions"]);
+
+    fs::write(
+        &settings,
+        json!({ "permissions": { "ask": ["Bash"] } }).to_string(),
+    )
+    .unwrap();
+    install(&project, &home, "claude-code", &[]);
+    assert_eq!(
+        read_json(&settings)["permissions"],
+        json!({ "ask": ["Bash"], "allow": ["mcp__supervisor"] })
+    );
 }
 
 #[test]

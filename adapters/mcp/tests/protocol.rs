@@ -66,10 +66,7 @@ fn tools_list_has_the_eight_tools_with_required_fields() {
             "claim_supported"
         ]
     );
-    assert_eq!(
-        required("candidate_observe"),
-        ["base_commit", "dirty_digest", "changed_paths"]
-    );
+    assert!(required("candidate_observe").is_empty());
     assert_eq!(
         required("finding_raise"),
         ["id", "severity", "location", "evidence_ref"]

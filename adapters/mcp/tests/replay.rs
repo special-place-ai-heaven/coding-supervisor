@@ -5,11 +5,14 @@
 mod common;
 
 use std::fs;
+use std::path::Path;
+use std::process::Command;
 
 use common::{
     contract, dir, observe, ok, pass, receipt, refused, server, started, state, task_state,
 };
 use serde_json::{Value, json};
+use supervisor_claude_code::candidate::{CandidateProvider, GitCandidate};
 
 #[test]
 fn a18_self_reported_pass_is_not_accepted() {
@@ -303,4 +306,63 @@ fn calls_before_task_start_are_refused() {
         text.ends_with("refused: candidate identity not observed"),
         "{text}"
     );
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn candidate_without_identity_is_derived_from_git_as_the_hooks_derive_it() {
+    let d = dir("git");
+    let project = d.0.join("project");
+    git(&project, &["init", "-q"]);
+    fs::write(project.join("a.txt"), "one\n").unwrap();
+    git(&project, &["add", "a.txt"]);
+    git(&project, &["commit", "-q", "-m", "first"]);
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src").join("lib.rs"), "fn main() {}\n").unwrap();
+    let hooks = GitCandidate {
+        cwd: project.clone(),
+    }
+    .observe()
+    .unwrap();
+    assert_eq!(hooks.changed_paths, ["src/lib.rs"]);
+
+    let s = server(&d);
+    ok(&s, "task_start", common::four());
+    let answer = ok(&s, "candidate_observe", json!({}));
+    assert_eq!(
+        answer["checkpoint"]["candidate"],
+        json!({"base_commit": hooks.id.base_commit, "dirty_digest": hooks.id.dirty_digest})
+    );
+    for c in ["C1", "C2", "C3", "C4"] {
+        pass(&s, c);
+    }
+    // Given changed paths replace git's; the identity stays git's, so the receipts stay current.
+    let answer = ok(
+        &s,
+        "candidate_observe",
+        json!({"changed_paths": ["src/lib.rs", "docs/x.md"]}),
+    );
+    assert_eq!(answer["receipts"]["C1"], "current");
+    let text = refused(&s, "accept_try", json!({}));
+    assert!(text.ends_with("refused: out of scope docs/x.md"), "{text}");
+    ok(&s, "candidate_observe", json!({}));
+    assert_eq!(state(&ok(&s, "accept_try", json!({}))), "ready_for_review");
+
+    let text = refused(&s, "candidate_observe", json!({"base_commit": "b"}));
+    assert!(text.contains("missing field dirty_digest"), "{text}");
 }

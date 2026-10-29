@@ -22,6 +22,7 @@ use coding_supervisor::{
 };
 use serde_json::{Map, Value};
 use supervisor_claude_code::adapter::{MCP_ASSERTED, Session, now, render};
+use supervisor_claude_code::candidate::{CandidateProvider, GitCandidate};
 use supervisor_claude_code::journal::{self, Trace};
 use supervisor_claude_code::location::resolve_state_dir;
 use supervisor_claude_code::state::{
@@ -82,6 +83,8 @@ pub fn serve(server: &Server, input: impl BufRead, mut output: impl Write) -> io
 }
 
 pub struct Server {
+    /// Where `candidate_observe` reads git when the caller gives no identity.
+    project: PathBuf,
     state_dir: PathBuf,
     state_location: &'static str,
 }
@@ -115,6 +118,7 @@ impl Server {
     pub fn new(project: &Path, env_lookup: &dyn Fn(&str) -> Option<String>) -> Self {
         let (state_dir, state_location) = resolve_state_dir(project, env_lookup);
         Self {
+            project: project.to_path_buf(),
             state_dir,
             state_location,
         }
@@ -225,7 +229,7 @@ impl Server {
             return self.task_start(args, reasons, trace);
         }
         let dir = &self.state_dir;
-        let op = parse(tool, args)?;
+        let op = parse(tool, args, &self.project)?;
         let (contract, digest) = state::read_contract(dir)?;
         trace.task_id = contract.as_ref().map(|c| c.id.0.clone());
         let stored = load(dir, &digest, trace)?;
@@ -473,22 +477,12 @@ fn describe(
     ])
 }
 
-fn parse(tool: &str, args: &Value) -> Result<Op, String> {
+fn parse(tool: &str, args: &Value, project: &Path) -> Result<Op, String> {
     if !args.is_object() {
         return Err("field arguments is not an object".to_owned());
     }
     Ok(match tool {
-        "candidate_observe" => Op::Observe(Candidate {
-            id: CandidateId {
-                base_commit: string(args, "base_commit")?,
-                dirty_digest: string(args, "dirty_digest")?,
-            },
-            provenance: match args.get("provenance") {
-                None | Some(Value::Null) => "mcp-caller".to_owned(),
-                Some(_) => string(args, "provenance")?,
-            },
-            changed_paths: strings(args, "changed_paths")?,
-        }),
+        "candidate_observe" => Op::Observe(candidate_from_args(args, project)?),
         "receipt_record" => Op::Receipt {
             criterion: string(args, "criterion")?,
             command: string(args, "command")?,
@@ -527,6 +521,45 @@ fn parse(tool: &str, args: &Value) -> Result<Op, String> {
         "task_complete" => Op::Complete,
         _ => Op::State,
     })
+}
+
+/// The caller's candidate, or, without `base_commit` and `dirty_digest`, the one the hooks
+/// derive from git in `project`; given `changed_paths` and `provenance` still apply.
+fn candidate_from_args(args: &Value, project: &Path) -> Result<Candidate, String> {
+    let given = |key: &str| !matches!(args.get(key), None | Some(Value::Null));
+    let mut candidate = match (given("base_commit"), given("dirty_digest")) {
+        (true, true) => Candidate {
+            id: CandidateId {
+                base_commit: string(args, "base_commit")?,
+                dirty_digest: string(args, "dirty_digest")?,
+            },
+            provenance: "mcp-caller".to_owned(),
+            changed_paths: strings(args, "changed_paths")?,
+        },
+        (false, false) => {
+            let mut derived = GitCandidate {
+                cwd: project.to_path_buf(),
+            }
+            .observe()
+            .map_err(|why| {
+                format!("candidate not derived from git ({why}); pass base_commit and dirty_digest")
+            })?;
+            if given("changed_paths") {
+                derived.changed_paths = strings(args, "changed_paths")?;
+            }
+            derived
+        }
+        (true, false) => {
+            return Err("missing field dirty_digest (give both identity fields or neither)".into());
+        }
+        (false, true) => {
+            return Err("missing field base_commit (give both identity fields or neither)".into());
+        }
+    };
+    if given("provenance") {
+        candidate.provenance = string(args, "provenance")?;
+    }
+    Ok(candidate)
 }
 
 fn field<'a>(v: &'a Value, key: &str) -> Result<&'a Value, String> {

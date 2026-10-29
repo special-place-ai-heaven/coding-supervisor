@@ -72,7 +72,12 @@ fn every_call_is_one_v1_line_without_goal_text_and_measure_reads_it() {
     assert_eq!(report.unrecognized_lines, 0);
     let stats = &report.sources["gate-v1"];
     assert_eq!(stats.lines, calls as u64);
-    assert_eq!(stats.accepted, 1);
+    // The server writes no session id, and its acceptance is advisory: neither counts as a
+    // session or an accepted task.
+    assert_eq!(stats.sessions.len(), 0);
+    assert_eq!(stats.no_session_lines, calls as u64);
+    assert_eq!(stats.accepted, 0);
+    assert_eq!(stats.accepted_mcp, 1);
     assert_eq!(stats.recorded, 4);
     assert_eq!(stats.refusals, 0, "advisory answers are not refusals");
 }

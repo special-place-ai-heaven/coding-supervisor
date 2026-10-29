@@ -62,7 +62,7 @@ Same prompt, one difference: `--allowedTools mcp__supervisor` on the command lin
 
 So the advisory path reached `completed` and the enforcing Stop hook still refused the claim, with the missing-receipt wording.
 
-## Measure (`supervisor-claude-code measure fixtures/claude-code-install/captures`, exit 0)
+## Measure (`supervisor-claude-code measure fixtures/claude-code-install/captures`, exit 0; rerun after the measure fix, TC job `job_01a1871d422e77a0b0d23b1d8522e431`)
 
 # Gate-derived measures
 Every number is gate-derived: read from gate journals and hook captures only, never from transcripts. Hook payloads carry no USD cost, so none is reported.
@@ -71,7 +71,8 @@ Files read: 4. Unrecognized lines: 0. Duplicate lines dropped: 0. Cells are n/d 
 | measure | gate-v1 |
 |---|---|
 | gate-derived lines | 26 |
-| gate-derived sessions | 5 |
+| gate-derived sessions | 4 |
+| gate-derived tool-server lines (no session) | 6 |
 | gate-derived judge dispatches (SubagentStop) | 5 |
 | gate-derived dispatches, agent_type cited-worker | 1/5 |
 | gate-derived dispatches, agent_type fake-worker | 4/5 |
@@ -98,13 +99,14 @@ Files read: 4. Unrecognized lines: 0. Duplicate lines dropped: 0. Cells are n/d 
 | gate-derived refusals: unobserved | 0/4 |
 | gate-derived refusals: other | 0/4 |
 | gate-derived tamper refusals | 0/4 |
-| gate-derived accepted tasks | 2/5 |
-| gate-derived worker tokens (final request only) | 8079/2 = 4039 (2 usage lines) |
+| gate-derived accepted tasks | 1/4 |
+| gate-derived accepted via MCP (advisory) | 1 |
+| gate-derived worker tokens (final request only) | 8079/1 = 8079 (2 usage lines) |
 
 How to read three of these numbers:
 
-- "sessions 5": four Claude sessions, plus the MCP server's journal lines, which carry no `session_id` and are counted as a fifth.
-- "accepted tasks 2/5": S2, plus the `mcp:task_complete` line of S3b, whose `accepted: true` is the advisory path's own answer. The Stop hook refused the completion claim after it. The measure counts that line as an accepted task. This is a measurement gap to fix: accepted should come from the enforcing path only.
+- "sessions 4": the four Claude sessions. The MCP server's six journal lines carry no `session_id` and are counted on their own row, "tool-server lines (no session) 6". The first run of this measure counted them as a fifth session.
+- "accepted tasks 1/4": S2 only, decided at the Stop hook. The `mcp:task_complete` line of S3b, whose `accepted: true` is the advisory path's own answer, is counted on its own row, "accepted via MCP (advisory) 1"; the Stop hook refused the completion claim after it. The first run of this measure counted it as a second accepted task (2/5), and worker tokens per accepted task were 4039 instead of 8079.
 - "refusals 4": the three S1 handback refusals plus the S3b Stop refusal. "linked receipts 2/2" counts the S2 receipt and the S3b MCP receipt line.
 
 ## Compared with the fixture (`docs/research/2026-10-28-completion-gate-first-slice/T4-T5-RESULTS.md`, run 5)
@@ -121,6 +123,8 @@ How to read three of these numbers:
 1. Installed configuration under `claude -p --permission-mode acceptEdits`: the `supervisor` MCP tools are denied (S3a). The hooks work without any permission rule; the MCP tools do not. Install could add `permissions.allow: ["mcp__supervisor"]` to `.claude/settings.json`, or print the need as a manual step. This is a decision for the coordinator; install was not changed.
 2. Candidate identity differs between the two paths. The prompt's "empty dirty digest" (`""`) is not the adapter's digest of a clean tree (SHA-256 of nothing, `e3b0c442…`). After the Stop hook re-observed the candidate, `task_state` reported `candidate_observed: false` and C2 missing. The chair skill asks for "a digest of the uncommitted changes" without defining how it is computed. In S3b the refusal holds either way, because the receipt was MCP-asserted and no hook observed the command. From this one run I cannot tell which of the two caused the "missing" wording.
 3. The `accepted tasks` measure counts the MCP path's `accepted: true` (see above).
+
+Items 1 to 3 were fixed in the commit "Phase A: install allows the gate's tools, candidate identity derived by the server, measure separates advisory acceptance": install adds `mcp__supervisor` to `permissions.allow`; `candidate_observe` without identity fields derives the candidate from git with the hooks' code; the measure counts hook acceptances and MCP acceptances apart and sessions from session ids only (table above rerun). The live sessions above were not rerun with the fixed binary.
 
 ## Limits
 
