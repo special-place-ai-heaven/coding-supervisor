@@ -282,7 +282,7 @@ Branch `feat/autonomous-gate`, commit `5365178`. At `Stop` (agent `main`) and `S
 | edit, run `cargo test`, bare "done" | SubagentStop: no decision, `ready_for_review`. Stop: no decision, `completed`, `accepted: true`. |
 | run, edit, "done" | ``GATE: handback refused (refusal 1 of 3): missing C1. run `cargo test`: ran before your last change.`` |
 | never ran | ``GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; missing C1; run `cargo test`: never ran; or report the task as not complete.`` |
-| exit 1 on the current candidate | ``… run `cargo test`: exited 1 …`` at both events |
+| exit 1 on the current candidate | ``… run `cargo test`: exited 1 on your latest run …`` at both events |
 | three refusals | SubagentStop releases (journaled UNVERIFIED), Stop answers `GATE: refusal cap reached; task remains verifying` |
 
 | Check | Job or run | Exit | Evidence |
@@ -294,7 +294,7 @@ Branch `feat/autonomous-gate`, commit `5365178`. At `Stop` (agent `main`) and `S
 | Branch CI | run 40893561661 | success | Linux fresh and hosted Windows |
 
 Open:
-- The spec is taken literally, so an exit-0 run counts even if a later run of the same command on the same candidate exited nonzero.
+- Resolved (owner's ruling, commit dc90f60): the latest run of the command on the current candidate decides; a pass followed by a failure on the same tree is refused with ``run `<command>`: exited <n> on your latest run``.
 - For a criterion with several commands, the reason is drawn from the first command's runs only.
 - Two edge reasons were added: "its run already backs another check; run it again" and "its exit code was not observed".
 - Not run live in Claude Code.
