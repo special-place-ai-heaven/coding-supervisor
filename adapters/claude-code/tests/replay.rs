@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use coding_supervisor::{Candidate, CandidateId, CriterionId, TaskState, VerificationReceipt};
 use serde_json::{Value, json};
-use supervisor_claude_code::adapter::{Decision, Env, MCP_ASSERTED, handle};
+use supervisor_claude_code::adapter::{Decision, Env, MCP_ASSERTED};
 use supervisor_claude_code::candidate::CandidateProvider;
 use supervisor_claude_code::journal::decision_parts;
 use supervisor_claude_code::state::{Stored, load_gate, read_contract, save_gate};
@@ -108,9 +108,24 @@ fn captured(file: &str) -> Vec<Value> {
     fs::read_to_string(format!("{CAPTURES}{file}"))
         .unwrap()
         .lines()
-        .map(|l| serde_json::from_str::<Value>(l).unwrap()["payload"].clone())
+        .map(|l| {
+            let mut payload = serde_json::from_str::<Value>(l).unwrap()["payload"].clone();
+            // The captures came from Windows; their cwd is not a replay project.
+            payload.as_object_mut().unwrap().remove("cwd");
+            payload
+        })
         .collect()
 }
+
+/// Replay captured events in this test's project unless the test overrides cwd.
+fn handle(payload: &Value, env: &mut Env) -> Decision {
+    let mut payload = payload.clone();
+    if payload.get("cwd").is_none() {
+        payload["cwd"] = json!(env.state_dir.parent().unwrap());
+    }
+    supervisor_claude_code::adapter::handle(&payload, env)
+}
+
 fn template(file: &str, event: &str, tool: Option<&str>) -> Value {
     captured(file)
         .into_iter()
@@ -209,7 +224,9 @@ fn dispatch_candidate_and_cwd_must_match_the_cited_check() {
         let mut dispatch = result.clone();
         dispatch["hook_event_name"] = "PreToolUse".into();
         if wrong_cwd {
-            dispatch["cwd"] = d.0.to_string_lossy().to_string().into();
+            let other = d.0.join("other");
+            fs::create_dir(&other).unwrap();
+            dispatch["cwd"] = json!(other);
             result["cwd"] = dispatch["cwd"].clone();
         }
         handle(&dispatch, &mut env);
@@ -217,6 +234,16 @@ fn dispatch_candidate_and_cwd_must_match_the_cited_check() {
             env.candidate = fake("two", &["src/lib.rs"]);
         }
         handle(&result, &mut env);
+        let runs = fs::read_to_string(env.state_dir.join("runs.jsonl")).unwrap();
+        let last: Value = serde_json::from_str(runs.lines().last().unwrap()).unwrap();
+        assert_eq!(
+            last["kind"],
+            if wrong_cwd {
+                "completed"
+            } else {
+                "invalidated"
+            }
+        );
         if !wrong_cwd {
             // Returning to the dispatch bytes cannot revive a completion that
             // was observed against another candidate.
