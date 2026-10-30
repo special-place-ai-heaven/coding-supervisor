@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.2.0...v0.2.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* make recorded receipt display agree with acceptance ([28b3238](https://github.com/special-place-ai-heaven/coding-supervisor/commit/28b32386faa23bbfd022208db3bc72376bf0989d))
+
 ## [0.2.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.1.1...v0.2.0) (2026-10-30)
 
 
