@@ -1,4 +1,4 @@
-//! Candidate identity: HEAD plus a digest of the dirty tree under the hook's cwd.
+//! Candidate identity: HEAD plus the dirty-tree digest of the entire physical worktree.
 
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -19,9 +19,17 @@ pub struct GitCandidate {
 
 impl CandidateProvider for GitCandidate {
     fn observe(&self) -> Result<Candidate, String> {
+        Self {
+            cwd: PathBuf::from(crate::location::canonical_project(&self.cwd)),
+        }
+        .observe_worktree()
+    }
+}
+
+impl GitCandidate {
+    fn observe_worktree(&self) -> Result<Candidate, String> {
         let base_commit = self.git(&["rev-parse", "HEAD"])?.trim().to_owned();
-        // Porcelain paths are relative to the repository root; the contract scope and the
-        // `.supervisor/` exclusion are relative to the hook's cwd, which may be a subdirectory.
+        // Scope and exclusions are worktree-relative for hooks and MCP, even from a subdirectory.
         let prefix = self.git(&["rev-parse", "--show-prefix"])?.trim().to_owned();
         let status = self.git(&[
             "status",

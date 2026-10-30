@@ -82,6 +82,7 @@ dependencies = [
 name = "supervisor"
 version = "0.1.0"
 dependencies = [
+ "coding-supervisor",
  "serde_json",
  "supervisor-claude-code",
  "supervisor-mcp",

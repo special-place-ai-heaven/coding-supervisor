@@ -25,7 +25,7 @@ fn every_call_is_one_v1_line_without_goal_text_and_measure_reads_it() {
     ok(&s, "task_complete", json!({}));
     let calls = 2 + 1 + 4 + 2;
 
-    let path = s.state_dir().join("events.jsonl");
+    let path = s.task_dir().unwrap().join("events.jsonl");
     let text = fs::read_to_string(&path).unwrap();
     assert!(!text.contains(GOAL));
     let lines: Vec<Value> = text
@@ -39,7 +39,13 @@ fn every_call_is_one_v1_line_without_goal_text_and_measure_reads_it() {
             line["event"].as_str().unwrap().starts_with("mcp:"),
             "{line}"
         );
-        assert_eq!(line["task_id"], "mcp-test");
+        assert_eq!(
+            line["task_id"],
+            supervisor_claude_code::lifecycle::active_task(s.state_dir())
+                .unwrap()
+                .unwrap()
+                .task_id
+        );
         assert_eq!(line["state_location"], "env");
         assert_eq!(line["agent_id"], Value::Null);
         assert_eq!(line["session_id"], Value::Null);

@@ -12,16 +12,18 @@ fn normalized(s: &str) -> String {
 }
 
 /// Terminal Commander input fields that can carry a command, a working directory or a path.
-const TC_TEXT_FIELDS: [&str; 9] = [
+const TC_TEXT_FIELDS: [&str; 11] = [
     "argv",
     "command",
     "script",
+    "shell_line",
     "cwd",
     "path",
     "file_path",
     "root",
     "dir",
     "target",
+    "line",
 ];
 
 /// The `.supervisor` marker or the state directory (either separator form) inside lowercased

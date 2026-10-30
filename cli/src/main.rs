@@ -3,6 +3,8 @@
 
 mod init;
 mod install;
+mod status;
+mod task;
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -12,7 +14,12 @@ use supervisor_claude_code::adapter::{fail_open, run_hook};
 
 const USAGE: &str = "usage: supervisor mcp [--project <dir>]  (serve the gate as an MCP server on stdin/stdout)
        supervisor hook  (one Claude Code hook payload on stdin, at most one decision on stdout)
-       supervisor init [--project <dir>]  (write a starting contract into the gate's state directory)
+       supervisor init [--project <dir>] [--output <file>]  (write an inactive editable draft contract)
+       supervisor task <start|next> --contract <file> [--project <dir>] [--task <active-id>] [--disposition <cancelled|failed|blocked|budget_exhausted>]
+       supervisor task <resume|deactivate> --task <active-id> [--project <dir>] [--disposition <outcome>]
+       supervisor task rebind --task <active-id> --session <session-id> [--project <dir>]
+       supervisor task migrate --legacy <directory> [--project <dir>]
+       supervisor status [--project <dir>] [--harness <claude-code|codex>] [--json]
        supervisor install --harness <claude-code|codex|cursor|omp|grok> [--project <dir>] [--home <dir>] [--binary <path>] [--dry-run]";
 
 fn main() -> ExitCode {
@@ -26,7 +33,27 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Some((command, rest)) if command == "init" => {
-            parse_flags(rest, &["--project"], &[]).and_then(|f| init::run(&f))
+            parse_flags(rest, &["--project", "--output"], &[]).and_then(|f| init::run(&f))
+        }
+        Some((command, rest)) if command == "task" => match rest.split_first() {
+            Some((action, rest)) => parse_flags(
+                rest,
+                &[
+                    "--project",
+                    "--contract",
+                    "--task",
+                    "--disposition",
+                    "--session",
+                    "--legacy",
+                ],
+                &[],
+            )
+            .and_then(|f| task::run(action, &f)),
+            None => Err(Failure::Usage("task requires a command".to_owned())),
+        },
+        Some((command, rest)) if command == "status" => {
+            parse_flags(rest, &["--project", "--harness"], &["--json"])
+                .and_then(|f| status::run(&f))
         }
         Some((command, rest)) if command == "install" => parse_flags(
             rest,

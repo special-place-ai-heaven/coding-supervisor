@@ -24,9 +24,10 @@ use serde_json::{Map, Value};
 use supervisor_claude_code::adapter::{MCP_ASSERTED, Session, now, render};
 use supervisor_claude_code::candidate::{CandidateProvider, GitCandidate};
 use supervisor_claude_code::journal::{self, Trace};
+use supervisor_claude_code::lifecycle;
 use supervisor_claude_code::location::resolve_state_dir;
 use supervisor_claude_code::state::{
-    self, Gate, Stored, candidate_json, contract_from, finding_json, obj, state_name,
+    self, Gate, Stored, candidate_json, finding_json, obj, state_name,
 };
 
 const PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
@@ -87,6 +88,7 @@ pub struct Server {
     project: PathBuf,
     state_dir: PathBuf,
     state_location: &'static str,
+    state_error: Option<String>,
 }
 
 /// A validated tool input.
@@ -117,15 +119,23 @@ impl Server {
     /// and the variables `env_lookup` returns.
     pub fn new(project: &Path, env_lookup: &dyn Fn(&str) -> Option<String>) -> Self {
         let (state_dir, state_location) = resolve_state_dir(project, env_lookup);
+        let state_error =
+            supervisor_claude_code::location::prepare_state(&state_dir, project).err();
         Self {
             project: project.to_path_buf(),
             state_dir,
             state_location,
+            state_error,
         }
     }
 
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
+    }
+
+    pub fn task_dir(&self) -> Result<PathBuf, String> {
+        Ok(lifecycle::active_task(&self.state_dir)?
+            .map_or_else(|| self.state_dir.clone(), |t| t.dir))
     }
 
     /// One input line in, at most one reply line out.
@@ -157,7 +167,15 @@ impl Server {
         let id = id?;
         let params = request.get("params").unwrap_or(&Value::Null);
         let result = match method {
-            "initialize" => Ok(initialize(params)),
+            "initialize" => self
+                .state_error
+                .clone()
+                .map_or_else(
+                    || lifecycle::observe_connection(&self.state_dir, "mcp-initialize"),
+                    Err,
+                )
+                .map(|()| initialize(params))
+                .map_err(|e| (-32603, e)),
             "ping" => Ok(obj([])),
             "tools/list" => Ok(obj([("tools", tools())])),
             "tools/call" => self.tools_call(params),
@@ -190,6 +208,92 @@ impl Server {
 
     /// Run one tool and journal it. Every outcome is an answer; nothing is blocked.
     fn call(&self, tool: &str, args: &Value) -> Value {
+        if let Some(what) = &self.state_error {
+            return tool_result(&format!("GATE (advisory): state unavailable: {what}"), true);
+        }
+        let started = if tool == "task_start" {
+            match lifecycle::start(&self.state_dir, args, false, None, None) {
+                Ok(started) => Some(started),
+                Err(what) => {
+                    return tool_result(
+                        &format!("GATE (advisory): task_start refused: {what}"),
+                        true,
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        let expected = started
+            .as_ref()
+            .and_then(|v| v.get("task_id"))
+            .and_then(Value::as_str)
+            .or_else(|| args.get("task_id").and_then(Value::as_str));
+        // Reading state discovers the active identity; every mutation must name that identity.
+        let active_id = if tool == "task_state" {
+            lifecycle::active_task(&self.state_dir)
+                .ok()
+                .flatten()
+                .map(|t| t.task_id)
+        } else {
+            None
+        };
+        let expected = expected.or(active_id.as_deref());
+        let event_id = args
+            .get("event_id")
+            .and_then(Value::as_str)
+            .map(|id| format!("mcp:{tool}:{id}"));
+        let candidate = GitCandidate {
+            cwd: self.project.clone(),
+        }
+        .observe()
+        .map(|c| format!("{}:{}", c.id.base_commit, c.id.dirty_digest))
+        .unwrap_or_else(|_| "unobserved".to_owned());
+        let digest = supervisor_claude_code::sha256::hex(format!("{args}:{candidate}").as_bytes());
+        match lifecycle::with_task(
+            &self.state_dir,
+            expected,
+            None,
+            event_id.as_deref().map(|id| (id, digest.as_str())),
+            |dir| {
+                let local = Self {
+                    project: self.project.clone(),
+                    state_dir: dir.to_path_buf(),
+                    state_location: self.state_location,
+                    state_error: None,
+                };
+                let mut response = local.call_inner(
+                    if started.is_some() {
+                        "task_state"
+                    } else {
+                        tool
+                    },
+                    args,
+                );
+                if let Some(content) = response
+                    .get_mut("content")
+                    .and_then(Value::as_array_mut)
+                    .and_then(|a| a.first_mut())
+                    && let Some(text) = content.get("text").and_then(Value::as_str)
+                    && let Ok(mut details) = serde_json::from_str::<Value>(text)
+                {
+                    if let Some(id) = expected {
+                        details["task_id"] = id.into();
+                    }
+                    if started.is_some() {
+                        details["started"] = true.into();
+                    }
+                    content["text"] = details.to_string().into();
+                }
+                Ok(response)
+            },
+        ) {
+            Ok(response) => response,
+            Err(what) => tool_result(&format!("GATE (advisory): {tool} refused: {what}"), true),
+        }
+    }
+
+    fn call_inner(&self, tool: &str, args: &Value) -> Value {
         let mut reasons = Vec::new();
         let mut trace = Trace::default();
         let (text, is_error) = match self.run(tool, args, &mut reasons, &mut trace) {
@@ -225,13 +329,13 @@ impl Server {
         reasons: &mut Vec<String>,
         trace: &mut Trace,
     ) -> Result<String, String> {
-        if tool == "task_start" {
-            return self.task_start(args, reasons, trace);
-        }
         let dir = &self.state_dir;
         let op = parse(tool, args, &self.project)?;
         let (contract, digest) = state::read_contract(dir)?;
-        trace.task_id = contract.as_ref().map(|c| c.id.0.clone());
+        trace.task_id = contract
+            .as_ref()
+            .map(|c| lifecycle::task_identity(dir, &c.id.0))
+            .transpose()?;
         let stored = load(dir, &digest, trace)?;
         let Some(contract) = contract else {
             return Err("no contract in the gate's state directory; call task_start".to_owned());
@@ -245,6 +349,46 @@ impl Server {
         };
         let candidate_known = observed.is_ok();
         let criteria = contract.criteria.clone();
+        if let Op::Receipt {
+            criterion,
+            command,
+            claim_supported,
+            exit_code,
+            ..
+        } = &op
+        {
+            let required = criteria
+                .iter()
+                .find(|c| c.id.0 == *criterion)
+                .ok_or_else(|| "unknown criterion (unapproved identifier omitted)".to_owned())?;
+            let rejection = if !claim_supported {
+                Some(GateError::ReceiptUnsupported)
+            } else if exit_code.is_none() {
+                Some(GateError::ReceiptMissingExitCode)
+            } else if !required.accepts(command) {
+                Some(GateError::WrongCommand {
+                    criterion: required.id.clone(),
+                    cited: String::new(),
+                    required: required.command.clone(),
+                })
+            } else {
+                None
+            };
+            if let Some(error) = rejection {
+                let safe_command = if required.accepts(command) {
+                    command.as_str()
+                } else {
+                    "<unapproved command omitted>"
+                };
+                let exit = exit_code.map_or("none".to_owned(), |n| n.to_string());
+                let refusal = render(&error);
+                reasons.push(format!(
+                    "rejected CHECK {} | {safe_command} | exit {exit}: {refusal} (mcp-asserted)",
+                    required.id.0
+                ));
+                return Err(refusal);
+            }
+        }
         let mut session = Session::open(contract, stored, observed, true, reasons)?;
         let result = apply(&op, &mut session, reasons);
         session.gate.checkpoint = session.task.checkpoint();
@@ -255,50 +399,9 @@ impl Server {
             self.keep_candidate(candidate)?;
         }
         result?;
-        let rejected = self.rejected_claims(&session.gate.contract_id)?;
+        let rejected =
+            self.rejected_claims(&lifecycle::task_identity(dir, &session.gate.contract_id)?)?;
         Ok(describe(&session, &criteria, candidate_known, rejected).to_string())
-    }
-
-    fn task_start(
-        &self,
-        args: &Value,
-        reasons: &mut Vec<String>,
-        trace: &mut Trace,
-    ) -> Result<String, String> {
-        let dir = &self.state_dir;
-        let contract = contract_from(args)?;
-        let (existing, digest) = state::read_contract(dir)?;
-        load(dir, &digest, trace)?;
-        if let Some(existing) = existing {
-            trace.task_id = Some(existing.id.0.clone());
-            return Err(format!(
-                "the state directory already holds the contract of task {}; that task continues",
-                existing.id.0
-            ));
-        }
-        let kept = dir.join(CANDIDATE_FILE);
-        match fs::remove_file(&kept) {
-            Err(e) if e.kind() != ErrorKind::NotFound => {
-                return Err(format!("{}: {e}", kept.display()));
-            }
-            _ => {}
-        }
-        let path = dir.join("contract.json");
-        fs::write(&path, format!("{args}\n")).map_err(|e| format!("{}: {e}", path.display()))?;
-        let (_, digest) = state::read_contract(dir)?;
-        trace.task_id = Some(contract.id.0.clone());
-        let criteria = contract.criteria.clone();
-        let session = Session::open(
-            contract,
-            None,
-            Err("no candidate observed yet".to_owned()),
-            true,
-            reasons,
-        )?;
-        trace.state_after = Some(session.task.state());
-        state::save_gate(dir, &session.gate, &digest)?;
-        reasons.push("task started".to_owned());
-        Ok(describe(&session, &criteria, false, Vec::new()).to_string())
     }
 
     /// The kept candidate, when it is still the identity gate.json holds.

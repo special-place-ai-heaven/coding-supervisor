@@ -27,8 +27,13 @@ const CWD: &str = "E:\\project\\x";
 
 #[cfg(windows)]
 #[test]
-fn project_key_replaces_non_alphanumerics() {
-    assert_eq!(project_key(Path::new(CWD)), "E--project-x");
+fn project_key_has_a_collision_resistant_suffix() {
+    let key = project_key(Path::new(CWD));
+    assert_eq!(key.rsplit('-').next().unwrap().len(), 64);
+    assert_ne!(
+        project_key(Path::new("E:\\project\\a-b")),
+        project_key(Path::new("E:\\project\\a_b"))
+    );
 }
 
 #[test]
@@ -70,7 +75,7 @@ fn local_app_data_rule() {
         path,
         d.0.join("coding-supervisor")
             .join("state")
-            .join("E--project-x")
+            .join(project_key(Path::new(CWD)))
     );
 }
 
@@ -95,11 +100,17 @@ fn xdg_and_home_rules() {
 }
 
 #[test]
-fn cwd_fallback_when_nothing_is_set_or_creation_fails() {
+fn cwd_fallback_only_when_no_state_base_is_set() {
     let (path, rule) = resolve_state_dir(Path::new(CWD), &|_| None);
     assert_eq!(
         (path, rule),
-        (Path::new(CWD).join(".supervisor"), "cwd-fallback")
+        (
+            PathBuf::from(supervisor_claude_code::location::canonical_project(
+                Path::new(CWD)
+            ))
+            .join(".supervisor"),
+            "cwd-fallback"
+        )
     );
     // A base that is a file cannot hold a directory.
     let d = dir("file");
@@ -109,7 +120,14 @@ fn cwd_fallback_when_nothing_is_set_or_creation_fails() {
     let (path, rule) = resolve_state_dir(Path::new(CWD), &only("SUPERVISOR_STATE_DIR", &base));
     assert_eq!(
         (path, rule),
-        (Path::new(CWD).join(".supervisor"), "cwd-fallback")
+        (file.join(project_key(Path::new(CWD))), "env")
+    );
+    assert!(
+        supervisor_claude_code::location::resolve_state_dir_checked(
+            Path::new(CWD),
+            &only("SUPERVISOR_STATE_DIR", &base)
+        )
+        .is_err()
     );
 }
 
@@ -202,7 +220,7 @@ fn tc_shell_exec_script_naming_state_dir_is_denied() {
 fn tc_shell_session_exec_command_is_denied() {
     let r = denied(call(
         "mcp__terminal_commander__shell_session_exec",
-        json!({"session_id": "s1", "command": "rm -rf .supervisor"}),
+        json!({"session_id": "s1", "line": "rm -rf .supervisor"}),
     ));
     assert!(r.ends_with("(.supervisor)"));
 }

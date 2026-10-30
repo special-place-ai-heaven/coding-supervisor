@@ -1,20 +1,27 @@
-//! `supervisor init`: a starting contract in the gate's state directory, never overwritten.
-
-use std::fs;
+//! `supervisor init`: an inactive draft contract, never overwritten.
 
 use serde_json::json;
-use supervisor_claude_code::location::resolve_state_dir;
+use supervisor_claude_code::location::resolve_state_dir_checked;
 
 use crate::install::HARNESSES;
 use crate::{Failure, Flags};
 
 pub fn run(flags: &Flags) -> Result<(), Failure> {
     let project = flags.project()?;
-    let (state_dir, rule) = resolve_state_dir(&project, &|name| std::env::var(name).ok());
+    let (state_dir, rule) = resolve_state_dir_checked(&project, &|name| std::env::var(name).ok())
+        .map_err(Failure::Error)?;
     println!("project: {}", project.display());
     println!("state directory: {} (rule: {rule})", state_dir.display());
 
-    let path = state_dir.join("contract.json");
+    let path = flags
+        .value("--output")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| project.join("supervisor-contract.json"));
+    if path.starts_with(&state_dir) {
+        return Err(Failure::Error(
+            "draft output must be outside protected state".to_owned(),
+        ));
+    }
     if path.exists() {
         println!("contract exists, left unchanged: {}", path.display());
     } else {
@@ -40,13 +47,12 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         });
         let text = serde_json::to_string_pretty(&contract)
             .map_err(|e| Failure::Error(format!("contract: {e}")))?;
-        fs::create_dir_all(&state_dir)
-            .and_then(|()| fs::write(&path, text + "\n"))
-            .map_err(|e| Failure::Error(format!("{}: {e}", path.display())))?;
+        supervisor_claude_code::transaction::atomic_write(&path, (text + "\n").as_bytes())
+            .map_err(Failure::Error)?;
         println!("contract written: {}", path.display());
     }
     println!(
-        "Edit the contract's goal, criteria and scope there, then register the gate with one of:"
+        "Edit the draft's goal, exact commands and scope, then activate it with supervisor task start --contract <file>. Install with one of:"
     );
     for harness in HARNESSES {
         println!(

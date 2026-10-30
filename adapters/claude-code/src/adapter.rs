@@ -14,11 +14,27 @@ use crate::candidate::{CandidateProvider, GitCandidate};
 use crate::header::{self, Header, Verdict};
 use crate::journal::{self, Trace};
 use crate::state::{self, Gate, Stored, obj, state_name};
-use crate::{claim, guard, location};
+use crate::{claim, guard, lifecycle, location, observation};
 
 /// `output_ref` prefix of a receipt recorded through the MCP server: caller-asserted, never
 /// observed by a hook, so the enforcing paths here do not count it.
 pub const MCP_ASSERTED: &str = "mcp-asserted:";
+
+/// True only when a hook completion journal backs every material receipt field.
+pub fn receipt_is_observed(dir: &Path, task_id: &str, receipt: &VerificationReceipt) -> bool {
+    receipt.claim_supported
+        && observation::read_runs(dir, task_id).is_ok_and(|runs| {
+            runs.iter().any(|run| {
+                run.reference == receipt.output_ref
+                    && run.command == receipt.command
+                    && run.cwd == receipt.cwd
+                    && run.candidate == receipt.candidate
+                    && run.exit_code == receipt.exit_code
+                    && run.t == receipt.started_at
+                    && run.finished == receipt.finished_at
+            })
+        })
+}
 
 /// Everything a hook call needs besides its payload.
 pub struct Env {
@@ -118,6 +134,95 @@ fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 pub fn handle(payload: &Value, env: &mut Env) -> Decision {
+    let root = env.state_dir.clone();
+    let event = text(payload, "hook_event_name").unwrap_or_default();
+    if env.state_location != "test"
+        && let Err(what) =
+            location::prepare_state(&root, Path::new(text(payload, "cwd").unwrap_or(".")))
+    {
+        return match event {
+            "PreToolUse" => Decision::Deny(format!("GATE: state unavailable: {what}")),
+            "Stop" | "SubagentStop" => Decision::Block(format!("GATE: state unavailable: {what}")),
+            _ => fail_open(&what),
+        };
+    }
+    if event == "PreToolUse" {
+        if let Some(denial) = guard::state_write_denial(payload, &root) {
+            return denial;
+        }
+        let project = Path::new(text(payload, "cwd").unwrap_or("."));
+        match crate::policy::action_policy_denial(payload, project, &root) {
+            Ok(Some(denial)) => return denial,
+            Err(_) => return Decision::Deny("GATE: invalid configured action policy".to_owned()),
+            Ok(None) => {}
+        }
+    }
+    let event_id = text(payload, "event_id").map(str::to_owned).or_else(|| {
+        text(payload, "tool_use_id").map(|id| {
+            format!(
+                "{}:{event}:{id}",
+                text(payload, "session_id").unwrap_or("legacy")
+            )
+        })
+    });
+    let candidate = env
+        .candidate
+        .observe()
+        .map(|c| format!("{}:{}", c.id.base_commit, c.id.dirty_digest))
+        .unwrap_or_else(|e| format!("unobserved:{e}"));
+    let digest = crate::sha256::hex(format!("{payload}:{candidate}").as_bytes());
+    if let Err(what) = crate::lifecycle::observe_connection(&root, "claude-hook") {
+        return fail_open(&what);
+    }
+    let result = crate::lifecycle::with_task(
+        &root,
+        text(payload, "task_id"),
+        text(payload, "session_id"),
+        event_id.as_deref().map(|id| (id, digest.as_str())),
+        |dir| {
+            env.state_dir = dir.to_path_buf();
+            let decision = handle_inner(payload, env);
+            env.state_dir = root.clone();
+            Ok(decision.to_json().unwrap_or(Value::Null))
+        },
+    );
+    match result {
+        Ok(Value::Null) => Decision::None,
+        Ok(v) => decision_from_json(&v),
+        Err(what) => match event {
+            "PreToolUse" => Decision::Deny(format!("GATE: {what}")),
+            "Stop" | "SubagentStop" => Decision::Block(format!("GATE: {what}")),
+            _ => fail_open(&what),
+        },
+    }
+}
+
+fn decision_from_json(v: &Value) -> Decision {
+    if let Some(message) = v.get("systemMessage").and_then(Value::as_str) {
+        return Decision::System(message.to_owned());
+    }
+    if v.get("decision").and_then(Value::as_str) == Some("block") {
+        return Decision::Block(text(v, "reason").unwrap_or_default().to_owned());
+    }
+    if let Some(output) = v.get("hookSpecificOutput") {
+        if text(output, "permissionDecision") == Some("deny") {
+            return Decision::Deny(
+                text(output, "permissionDecisionReason")
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
+        }
+        return Decision::Context {
+            event: "PostToolUse",
+            text: text(output, "additionalContext")
+                .unwrap_or_default()
+                .to_owned(),
+        };
+    }
+    fail_open("invalid cached hook response")
+}
+
+fn handle_inner(payload: &Value, env: &mut Env) -> Decision {
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let agent = text(payload, "agent_id").unwrap_or("main");
     let mut reasons = Vec::new();
@@ -156,12 +261,11 @@ fn process(
         return Ok(denial);
     }
     let now = (env.clock)();
-    if let Some(run) = observed_run(payload, event, agent, now) {
-        state::append_line(&env.state_dir.join("runs.jsonl"), &run)?;
-        reasons.push("command run journaled".to_owned());
-    }
     let (contract, contract_sha256) = state::read_contract(&env.state_dir)?;
-    trace.task_id = contract.as_ref().map(|c| c.id.0.clone());
+    trace.task_id = contract
+        .as_ref()
+        .map(|c| crate::lifecycle::task_identity(&env.state_dir, &c.id.0))
+        .transpose()?;
     // A removed contract with a gate.json still present fails the chain as well.
     let stored = match state::load_gate(&env.state_dir, &contract_sha256)? {
         Stored::Tampered(what) => {
@@ -182,7 +286,26 @@ fn process(
     if let Err(why) = &observed {
         reasons.push(format!("candidate not observed: {why}"));
     }
-    let mut session = Session::open(contract, stored, observed, false, reasons)?;
+    let task_id = lifecycle::task_identity(&env.state_dir, &contract.id.0)?;
+    if observation::observe(
+        &env.state_dir,
+        payload,
+        &task_id,
+        agent,
+        observed.as_ref().ok(),
+        now,
+        &contract.criteria,
+    )? {
+        reasons.push("command observation journaled".to_owned());
+    }
+    let mut session = Session::open_with_observed(
+        contract,
+        stored,
+        observed,
+        false,
+        reasons,
+        Some(&env.state_dir),
+    )?;
     let decision = match event {
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
         "Stop" => session.stop(payload, &env.state_dir, agent, now, reasons)?,
@@ -260,79 +383,6 @@ fn no_contract(payload: &Value, event: &str) -> Decision {
     }
 }
 
-/// A command run worth journaling: Bash/PowerShell results and Terminal Commander calls.
-fn observed_run(payload: &Value, event: &str, agent: &str, now: u64) -> Option<Value> {
-    let tool = text(payload, "tool_name")?;
-    let input = payload.get("tool_input");
-    let shell = matches!(tool, "Bash" | "PowerShell");
-    let command = || {
-        input
-            .and_then(|i| i.get("command"))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    };
-    let (command, exit_code) = match event {
-        // A non-zero exit goes to PostToolUseFailure, so PostToolUse success means exit 0.
-        "PostToolUse" if shell => (command()?, Some(0)),
-        "PostToolUseFailure" if shell => (command()?, failure_exit(payload)),
-        "PostToolUse" if tool.starts_with("mcp__terminal_commander__") => {
-            (tc_command(input?)?, tc_exit(payload.get("tool_response")?))
-        }
-        _ => return None,
-    };
-    Some(obj([
-        ("agent_id", agent.into()),
-        ("tool", tool.into()),
-        ("command", command.into()),
-        ("cwd", text(payload, "cwd").into()),
-        ("exit_code", exit_code.into()),
-        ("tool_use_id", text(payload, "tool_use_id").into()),
-        ("t", now.into()),
-    ]))
-}
-
-fn failure_exit(payload: &Value) -> Option<i32> {
-    text(payload, "error")?
-        .lines()
-        .next()?
-        .trim()
-        .strip_prefix("Exit code ")?
-        .trim()
-        .parse()
-        .ok()
-}
-
-fn tc_command(input: &Value) -> Option<String> {
-    if let Some(argv) = input.get("argv").and_then(Value::as_array) {
-        return Some(
-            argv.iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join(" "),
-        );
-    }
-    input
-        .get("command")
-        .or_else(|| input.get("script"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-}
-
-/// The integer after the first `"exit_code":` in the serialized response; also matches the
-/// escaped form `\"exit_code\":` that appears when the response is JSON text inside JSON.
-fn tc_exit(response: &Value) -> Option<i32> {
-    let serialized = match response {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    };
-    let (_, after) = serialized.split_once("exit_code")?;
-    let after = after.trim_start_matches(['"', '\\', ':', ' ']);
-    let end = after
-        .find(|c: char| c != '-' && !c.is_ascii_digit())
-        .unwrap_or(after.len());
-    after.get(..end)?.parse().ok()
-}
-
 pub fn render(error: &GateError) -> String {
     match error {
         GateError::MissingReceipt(c) => format!("missing {}", c.0),
@@ -352,15 +402,15 @@ pub fn render(error: &GateError) -> String {
         GateError::UnknownCriterion(c) => format!("unknown criterion {}", c.0),
         GateError::WrongCommand {
             criterion,
-            cited,
+            cited: _,
             required,
         } => match required.split_first() {
             Some((first, [])) => format!(
-                "{} cites `{cited}` but the contract requires `{first}`",
+                "{} cites an unapproved command but the contract requires `{first}`",
                 criterion.0
             ),
             Some((first, rest)) => format!(
-                "{} cites `{cited}` but the contract requires `{first}` or one of: {}",
+                "{} cites an unapproved command but the contract requires `{first}` or one of: {}",
                 criterion.0,
                 rest.iter()
                     .map(|c| format!("`{c}`"))
@@ -368,7 +418,7 @@ pub fn render(error: &GateError) -> String {
                     .join(", ")
             ),
             None => format!(
-                "{} cites `{cited}` but the contract names no command for it",
+                "{} cites an unapproved command but the contract names no command for it",
                 criterion.0
             ),
         },
@@ -389,6 +439,8 @@ pub struct Session {
     pub gate: Gate,
     criteria: Vec<Criterion>,
     observed: Result<Candidate, String>,
+    evidence_dir: Option<PathBuf>,
+    task_id: String,
 }
 
 impl Session {
@@ -401,8 +453,23 @@ impl Session {
         honour_asserted: bool,
         reasons: &mut Vec<String>,
     ) -> Result<Self, String> {
+        Self::open_with_observed(contract, stored, observed, honour_asserted, reasons, None)
+    }
+
+    fn open_with_observed(
+        contract: TaskContract,
+        stored: Option<Gate>,
+        observed: Result<Candidate, String>,
+        honour_asserted: bool,
+        reasons: &mut Vec<String>,
+        evidence_dir: Option<&Path>,
+    ) -> Result<Self, String> {
         let criteria = contract.criteria.clone();
         let contract_id = contract.id.0.clone();
+        let task_id = evidence_dir
+            .map(|dir| crate::lifecycle::task_identity(dir, &contract_id))
+            .transpose()?
+            .unwrap_or_else(|| contract_id.clone());
         let (task, gate) = match stored {
             None => {
                 let mut task = Task::new(contract);
@@ -423,8 +490,16 @@ impl Session {
                 }
                 let mut task = Task::resume(contract, gate.checkpoint.clone());
                 if let Ok(current) = &observed {
-                    restore(&mut task, &gate, current, honour_asserted, reasons)
-                        .map_err(|e| render(&e))?;
+                    restore(
+                        &mut task,
+                        &gate,
+                        current,
+                        honour_asserted,
+                        reasons,
+                        evidence_dir,
+                        &task_id,
+                    )
+                    .map_err(|e| render(&e))?;
                 }
                 (task, gate)
             }
@@ -434,6 +509,8 @@ impl Session {
             gate,
             criteria,
             observed,
+            evidence_dir: evidence_dir.map(Path::to_path_buf),
+            task_id,
         })
     }
 
@@ -525,7 +602,7 @@ impl Session {
         dir: &Path,
         cwd: &str,
         agent: &str,
-        now: u64,
+        _now: u64,
         reasons: &mut Vec<String>,
     ) -> Result<(Vec<String>, Vec<String>), String> {
         let mut problems = Vec::new();
@@ -537,7 +614,8 @@ impl Session {
                 header.checks.len()
             ));
         }
-        let runs = state::read_runs(dir)?;
+        let task_id = lifecycle::task_identity(dir, &self.gate.contract_id)?;
+        let runs = observation::read_runs(dir, &task_id)?;
         let mut used: HashSet<String> = self
             .gate
             .receipts
@@ -545,49 +623,51 @@ impl Session {
             .map(|r| r.output_ref.clone())
             .collect();
         for line in &header.checks {
+            let Some(criterion) = self.criteria.iter().find(|c| c.id.0 == line.criterion) else {
+                let problem = "unlinked CHECK [unknown criterion]".to_owned();
+                reasons.push(problem.clone());
+                problems.push(problem);
+                continue;
+            };
+            if !criterion.accepts(&line.command) {
+                let problem = render(&GateError::WrongCommand {
+                    criterion: criterion.id.clone(),
+                    cited: String::new(),
+                    required: criterion.command.clone(),
+                });
+                reasons.push(format!("unlinked CHECK {} | [unapproved command] | exit {} (claim_supported false: {problem})",criterion.id.0,line.exit_code));
+                problems.push(problem);
+                let first = criterion.command.first().map_or("", |s| s.trim());
+                instructions.push(format!(
+                    "Run that command in this session and cite it as CHECK {} | {first} | exit 0.",
+                    criterion.id.0
+                ));
+                continue;
+            }
             let cited = format!(
                 "CHECK {} | {} | exit {}",
                 line.criterion, line.command, line.exit_code
             );
-            // The core enforces the same rule; checking it here keeps the run unlinked and names the command.
-            let wrong = self
-                .criteria
-                .iter()
-                .find(|c| c.id.0 == line.criterion && !c.accepts(&line.command));
             let run = runs.iter().find(|r| {
-                wrong.is_none()
-                    && r.agent_id == agent
+                r.agent_id == agent
                     && r.command.trim() == line.command.trim()
                     && r.exit_code == Some(line.exit_code)
+                    && self.observed.as_ref().is_ok_and(|c| c.id == r.candidate)
+                    && r.cwd == observation::cwd(line.cwd.as_deref().unwrap_or(cwd), cwd)
                     && !used.contains(&r.reference)
             });
-            let (output_ref, at) = match (run, wrong) {
-                (Some(r), _) => {
+            let (output_ref, at) = match run {
+                Some(r) => {
                     used.insert(r.reference.clone());
                     (r.reference.clone(), r.t)
                 }
-                (None, Some(c)) => {
-                    let problem = render(&GateError::WrongCommand {
-                        criterion: c.id.clone(),
-                        cited: line.command.trim().to_owned(),
-                        required: c.command.clone(),
-                    });
-                    reasons.push(format!(
-                        "unlinked {cited} (claim_supported false: {problem})"
-                    ));
-                    problems.push(problem);
-                    let first = c.command.first().map_or("", |s| s.trim());
-                    instructions.push(format!(
-                        "Run that command in this session and cite it as CHECK {} | {first} | exit 0.",
-                        c.id.0
-                    ));
-                    (String::new(), now)
-                }
-                (None, None) => {
-                    problems.push(format!(
+                None => {
+                    let problem = format!(
                         "unlinked {cited} (no run by agent {agent} with that command and exit code)"
-                    ));
-                    (String::new(), now)
+                    );
+                    reasons.push(problem.clone());
+                    problems.push(problem);
+                    continue;
                 }
             };
             let Ok(current) = &self.observed else {
@@ -596,14 +676,17 @@ impl Session {
             };
             let receipt = VerificationReceipt {
                 criterion: CriterionId(line.criterion.clone()),
-                candidate: current.id.clone(),
+                candidate: run.map_or_else(|| current.id.clone(), |r| r.candidate.clone()),
                 command: line.command.clone(),
-                cwd: line.cwd.clone().unwrap_or_else(|| cwd.to_owned()),
+                cwd: run.map_or_else(
+                    || line.cwd.clone().unwrap_or_else(|| cwd.to_owned()),
+                    |r| r.cwd.clone(),
+                ),
                 exit_code: Some(line.exit_code),
                 output_ref,
                 claim_supported: run.is_some(),
                 started_at: at,
-                finished_at: at,
+                finished_at: run.map_or(at, |r| r.finished),
             };
             // The core takes no receipt once the task is completed (a chair may complete it
             // through MCP first). Keep a hook-linked one in gate.json, where
@@ -761,7 +844,13 @@ impl Session {
                 .gate
                 .receipts
                 .iter()
-                .filter(|r| r.criterion == criterion.id && !r.output_ref.starts_with(MCP_ASSERTED))
+                .filter(|r| {
+                    r.criterion == criterion.id
+                        && self
+                            .evidence_dir
+                            .as_ref()
+                            .is_some_and(|dir| receipt_is_observed(dir, &self.task_id, r))
+                })
                 .collect();
             match observed.iter().rev().find(|r| &r.candidate == current) {
                 Some(r) => match r.exit_code {
@@ -830,13 +919,17 @@ fn restore(
     current: &Candidate,
     honour_asserted: bool,
     reasons: &mut Vec<String>,
+    evidence_dir: Option<&Path>,
+    task_id: &str,
 ) -> Result<(), GateError> {
     let previous = gate.checkpoint.candidate.clone();
     if previous.is_some() && !task.state().is_terminal() {
         let mut groups: Vec<(coding_supervisor::CandidateId, Vec<&VerificationReceipt>)> =
             Vec::new();
         for receipt in &gate.receipts {
-            if !honour_asserted && receipt.output_ref.starts_with(MCP_ASSERTED) {
+            if !honour_asserted
+                && !evidence_dir.is_some_and(|dir| receipt_is_observed(dir, task_id, receipt))
+            {
                 continue;
             }
             match groups.iter_mut().find(|(id, _)| *id == receipt.candidate) {

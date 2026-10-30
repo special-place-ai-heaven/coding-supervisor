@@ -63,13 +63,14 @@ fn tools_list_has_the_eight_tools_with_required_fields() {
             "cwd",
             "exit_code",
             "output_ref",
-            "claim_supported"
+            "claim_supported",
+            "task_id"
         ]
     );
-    assert!(required("candidate_observe").is_empty());
+    assert_eq!(required("candidate_observe"), ["task_id"]);
     assert_eq!(
         required("finding_raise"),
-        ["id", "severity", "location", "evidence_ref"]
+        ["id", "severity", "location", "evidence_ref", "task_id"]
     );
     assert_eq!(
         required("task_start"),

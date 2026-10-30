@@ -133,6 +133,140 @@ fn bash(agent: &str, command: &str, exit: i32) -> Value {
     }
     p
 }
+fn run_bash(env: &mut Env, agent: &str, command: &str, exit: i32) -> Decision {
+    let result = bash(agent, command, exit);
+    let mut dispatch = result.clone();
+    dispatch["hook_event_name"] = json!("PreToolUse");
+    handle(&dispatch, env);
+    handle(&result, env)
+}
+
+#[test]
+fn unknown_check_input_never_reaches_refusals_or_durable_state() {
+    let marker = "synthetic-check-privacy-marker";
+    for unknown_criterion in [false, true] {
+        let d = dir(if unknown_criterion {
+            "privacy-criterion"
+        } else {
+            "privacy-command"
+        });
+        let mut env = env(
+            &d,
+            Some(contract(&[("C1", true)], &["src/"])),
+            fake("one", &["src/lib.rs"]),
+        );
+        let mut result = bash("main", &format!("echo {marker}"), 0);
+        result["tool_use_id"] = "privacy-tool-1".into();
+        let mut dispatch = result.clone();
+        dispatch["hook_event_name"] = "PreToolUse".into();
+        handle(&dispatch, &mut env);
+        handle(&result, &mut env);
+        let criterion = if unknown_criterion { marker } else { "C1" };
+        let decision = handle(
+            &stop(
+                &format!(
+                    "VERDICT: PASS\nCHECKS RUN: 1\nCHECK {criterion} | echo {marker} | exit 0"
+                ),
+                false,
+            ),
+            &mut env,
+        );
+        assert!(matches!(decision, Decision::Block(_)));
+        assert!(!format!("{decision:?}").contains(marker));
+        fn verify(path: &std::path::Path, marker: &str) {
+            for entry in fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    verify(&path, marker);
+                } else if let Ok(text) = fs::read_to_string(&path) {
+                    assert!(
+                        !text.contains(marker),
+                        "unexpected raw command content in {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+        verify(&env.state_dir, marker);
+        assert!(gate(&env)["receipts"].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn dispatch_candidate_and_cwd_must_match_the_cited_check() {
+    for wrong_cwd in [false, true] {
+        let d = dir(if wrong_cwd {
+            "run-cwd"
+        } else {
+            "run-candidate"
+        });
+        let mut env = env(
+            &d,
+            Some(contract(&[("C1", true)], &["src/"])),
+            fake("one", &["src/lib.rs"]),
+        );
+        let mut result = bash("main", "cargo test c1", 0);
+        let mut dispatch = result.clone();
+        dispatch["hook_event_name"] = "PreToolUse".into();
+        if wrong_cwd {
+            dispatch["cwd"] = d.0.to_string_lossy().to_string().into();
+            result["cwd"] = dispatch["cwd"].clone();
+        }
+        handle(&dispatch, &mut env);
+        if !wrong_cwd {
+            env.candidate = fake("two", &["src/lib.rs"]);
+        }
+        handle(&result, &mut env);
+        if !wrong_cwd {
+            // Returning to the dispatch bytes cannot revive a completion that
+            // was observed against another candidate.
+            env.candidate = fake("one", &["src/lib.rs"]);
+        }
+        let decision = handle(
+            &stop(
+                "VERDICT: PASS\nCHECKS RUN: 1\nCHECK C1 | cargo test c1 | exit 0",
+                false,
+            ),
+            &mut env,
+        );
+        assert!(matches!(decision, Decision::Block(_)), "{decision:?}");
+        assert_ne!(gate(&env)["state"], "completed");
+    }
+}
+
+#[test]
+fn reused_result_id_cannot_replace_failed_dispatch_with_success() {
+    let d = dir("run-reused-id");
+    let mut env = env(
+        &d,
+        Some(contract(&[("C1", true)], &["src/"])),
+        fake("one", &["src/lib.rs"]),
+    );
+    let mut result = bash("main", "cargo test c1", 7);
+    let mut dispatch = result.clone();
+    dispatch["hook_event_name"] = "PreToolUse".into();
+    handle(&dispatch, &mut env);
+    handle(&result, &mut env);
+    result["hook_event_name"] = "PostToolUse".into();
+    result["tool_response"] = json!({"interrupted":false});
+    handle(&result, &mut env);
+    let decision = handle(
+        &stop(
+            "VERDICT: PASS\nCHECKS RUN: 1\nCHECK C1 | cargo test c1 | exit 0",
+            false,
+        ),
+        &mut env,
+    );
+    assert!(matches!(decision, Decision::Block(_)), "{decision:?}");
+    handle(
+        &stop(
+            "VERDICT: FAIL\nCHECKS RUN: 1\nCHECK C1 | cargo test c1 | exit 7",
+            false,
+        ),
+        &mut env,
+    );
+    assert_ne!(gate(&env)["state"], "completed");
+}
 fn handback(agent: &str, message: &str, active: bool) -> Value {
     let mut p = template(FOREGROUND, "SubagentStop", None);
     p["agent_id"] = json!(agent);
@@ -155,7 +289,7 @@ fn pre(tool: &str) -> Value {
 /// Each line runs as a real command by `agent`, then the worker hands back citing all of them.
 fn worker(env: &mut Env, agent: &str, verdict: &str, lines: &[(&str, &str, i32)]) -> Decision {
     for (_, command, exit) in lines {
-        assert_eq!(handle(&bash(agent, command, *exit), env), Decision::None);
+        assert_eq!(run_bash(env, agent, command, *exit), Decision::None);
     }
     let cited: Vec<String> = lines
         .iter()
@@ -334,7 +468,7 @@ fn replay_r35_would_run_is_not_run() {
 fn replay_x1_check_line_without_exit_is_a_parse_failure() {
     let d = dir("x1");
     let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
-    handle(&bash("w1", "cargo test", 0), &mut env);
+    run_bash(&mut env, "w1", "cargo test", 0);
     let r = handle(
         &handback(
             "w1",
@@ -353,7 +487,7 @@ fn replay_x1_check_line_without_exit_is_a_parse_failure() {
 fn replay_x2_run_by_another_agent_does_not_link() {
     let d = dir("x2");
     let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
-    handle(&bash("A", "cargo test", 0), &mut env);
+    run_bash(&mut env, "A", "cargo test", 0);
     let r = handle(
         &handback(
             "B",
@@ -375,7 +509,7 @@ fn replay_gap1_check_citing_another_command_is_refused() {
     let r = worker(&mut env, "w1", "PASS", &[("C2", "echo ok", 0)]);
     assert_eq!(
         blocked(&r),
-        "GATE: handback refused (refusal 1 of 3): C2 cites `echo ok` but the contract requires `echo check-ok`; missing C2. Run that command in this session and cite it as CHECK C2 | echo check-ok | exit 0."
+        "GATE: handback refused (refusal 1 of 3): C2 cites an unapproved command but the contract requires `echo check-ok`; missing C2. Run that command in this session and cite it as CHECK C2 | echo check-ok | exit 0."
     );
     let line: Value = serde_json::from_str(&last_reasons(&env)).unwrap();
     assert_eq!(
@@ -388,7 +522,7 @@ fn replay_gap1_check_citing_another_command_is_refused() {
             .unwrap()
             .iter()
             .any(|r| r.as_str().unwrap().starts_with(
-                "unlinked CHECK C2 | echo ok | exit 0 (claim_supported false: C2 cites"
+                "unlinked CHECK C2 | [unapproved command] | exit 0 (claim_supported false: C2 cites"
             )),
         "{line}"
     );
@@ -773,7 +907,7 @@ fn task_completed_with_observed_receipts_still_stops() {
 /// The chair runs each line itself (agent `main`) unless `skip_runs`, then stops citing all of them.
 fn chair_stop(env: &mut Env, lines: &[(&str, &str, i32)], skip_runs: usize) -> Decision {
     for (_, command, exit) in &lines[skip_runs..] {
-        assert_eq!(handle(&bash("main", command, *exit), env), Decision::None);
+        assert_eq!(run_bash(env, "main", command, *exit), Decision::None);
     }
     let cited: Vec<String> = lines
         .iter()
@@ -815,10 +949,7 @@ fn chair_stop_citing_a_run_that_was_not_journaled_is_refused() {
     );
     assert_eq!(gate(&env)["state"], "verifying");
     // A worker's run does not link to the chair's CHECK line either.
-    assert_eq!(
-        handle(&bash("w1", "cargo test c1", 0), &mut env),
-        Decision::None
-    );
+    assert_eq!(run_bash(&mut env, "w1", "cargo test c1", 0), Decision::None);
     assert!(blocked(&chair_stop(&mut env, &ALL4[..1], 1)).contains("unlinked CHECK C1"));
 }
 
@@ -833,7 +964,7 @@ fn chair_stop_citing_another_command_names_the_contract_command() {
     let r = chair_stop(&mut env, &[("C1", "cargo test c1; echo done", 0)], 0);
     let text = blocked(&r);
     assert!(
-        text.contains("C1 cites `cargo test c1; echo done` but the contract requires `cargo test c1` or one of: `cargo test`"),
+        text.contains("C1 cites an unapproved command but the contract requires `cargo test c1` or one of: `cargo test`"),
         "{text}"
     );
     assert!(

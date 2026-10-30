@@ -25,6 +25,20 @@ The core has no dependencies; its dependency tree is one line. The only dependen
 
 ## Install and use
 
+The local sequential-dogfood changes (2026-10-30) add explicit task lifecycle,
+dispatch-bound asynchronous receipts and `supervisor status`. Two actual Claude
+tasks completed consecutively through observed TC jobs and Stop acceptance.
+Verification, candidate identities and the repaired first live failure are
+tracked in [RESULTS.md](docs/research/2026-10-30-dogfood-rollout/RESULTS.md).
+The independent audit rejected the first delivery's full acceptance claim;
+[repair and re-audit evidence](docs/research/2026-10-30-dogfood-rollout/REPAIR-RESULTS.md)
+tracks the corrected command provenance, durable recovery, replay, migration,
+policy and status behavior. Earlier test success alone is not acceptance evidence.
+Use the [current operation and recovery guide](docs/research/2026-10-30-dogfood-rollout/OPERATIONS.md)
+for these commands. The captured installer output below describes the earlier
+release; it is historical evidence, not current activation guidance. Installation
+and ordinary conversation do not require an active task.
+
 Status, as of 2026-10-29: Claude Code is the only harness run live through the installed configuration (`docs/research/2026-10-29-installable/A-RESULTS.md`, throwaway project). For Codex CLI, Cursor, OMP and Grok, install writes files whose locations come from each harness's documentation (`docs/research/2026-10-29-installable/HARNESS-LOCATIONS.md`); none of those harnesses has been recorded loading them yet. Phase B is that check.
 
 ### The three binaries
@@ -324,7 +338,7 @@ State lives, in order of preference, under `SUPERVISOR_STATE_DIR`, then the plat
 | `src/`, `tests/` | The core and its scenarios |
 | `adapters/claude-code/` | The Claude Code adapter crate |
 | `adapters/mcp/` | The MCP server crate (`supervisor-mcp`), with its tool definitions in `src/tools.json` |
-| `cli/` | The `supervisor` crate: `init`, `install`, `hook`, `mcp` |
+| `cli/` | The `supervisor` crate: `init`, `install`, `task`, `status`, `hook`, `mcp` |
 | `skills/` | The chair and worker skill templates that `install` renders |
 | `fixtures/claude-code-enforcement/` | The live-test fixture and captured hook events |
 | `fixtures/claude-code-install/` | The runner, contract and captures for the live sessions through the installed configuration |
@@ -343,15 +357,16 @@ License: MIT.
 | Status | Capability | Where |
 |---|---|---|
 | ✅ | Deterministic completion gate: contract, candidate, receipts, typed refusals, freshness, bounded repair; no model, no dependencies | core, `src/lib.rs` |
-| ✅ | Claude Code enforcement at Stop, SubagentStop and PreToolUse; state outside the project under a hash chain; agents cannot write the gate's state | `adapters/claude-code` |
+| ✅ | Claude Code refusal at Stop, SubagentStop and supported PreToolUse paths; hash-chain tamper detection; same-user bypasses remain possible | `adapters/claude-code` |
 | ✅ | A receipt must cite the exact command the contract names for its criterion | gap 1 |
 | ✅ | A chair working alone is judged by its own CHECK header at Stop | Stop path |
 | ✅ | Install for Claude Code, Codex CLI, Cursor, OMP and Grok; one entry per hook event, scan before write, atomic writes | `supervisor install` |
 | ✅ | MCP server with the gate's tools on all five harnesses (advisory: receipts are caller-asserted) | `adapters/mcp` |
 | ✅ | `npm install -g coding-supervisor` on Windows and Linux; releases cut automatically from main | release-please, npm |
-| 🚧 | Each run record carries the files' fingerprint at the run, so a check that ran before the last edit no longer counts | gap 2 |
+| ✅ | Local dogfood: dispatch-time candidate/cwd/task identity and observed asynchronous TC completion, including restart and stale-result refusal | `observation.rs`; rollout RESULTS.md |
 | 🚧 | No header needed: the gate picks the checks from the agent's own runs, and the latest run on the current files decides | derived receipts |
-| 🚧 | Levels off, lite, full, ultra, and `supervisor status` | CLI |
+| ✅ | Local dogfood: explicit sequential tasks, immutable archives, recovery, inactive conversation and truthful `supervisor status` | CLI; rollout OPERATIONS.md |
+| 🚧 | Levels off, lite, full, ultra | separate autonomous-gate roadmap |
 | 🚧 | No setup per project: contract inferred from the repo's declared checks, a new task per session, required checks shown at session start | autonomous gate, phase 4 |
 | 🚧 | Claude Code plugin with `/supervisor <level>` and `/supervisor status` | autonomous gate, phase 5 |
 | 💭 | Enforcement on Codex, Cursor, OMP and Grok; today they have no hook the gate can block from | per-harness adapters |
@@ -360,4 +375,4 @@ License: MIT.
 | 💭 | The rule that keeps hook-linked receipts after an MCP completion moves into the core, or is deleted | adapter rule from `fa80d3c` |
 | 💭 | Evidence that the gate improves verified work per token; two real tasks so far, too few to claim it | measurement |
 
-The 🚧 rows are built on the branch `feat/autonomous-gate` and arrive with the next release.
+The remaining roadmap rows are outside this local rollout; no release is implied.

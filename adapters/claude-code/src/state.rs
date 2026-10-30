@@ -158,16 +158,6 @@ impl Gate {
     }
 }
 
-/// One observed command run from `runs.jsonl`.
-pub(crate) struct Run {
-    pub agent_id: String,
-    pub command: String,
-    pub exit_code: Option<i32>,
-    /// The tool_use_id, or `runs.jsonl:<line>` when there is none.
-    pub reference: String,
-    pub t: u64,
-}
-
 fn field<'a>(v: &'a Value, key: &str) -> Result<&'a Value, String> {
     v.get(key).ok_or_else(|| format!("missing field {key}"))
 }
@@ -371,20 +361,9 @@ pub fn load_gate(dir: &Path, contract_sha256: &str) -> Result<Stored, String> {
 }
 
 pub fn save_gate(dir: &Path, gate: &Gate, contract_sha256: &str) -> Result<(), String> {
-    // shortcut: no lock around gate.json, so two overlapping hook calls can lose one update; add a lock file once overlapping calls show up in events.jsonl
-    let path = dir.join("gate.json");
-    let tmp = dir.join("gate.json.tmp");
     let mut v = gate.to_json();
     chain::seal(&mut v, contract_sha256);
-    fs::write(
-        &tmp,
-        format!(
-            "{v}
-"
-        ),
-    )
-    .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
+    crate::transaction::atomic_write(&dir.join("gate.json"), format!("{v}\n").as_bytes())
 }
 
 pub fn append_line(path: &Path, line: &Value) -> Result<(), String> {
@@ -397,33 +376,4 @@ pub fn append_line(path: &Path, line: &Value) -> Result<(), String> {
         .open(path)
         .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()))
         .map_err(|e| format!("{}: {e}", path.display()))
-}
-
-/// Malformed lines are skipped: they cannot support any CHECK line.
-pub(crate) fn read_runs(dir: &Path) -> Result<Vec<Run>, String> {
-    let Some(text) = read_optional(&dir.join("runs.jsonl"))? else {
-        return Ok(Vec::new());
-    };
-    Ok(text
-        .lines()
-        .enumerate()
-        .filter_map(|(i, line)| {
-            let v: Value = serde_json::from_str(line).ok()?;
-            let line_ref = format!("runs.jsonl:{}", i + 1);
-            Some(Run {
-                agent_id: v.get("agent_id")?.as_str()?.to_owned(),
-                command: v.get("command")?.as_str()?.to_owned(),
-                exit_code: v
-                    .get("exit_code")
-                    .and_then(Value::as_i64)
-                    .and_then(|n| i32::try_from(n).ok()),
-                reference: v
-                    .get("tool_use_id")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty())
-                    .map_or(line_ref, str::to_owned),
-                t: v.get("t").and_then(Value::as_u64).unwrap_or(0),
-            })
-        })
-        .collect())
 }

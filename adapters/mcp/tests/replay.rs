@@ -39,7 +39,7 @@ fn a18_self_reported_pass_is_not_accepted() {
         claims[0]
             .as_str()
             .unwrap()
-            .starts_with("rejected CHECK C1 | tests passed | exit 0")
+            .starts_with("rejected CHECK C1 | <unapproved command omitted> | exit 0")
     );
 }
 
@@ -231,7 +231,9 @@ fn gap1_receipt_must_cite_a_command_the_contract_names() {
         receipt("C1", "echo ok", json!(0), true),
     );
     assert!(
-        text.ends_with("refused: C1 cites `echo ok` but the contract requires `cargo test`"),
+        text.ends_with(
+            "refused: C1 cites an unapproved command but the contract requires `cargo test`"
+        ),
         "{text}"
     );
     assert_eq!(task_state(&s)["receipts"]["C1"], "missing");
@@ -269,7 +271,7 @@ fn x2_receipt_is_bound_to_the_current_candidate() {
     observe(&s, "two", &["src/lib.rs"]);
     pass(&s, "C1");
     let gate: Value =
-        serde_json::from_str(&fs::read_to_string(s.state_dir().join("gate.json")).unwrap())
+        serde_json::from_str(&fs::read_to_string(s.task_dir().unwrap().join("gate.json")).unwrap())
             .unwrap();
     let receipts = gate["receipts"].as_array().unwrap();
     assert_eq!(receipts[0]["candidate"]["dirty_digest"], "one");
@@ -284,7 +286,7 @@ fn tampered_gate_is_refused_and_never_reset() {
     let s = server(&d);
     started(&s);
     pass(&s, "C1");
-    let path = s.state_dir().join("gate.json");
+    let path = s.task_dir().unwrap().join("gate.json");
     let edited = fs::read_to_string(&path).unwrap().replace(
         "\"consumed_repair_rounds\":0",
         "\"consumed_repair_rounds\":1",
@@ -309,6 +311,35 @@ fn tampered_gate_is_refused_and_never_reset() {
 }
 
 #[test]
+fn replayed_task_start_after_deactivation_does_not_create_a_successor() {
+    let d = dir("a3-start-replay");
+    let s = server(&d);
+    let mut request = contract(&[("C2", true)], 2);
+    request["event_id"] = "start-once".into();
+    let first = ok(&s, "task_start", request.clone());
+    let first_id = first["task_id"].as_str().unwrap().to_owned();
+    supervisor_claude_code::lifecycle::deactivate(s.state_dir(), &first_id, Some("cancelled"))
+        .unwrap();
+
+    let (is_error, response) = common::call(&s, "task_start", request);
+    assert!(
+        is_error
+            || serde_json::from_str::<Value>(&response)
+                .is_ok_and(|value| value["task_id"] == first_id),
+        "replay neither returned the original task nor refused: {response}"
+    );
+    assert!(
+        supervisor_claude_code::lifecycle::active_task(s.state_dir())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        fs::read_dir(s.state_dir().join("tasks")).unwrap().count(),
+        1
+    );
+}
+
+#[test]
 fn calls_before_task_start_are_refused() {
     let d = dir("nocontract");
     let s = server(&d);
@@ -316,15 +347,36 @@ fn calls_before_task_start_are_refused() {
     assert!(text.contains("call task_start"), "{text}");
     ok(&s, "task_start", common::four());
     let text = refused(&s, "task_start", common::four());
-    assert!(
-        text.contains("already holds the contract of task mcp-test"),
-        "{text}"
-    );
+    assert!(text.contains("active task already exists"), "{text}");
     let text = refused(&s, "accept_try", json!({}));
     assert!(
         text.ends_with("refused: candidate identity not observed"),
         "{text}"
     );
+}
+
+#[test]
+fn unapproved_receipt_command_is_never_written_to_output_or_state() {
+    let d = dir("unapproved-command-redaction");
+    let s = server(&d);
+    started(&s);
+    let marker = "SYNTHETIC_UNAPPROVED_COMMAND_VALUE";
+    let text = refused(&s, "receipt_record", receipt("C1", marker, json!(0), true));
+    assert!(text.contains("unapproved command"));
+    assert!(!text.contains(marker));
+    fn scan(path: &Path, marker: &str) {
+        for entry in fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                scan(&entry.path(), marker);
+            } else {
+                assert!(
+                    !String::from_utf8_lossy(&fs::read(entry.path()).unwrap()).contains(marker)
+                );
+            }
+        }
+    }
+    scan(s.state_dir(), marker);
 }
 
 fn git(dir: &Path, args: &[&str]) {

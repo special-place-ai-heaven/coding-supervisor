@@ -1,7 +1,7 @@
 //! `supervisor init` with the state directory redirected by `SUPERVISOR_STATE_DIR`.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
@@ -20,16 +20,6 @@ fn init(project: &Path, state: &Path) -> String {
     stdout
 }
 
-/// The one contract.json under the state root.
-fn contract_path(state: &Path) -> PathBuf {
-    let dirs: Vec<PathBuf> = fs::read_dir(state)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .collect();
-    assert_eq!(dirs.len(), 1, "{dirs:?}");
-    dirs[0].join("contract.json")
-}
-
 #[test]
 fn init_writes_the_starting_contract_and_never_overwrites_it() {
     let root = std::env::temp_dir().join(format!("sup-cli-init-{}", std::process::id()));
@@ -46,7 +36,14 @@ fn init_writes_the_starting_contract_and_never_overwrites_it() {
             "{out}"
         );
     }
-    let path = contract_path(&state);
+    let path = project.join("supervisor-contract.json");
+    let state_dirs: Vec<_> = fs::read_dir(&state)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(state_dirs.len(), 1);
+    assert!(!state_dirs[0].join("active.json").exists());
+    assert!(!state_dirs[0].join("contract.json").exists());
     let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     let criteria = v["criteria"].as_array().unwrap();
     let ids: Vec<&str> = criteria.iter().map(|c| c["id"].as_str().unwrap()).collect();

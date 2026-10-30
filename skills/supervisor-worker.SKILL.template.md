@@ -53,6 +53,10 @@ After the header, write the rest of your report as usual.
   returned; do not round it to success because the failure looked unrelated.
 - **The candidate is what you cite.** If you edit a file after a check ran,
   that check is stale; run it again and cite the new run.
+- **A started job is not a passed check.** With Terminal Commander, supply
+  an explicit absolute cwd, retain the job ID and obtain final authoritative
+  status. Keep argv boundaries intact. The task, candidate and cwd recorded
+  at dispatch must match the check; later polling cannot rebind an old run.
 - **No prompt text, no secrets in the header.** Commands only. Redact tokens
   from a command before citing it.
 

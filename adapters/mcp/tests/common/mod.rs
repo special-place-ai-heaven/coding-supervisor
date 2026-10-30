@@ -37,7 +37,13 @@ pub fn rpc(s: &Server, method: &str, params: Value) -> Value {
 }
 
 /// `(isError, text)` of one tool call.
-pub fn call(s: &Server, tool: &str, args: Value) -> (bool, String) {
+pub fn call(s: &Server, tool: &str, mut args: Value) -> (bool, String) {
+    if tool != "task_start"
+        && args.get("task_id").is_none()
+        && let Some(task) = supervisor_claude_code::lifecycle::active_task(s.state_dir()).unwrap()
+    {
+        args["task_id"] = task.task_id.into();
+    }
     let reply = rpc(s, "tools/call", json!({"name": tool, "arguments": args}));
     let result = &reply["result"];
     (
