@@ -1,0 +1,36 @@
+{
+  "criteria": [
+    {
+      "check": "baseline_reproduces_reported_failure",
+      "command": "cargo test",
+      "id": "C1",
+      "mandatory": false
+    },
+    {
+      "check": "candidate_passes_reported_test",
+      "command": "cargo test",
+      "id": "C2",
+      "mandatory": true
+    },
+    {
+      "check": "regression_suite_passes",
+      "command": "cargo test --workspace",
+      "id": "C3",
+      "mandatory": true
+    },
+    {
+      "check": "diff_within_contract_scope",
+      "command": "git diff --name-only",
+      "id": "C4",
+      "mandatory": false
+    }
+  ],
+  "forbidden_effects": [],
+  "goal": "Describe what this task must achieve.",
+  "id": "coding-supervisor",
+  "max_repair_rounds": 2,
+  "scope": [
+    "src/",
+    "tests/"
+  ]
+}

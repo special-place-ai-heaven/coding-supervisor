@@ -143,15 +143,9 @@ trusted folder; if the tools are missing, start once with `--trust` or run\n\
 /// The six events and matchers of the proven fixture `.claude/settings-adapter.json`.
 const HOOK_EVENTS: [(&str, Option<&str>); 6] = [
     ("UserPromptSubmit", None),
-    (
-        "PreToolUse",
-        Some("Agent|Write|Edit|NotebookEdit|Bash|PowerShell|mcp__terminal_commander__.*"),
-    ),
-    (
-        "PostToolUse",
-        Some("Agent|Bash|PowerShell|Write|Edit|mcp__terminal_commander__.*"),
-    ),
-    ("PostToolUseFailure", Some("Bash|PowerShell")),
+    ("PreToolUse", None),
+    ("PostToolUse", None),
+    ("PostToolUseFailure", None),
     ("SubagentStop", None),
     ("Stop", None),
 ];

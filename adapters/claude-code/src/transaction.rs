@@ -176,6 +176,7 @@ pub fn copy_task(source: &Path, destination: &Path) -> Result<(), String> {
                     | "project.json"
                     | "policy.json"
                     | "connection.json"
+                    | "intents.json"
             ) {
                 continue;
             }

@@ -40,3 +40,4 @@ fixtures/**/.supervisor/*
 # npm: platform binaries are copied in by the release workflow; tarballs are build output
 npm/platforms/*/bin/
 npm/**/*.tgz
+.supervisor/

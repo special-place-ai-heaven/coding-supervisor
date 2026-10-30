@@ -4,6 +4,57 @@ Local development interface, as of 2026-10-30. See RESULTS.md for verification
 status and COVERAGE.md for the action-policy boundary. Installed npm binaries
 remain at their released version until explicitly replaced or reconfigured.
 
+## Autonomous development candidate
+
+The current development workflow uses prompt-bound `intent_apply` proposals.
+The agent operates these tools; users give ordinary requests. Claude hook prompts
+are distinct from caller-asserted Codex `intent_record` events. Discussion does
+not create a task or authorize edits. Follow-ups keep identity; a validated new
+task after completion archives its predecessor. An unfinished task is never
+silently replaced. Explicit `pause`, `resume` and `cancel` control the current
+task without resetting repair accounting. Ambiguous controls are refused for
+clarification. Contract revisions retain requirements/history and invalidate
+earlier evidence without erasing pending job linkage.
+
+The explicit commands below remain recovery interfaces for manual tasks and
+older installations. Do not use them to bypass an autonomous task's prompt
+authority or monotonic contract checks. The inherited editable project draft is
+not an authority to replace an active contract. The installed known-good binary
+supervising this development remains separate from the candidate under test.
+
+Headerless completion derives receipts from observed command runs. Missing,
+failed, unknown, stale and cross-task runs do not authorize completion. Codex MCP
+remains advisory and cannot prove execution merely by accepting a receipt.
+Current-candidate non-Claude evidence and independent reviews are recorded under
+`C:\Target\coding-supervisor\autonomy-20261030`; live Claude checks are deferred
+due to quota. See [the amended goal](AUTONOMY-GOAL.md) and
+[exact deferred scenarios](AUTONOMY-DEFERRED-CLAUDE.md).
+
+## Execution context in the repaired development candidate
+
+Task discovery uses the canonical physical Git worktree whether a hook or MCP
+entry point starts at the root or a subdirectory. Separate linked worktrees and
+external directories remain separate projects. Command observations retain the
+actual execution cwd; current criteria require execution from the project root.
+Completion and rollover use the same rule. A later nested run cannot replace a
+valid root result or prevent its successor from starting.
+
+Schema-3 evidence refuses unapproved per-command environment and interpreter
+overrides. The sole environment exception is a nonempty `CARGO_TARGET_DIR`
+override exactly matching the hook's inherited value; only its digest is stored.
+Legacy observations lack this approval and require fresh checks. The ambient
+host/daemon environment remains trusted, not newly attested.
+
+Old nested discovery snapshots are not certified by normalizing their path.
+When their original root scope cannot be established, their receipts cannot
+authorize completion or rollover. History remains inspectable; an explicitly
+authorized cancellation archives the task before a fresh root-scoped request.
+There is no silent replacement of its criteria or unfinished work.
+
+Current repair evidence and review outcomes are under
+`C:\Target\coding-supervisor\audit-repairs-20261030`; see
+[the repair record](FRESH-AUDIT-REPAIRS.md).
+
 ## Installation and activation
 
 Installing a harness integration does not activate a contract. Check both the

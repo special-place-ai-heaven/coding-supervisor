@@ -191,7 +191,7 @@ fn claude_settings_keep_foreign_hooks_and_permissions_and_gain_the_fixture_hooks
     let fixture_hooks = fixture["hooks"].as_object().unwrap();
     assert_eq!(fixture_hooks.len(), 6);
     assert_eq!(v["hooks"].as_object().unwrap().len(), 6);
-    for (event, groups) in fixture_hooks {
+    for (event, _groups) in fixture_hooks {
         let ours: Vec<&Value> = v["hooks"][event]
             .as_array()
             .unwrap()
@@ -199,7 +199,11 @@ fn claude_settings_keep_foreign_hooks_and_permissions_and_gain_the_fixture_hooks
             .filter(|g| g["hooks"][0]["command"] == OUR_HOOK)
             .collect();
         assert_eq!(ours.len(), 1, "{event}: exactly one of ours after two runs");
-        assert_eq!(ours[0]["matcher"], groups[0]["matcher"], "{event} matcher");
+        assert_eq!(
+            ours[0]["matcher"],
+            serde_json::Value::Null,
+            "{event} matcher"
+        );
         assert_eq!(ours[0]["hooks"][0]["type"], "command");
     }
 }

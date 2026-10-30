@@ -270,6 +270,23 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
             ),
         },
     };
+    let mut active = active;
+    active["lifecycle_state"] = active["state"].clone();
+    active["autonomous"] = false.into();
+    if let Ok(Some(task)) = lifecycle::active_task(root) {
+        match (
+            supervisor_claude_code::autonomy::is_autonomous_task(&task.dir),
+            supervisor_claude_code::autonomy::is_paused(&task.dir),
+        ) {
+            (Ok(autonomous), Ok(paused)) => {
+                active["autonomous"] = autonomous.into();
+                if paused {
+                    active["lifecycle_state"] = "paused".into();
+                }
+            }
+            _ => active["lifecycle_state"] = "unknown".into(),
+        }
+    }
     let hooks = if harness == "claude-code" {
         hook_configuration(project)
     } else {
@@ -371,7 +388,10 @@ fn human(report: &Value) -> String {
         s("/registration/configured_version"),
         s("/connection/state"),
         s("/connection/model_session_loaded"),
-        s("/task/state"),
+        report
+            .pointer("/task/lifecycle_state")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| s("/task/state")),
         s("/task/gate_state"),
         s("/task/task_id"),
         s("/mode"),
@@ -497,10 +517,16 @@ mod tests {
                 "kind":"completed",
                 "completion_trust":completion_trust,
                 "execution_project":cwd,
+                "execution_root":cwd,
+                "execution_profile":{
+                    "name":"local-default-v1",
+                    "approved":true,
+                    "cargo_target_sha256":null
+                },
                 "cwd":cwd,
                 "task_id":task.task_id,
                 "agent_id":"main",
-                "identity_schema":2,
+                "identity_schema":3,
                 "tool":"mcp__terminal_commander__run_and_watch",
                 "identity":{"argv":["fixture-check"]},
                 "command":"fixture-check",

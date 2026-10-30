@@ -28,7 +28,7 @@ fn initialize_echoes_a_known_version_and_names_the_server() {
 }
 
 #[test]
-fn tools_list_has_the_eight_tools_with_required_fields() {
+fn tools_list_has_the_ten_tools_with_required_fields() {
     let d = dir("list");
     let s = server(&d);
     let tools = rpc(&s, "tools/list", json!({}))["result"]["tools"].clone();
@@ -37,6 +37,8 @@ fn tools_list_has_the_eight_tools_with_required_fields() {
     assert_eq!(
         names,
         [
+            "intent_record",
+            "intent_apply",
             "task_start",
             "candidate_observe",
             "receipt_record",
@@ -55,6 +57,11 @@ fn tools_list_has_the_eight_tools_with_required_fields() {
         let tool = tools.iter().find(|t| t["name"] == name).unwrap();
         serde_json::from_value(tool["inputSchema"]["required"].clone()).unwrap()
     };
+    assert_eq!(required("intent_record"), ["session_id", "prompt"]);
+    assert_eq!(
+        required("intent_apply"),
+        ["event_id", "nonce", "prompt_hash", "action"]
+    );
     assert_eq!(
         required("receipt_record"),
         [
@@ -94,6 +101,12 @@ fn unknown_method_and_unknown_tool_are_rpc_errors() {
     assert_eq!(reply["id"], 7);
     let reply = rpc(&s, "tools/call", json!({"name": "nope", "arguments": {}}));
     assert_eq!(reply["error"]["code"], -32602);
+    assert!(!s.state_dir().join("events.jsonl").exists());
+    assert!(
+        supervisor_claude_code::lifecycle::active_task(s.state_dir())
+            .unwrap()
+            .is_none()
+    );
     let parse: Value = serde_json::from_str(&s.handle_line("{not json").unwrap()).unwrap();
     assert_eq!(parse["error"]["code"], -32700);
     assert_eq!(parse["id"], Value::Null);
@@ -195,5 +208,5 @@ fn serve_answers_line_by_line_over_a_byte_stream() {
     assert_eq!(lines.len(), 2);
     assert_eq!(lines[0]["id"], 1);
     assert_eq!(lines[1]["id"], 2);
-    assert_eq!(lines[1]["result"]["tools"].as_array().unwrap().len(), 8);
+    assert_eq!(lines[1]["result"]["tools"].as_array().unwrap().len(), 10);
 }

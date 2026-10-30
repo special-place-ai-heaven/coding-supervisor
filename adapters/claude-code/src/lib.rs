@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod adapter;
+pub mod autonomy;
 pub mod candidate;
 mod chain;
 pub mod claim;

@@ -41,6 +41,27 @@ pub struct TaskContract {
     pub scope: Vec<String>,
     pub budget: Budget,
 }
+
+/// File scopes are exact; directory scopes end with `/`. Git paths must be normalized
+/// relative paths so a matching prefix cannot hide traversal or platform roots.
+fn scope_contains(scope: &str, path: &str) -> bool {
+    let normalized = |value: &str| {
+        !value.is_empty()
+            && !value.contains(['\\', ':'])
+            && value
+                .split('/')
+                .all(|part| !part.is_empty() && part != "." && part != "..")
+    };
+    let directory = scope.ends_with('/');
+    let scope_path = scope.strip_suffix('/').unwrap_or(scope);
+    normalized(path)
+        && normalized(scope_path)
+        && if directory {
+            path.starts_with(scope)
+        } else {
+            path == scope
+        }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CandidateId {
     pub base_commit: String,
@@ -374,7 +395,7 @@ impl Task {
                     .contract
                     .scope
                     .iter()
-                    .any(|prefix| path.starts_with(prefix))
+                    .any(|scope| scope_contains(scope, path))
             })
             .cloned()
             .collect();

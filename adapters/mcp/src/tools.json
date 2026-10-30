@@ -1,5 +1,34 @@
 [
   {
+    "name": "intent_record",
+    "description": "Record a caller-asserted Codex session intent and return required criteria and the current bounded control, if any. This source is never treated as a trusted Claude hook prompt.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {"type": "string"},
+        "prompt_id": {"type": "string", "description": "Optional stable identity for replaying the same caller-asserted prompt."},
+        "prompt": {"type": "string"}
+      },
+      "required": ["session_id", "prompt"]
+    }
+  },
+  {
+    "name": "intent_apply",
+    "description": "Apply a caller-asserted proposal for this project. Advisory only. A discussion proposal records intent without activating or changing a task.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "event_id": {"type": "string"},
+        "nonce": {"type": "string"},
+        "prompt_hash": {"type": "string"},
+        "action": {"type": "string", "enum": ["discussion", "start", "continue", "revise", "pause", "resume", "cancel"]},
+        "task_id": {"type": "string"},
+        "contract": {"type": "object", "description": "Required for start and revise; uses the standard task contract shape."}
+      },
+      "required": ["event_id", "nonce", "prompt_hash", "action"]
+    }
+  },
+  {
     "name": "task_start",
     "description": "Activate one explicitly shared worktree task from a contract. Returns a generated task_id distinct from contract id. Refuses an existing task; use supervisor task next for rollover and supervisor task deactivate to return inactive. Receipts remain caller-asserted.",
     "inputSchema": {
@@ -95,7 +124,7 @@
   },
   {
     "name": "task_state",
-    "description": "Return the checkpoint, the contract's criteria (id, command, mandatory), the receipt status per criterion and the receipt claims the gate rejected. No transition.",
+    "description": "Return the checkpoint, criteria, receipt status, rejected claims, paused state and pending job recovery identifiers with original task/session/worktree/candidate linkage. Pending or invalidated jobs are not successful evidence. No transition.",
     "inputSchema": {"type": "object", "properties": {}}
   }
 ]

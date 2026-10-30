@@ -15,10 +15,9 @@ supervisor --help
 
 Alternatively, download the archive for your platform and its checksums from the [Releases page](https://github.com/special-place-ai-heaven/coding-supervisor/releases), or build from source below. Keep the executable at a stable path: the installer records its path in the harness configuration. Version 0.1.1 is published; see the [release workflow](https://github.com/special-place-ai-heaven/coding-supervisor/actions/runs/41041057353). The later [main CI run](https://github.com/special-place-ai-heaven/coding-supervisor/actions/runs/41041987970) passed on Linux and Windows; it includes a test-fixture fix after the release.
 
-From the project you want to supervise, initialize a draft and register your harness:
+From the project you want to supervise, register your harness:
 
 ```sh
-supervisor init --project <project>
 supervisor install --harness claude-code --project <project> --dry-run
 supervisor install --harness claude-code --project <project>
 supervisor status --project <project> --harness claude-code
@@ -26,7 +25,44 @@ supervisor status --project <project> --harness claude-code
 
 Replace `claude-code` with `codex`, `cursor`, `omp` or `grok` for installation. Follow the manual trust or approval steps printed by the installer. Installation registers the MCP server and two skills; only Claude Code receives supervisor hooks. It does not activate a task. The installer does not stop other processes; if a file is held open, close the harness session and retry. A malformed configuration is not rewritten.
 
-## Activate a task
+## Ordinary tasks (development candidate)
+
+The autonomous workflow in this checkout is not yet a published npm release.
+After installing the candidate integration and reloading the harness, give
+ordinary tasks. The agent interprets the request and proposes a scoped contract;
+the supervisor validates it before covered edits. Discussion stays inactive.
+Users do not prepare contracts, choose supervisor commands or write CHECK headers.
+
+Root and subdirectory entry points discover the same physical worktree task.
+Check evidence retains its actual execution context: current criteria require
+root execution, and unapproved per-command environment changes cannot certify a
+check. Normalizing an old path does not upgrade old evidence. See the
+[fresh-audit repair record](docs/research/2026-10-30-dogfood-rollout/FRESH-AUDIT-REPAIRS.md)
+for verification results and compatibility boundaries.
+
+Claude's UserPromptSubmit hook supplies prompt identity. Codex uses the same
+proposal workflow through caller-asserted MCP intent and remains advisory.
+Repository checks are captured before edits, then retained as mandatory criteria.
+Cargo projects use fmt, clippy and workspace tests; declared npm test, lint and
+typecheck scripts are also detected. Captured npm verification entry points
+cannot be silently replaced while retaining the same command name. Unsupported verification setups require
+existing approved criteria; the model cannot invent a trivial verification floor.
+These checks constrain proposals; they do not prove a proposed contract fully
+captures the meaning of a free-text request.
+
+Follow-ups retain task identity. A new task after completion archives its
+predecessor. Unfinished work is retained until continued or explicitly cancelled.
+Pause/resume and monotonic contract revisions preserve history and repair counts;
+revision invalidates old evidence. Ambiguous control requests require clarification.
+A new session can explicitly resume the task; obsolete sessions cannot mutate
+its state. `task_state` exposes pending job identifiers for recovery while
+retaining their original execution provenance.
+
+Live Claude model acceptance for this candidate is **deferred due to quota**.
+Deterministic replay and subprocess results do not prove live hook enforcement.
+See the [amended goal and evidence](docs/research/2026-10-30-dogfood-rollout/AUTONOMY-GOAL.md).
+
+## Explicit recovery and older installations
 
 `init` writes an inactive editable `supervisor-contract.json` in the project, or at the path supplied with `--output`. Edit the draft for the actual goal, scope, criteria, exact accepted commands and repair budget. Each criterion needs a command or list of commands; matching trims whitespace but otherwise requires an exact match. The generated examples are placeholders.
 
@@ -58,7 +94,14 @@ Migration preserves the source. Each physical worktree has its own state namespa
 
 ## Evidence and completion
 
-On Claude Code, the adapter links a chair or worker's cited checks to commands observed for that agent, task, candidate and working directory. A self-reported check or MCP receipt does not satisfy hook evidence. The MCP server exposes eight tools: `task_start`, `candidate_observe`, `receipt_record`, `finding_raise`, `repair_request`, `accept_try`, `task_complete` and `task_state`. Its receipts are caller-asserted, and its responses do not block the harness.
+The development adapter derives chair and worker receipts directly from observed
+runs, without CHECK headers. Evidence remains bound to task, session, candidate,
+working directory and job. A later failed or unresolved attempt cannot borrow an
+earlier success. A self-reported check or MCP receipt does not satisfy hook evidence.
+The MCP server adds `intent_record` and `intent_apply` to the existing eight tools:
+`task_start`, `candidate_observe`, `receipt_record`, `finding_raise`,
+`repair_request`, `accept_try`, `task_complete` and `task_state`. MCP receipts and
+intent registration remain caller-asserted; MCP responses do not block the harness.
 
 For Terminal Commander jobs, use an explicit absolute working directory, preserve argument boundaries and retrieve the final status of the same job. Dispatch binds task, candidate and cwd; changes during execution can make evidence stale. After a daemon restart, reconstructed status can support recovery only with persisted matching dispatch and durable process-completion evidence. It is labeled `tc-reconstructed`, separately from live observations. Missing linkage, masked pipelines and old records without current provenance require investigation or a fresh check. See [recovery details](docs/research/2026-10-30-dogfood-rollout/OPERATIONS.md#durable-jobs-and-crash-recovery) and [repair evidence](docs/research/2026-10-30-dogfood-rollout/REPAIR-RESULTS.md).
 

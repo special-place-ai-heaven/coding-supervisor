@@ -211,6 +211,27 @@ impl Server {
         if let Some(what) = &self.state_error {
             return tool_result(&format!("GATE (advisory): state unavailable: {what}"), true);
         }
+        if matches!(tool, "intent_record" | "intent_apply") {
+            let result = if tool == "intent_record" {
+                supervisor_claude_code::autonomy::record_intent(
+                    &self.state_dir,
+                    &self.project,
+                    args,
+                )
+            } else {
+                supervisor_claude_code::autonomy::propose(&self.state_dir, &self.project, args)
+            };
+            return match result {
+                Ok(mut value) => {
+                    if let Some(fields) = value.as_object_mut() {
+                        fields.insert("mode".to_owned(), "advisory".into());
+                        fields.insert("source".to_owned(), "caller-asserted".into());
+                    }
+                    tool_result(&value.to_string(), false)
+                }
+                Err(why) => tool_result(&format!("GATE (advisory): {tool} refused: {why}"), true),
+            };
+        }
         let started = if tool == "task_start" {
             match lifecycle::start(&self.state_dir, args, false, None, None) {
                 Ok(started) => Some(started),
@@ -331,6 +352,14 @@ impl Server {
     ) -> Result<String, String> {
         let dir = &self.state_dir;
         let op = parse(tool, args, &self.project)?;
+        if matches!(op, Op::Accept | Op::Complete) {
+            supervisor_claude_code::autonomy::validate_entrypoints(dir, &self.project)?;
+        }
+        if matches!(op, Op::Accept | Op::Complete)
+            && supervisor_claude_code::autonomy::requires_observed_completion(dir)?
+        {
+            return Err("autonomous task requires observed hook evidence; MCP assertions cannot accept or complete it".into());
+        }
         let (contract, digest) = state::read_contract(dir)?;
         trace.task_id = contract
             .as_ref()
@@ -401,7 +430,14 @@ impl Server {
         result?;
         let rejected =
             self.rejected_claims(&lifecycle::task_identity(dir, &session.gate.contract_id)?)?;
-        Ok(describe(&session, &criteria, candidate_known, rejected).to_string())
+        let mut details = describe(&session, &criteria, candidate_known, rejected);
+        if matches!(op, Op::State) {
+            let task_id = lifecycle::task_identity(dir, &session.gate.contract_id)?;
+            details["pending_jobs"] =
+                supervisor_claude_code::autonomy::pending_jobs(dir, &task_id)?;
+            details["paused"] = supervisor_claude_code::autonomy::is_paused(dir)?.into();
+        }
+        Ok(details.to_string())
     }
 
     /// The kept candidate, when it is still the identity gate.json holds.

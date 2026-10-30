@@ -23,9 +23,11 @@ pub const MCP_ASSERTED: &str = "mcp-asserted:";
 /// True only when a hook completion journal backs every material receipt field.
 pub fn receipt_is_observed(dir: &Path, task_id: &str, receipt: &VerificationReceipt) -> bool {
     receipt.claim_supported
+        && current_dispatch_reference(dir, task_id, &receipt.output_ref).unwrap_or(false)
         && observation::read_runs(dir, task_id).is_ok_and(|runs| {
             runs.iter().any(|run| {
-                run.reference == receipt.output_ref
+                run.cwd == run.execution_root
+                    && run.reference == receipt.output_ref
                     && run.command == receipt.command
                     && run.cwd == receipt.cwd
                     && run.candidate == receipt.candidate
@@ -34,6 +36,18 @@ pub fn receipt_is_observed(dir: &Path, task_id: &str, receipt: &VerificationRece
                     && run.finished == receipt.finished_at
             })
         })
+}
+/// Preserve dispatch IDs verbatim; they may themselves contain colons.
+fn current_dispatch_reference(dir: &Path, task: &str, reference: &str) -> Result<bool, String> {
+    for prefix in [
+        format!("observed:{task}:"),
+        format!("tc-reconstructed:{task}:"),
+    ] {
+        if let Some(dispatch) = reference.strip_prefix(&prefix) {
+            return crate::autonomy::dispatch_is_current(dir, dispatch);
+        }
+    }
+    Ok(false)
 }
 
 /// Everything a hook call needs besides its payload.
@@ -133,6 +147,56 @@ fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
 
+/// Conservative read-only routes remain usable while the current prompt awaits a contract.
+fn read_only_tool(payload: &Value) -> bool {
+    let tool = text(payload, "tool_name").unwrap_or_default();
+    if matches!(
+        tool,
+        "Read" | "Glob" | "Grep" | "LS" | "TaskGet" | "TaskList"
+    ) {
+        return true;
+    }
+    if let Some(name) = tool.strip_prefix("mcp__symforge__") {
+        return name.starts_with("get_")
+            || name.starts_with("search_")
+            || name.starts_with("find_")
+            || matches!(
+                name,
+                "status"
+                    | "health"
+                    | "health_compact"
+                    | "conventions"
+                    | "edit_plan"
+                    | "what_changed"
+                    | "inspect_match"
+                    | "symforge_retrieve"
+            );
+    }
+    if let Some(name) = tool.strip_prefix("mcp__terminal_commander__") {
+        return matches!(
+            name,
+            "command_status"
+                | "bucket_wait"
+                | "bucket_summary"
+                | "bucket_events_since"
+                | "command_output_tail"
+                | "file_read_window"
+                | "file_search"
+                | "shell_session_list"
+                | "shell_session_status"
+                | "runtime_state"
+                | "system_discover"
+                | "health"
+                | "policy_status"
+                | "event_context"
+        );
+    }
+    matches!(
+        tool,
+        "mcp__supervisor__intent_apply" | "mcp__supervisor__task_state"
+    )
+}
+
 pub fn handle(payload: &Value, env: &mut Env) -> Decision {
     let root = env.state_dir.clone();
     let event = text(payload, "hook_event_name").unwrap_or_default();
@@ -146,7 +210,70 @@ pub fn handle(payload: &Value, env: &mut Env) -> Decision {
             _ => fail_open(&what),
         };
     }
+    // Legacy/import fixtures with an explicit root contract keep their original hook
+    // lifecycle. Any task pointer or intent state opts into prompt-bound activation.
+    let legacy_contract = root.join("contract.json").is_file()
+        && !root.join("active.json").exists()
+        && !root.join("intents.json").exists();
+    if event == "UserPromptSubmit" && text(payload, "prompt").is_some() && !legacy_contract {
+        let project = Path::new(text(payload, "cwd").unwrap_or("."));
+        return match crate::autonomy::record_prompt(&root, project, payload) {
+            Ok(intent) => Decision::Context {
+                event: "UserPromptSubmit",
+                text: format!(
+                    "SUPERVISOR: current prompt requires an intent proposal before mutations. Read-only investigation is available. Call intent_apply with the event identity and a scoped contract or discussion/follow-up intent. {}",
+                    intent
+                ),
+            },
+            Err(_) => Decision::Block(
+                "GATE: prompt intent could not be recorded; task activation remains unverified"
+                    .to_owned(),
+            ),
+        };
+    }
+    let guarded_intent = (event == "PreToolUse" && !read_only_tool(payload))
+        || matches!(event, "Stop" | "SubagentStop");
+    let intent_snapshot = if guarded_intent {
+        match crate::autonomy::intent_authority(
+            &root,
+            text(payload, "session_id").unwrap_or_default(),
+        ) {
+            Ok(snapshot) => Some(snapshot),
+            Err(_) => {
+                return if event == "PreToolUse" {
+                    Decision::Deny("GATE: prompt intent state unavailable".to_owned())
+                } else {
+                    Decision::Block("GATE: prompt intent state unavailable".to_owned())
+                };
+            }
+        }
+    } else {
+        None
+    };
     if event == "PreToolUse" {
+        if !read_only_tool(payload) {
+            match crate::autonomy::pending(&root, text(payload, "session_id").unwrap_or_default()) {
+                Ok(Some(_)) => return Decision::Deny("GATE: propose the current prompt intent and scoped contract before mutation or delegation".to_owned()),
+                Err(_) => return Decision::Deny("GATE: prompt intent state unavailable".to_owned()),
+                Ok(None) => {}
+            }
+            match crate::autonomy::discussion_turn(&root, text(payload, "session_id").unwrap_or_default()) {
+                Ok(true) => return Decision::Deny("GATE: this prompt is discussion only; a new user work prompt is required before mutation or delegation".to_owned()),
+                Err(_) => return Decision::Deny("GATE: prompt intent state unavailable".to_owned()),
+                Ok(false) => {}
+            }
+            if root.join("intents.json").exists() {
+                match lifecycle::active_task(&root) {
+                    Ok(None) => return Decision::Deny("GATE: source mutation requires an active scoped task; discussion does not authorize edits".to_owned()),
+                    Err(_) => return Decision::Deny("GATE: task lifecycle state unavailable".to_owned()),
+                    Ok(Some(active)) => match crate::autonomy::owns_session(&active.dir, text(payload, "session_id").unwrap_or_default()) {
+                        Ok(true) => {},
+                        Ok(false) => return Decision::Deny("GATE: this task belongs to another session; explicit user resume is required before mutation".to_owned()),
+                        Err(_) => return Decision::Deny("GATE: task session ownership unavailable".to_owned()),
+                    }
+                }
+            }
+        }
         if let Some(denial) = guard::state_write_denial(payload, &root) {
             return denial;
         }
@@ -155,6 +282,63 @@ pub fn handle(payload: &Value, env: &mut Env) -> Decision {
             Ok(Some(denial)) => return denial,
             Err(_) => return Decision::Deny("GATE: invalid configured action policy".to_owned()),
             Ok(None) => {}
+        }
+        // Inspection and proposal routes do not need to open or advance the task gate.
+        if root.join("intents.json").exists() && read_only_tool(payload) {
+            return Decision::None;
+        }
+    }
+    if event == "Stop" {
+        match crate::autonomy::pending(&root, text(payload, "session_id").unwrap_or_default()) {
+            Ok(Some(_)) => return Decision::Block("GATE: classify the current prompt with intent_apply before stopping; discussion needs no task".to_owned()),
+            Err(_) => return Decision::Block("GATE: prompt intent state unavailable".to_owned()),
+            Ok(None) => {}
+        }
+    }
+    if event == "Stop" {
+        match crate::autonomy::discussion_turn(
+            &root,
+            text(payload, "session_id").unwrap_or_default(),
+        ) {
+            Ok(true) => return Decision::None,
+            Err(_) => return Decision::Block("GATE: prompt intent state unavailable".to_owned()),
+            Ok(false) => {}
+        }
+    }
+    // Historical session bindings remain for provenance, but obsolete sessions must not
+    // open a task session even for informational hooks: opening can advance repair state.
+    {
+        match lifecycle::active_task(&root) {
+            Ok(Some(active)) => match crate::autonomy::owns_session(
+                &active.dir,
+                text(payload, "session_id").unwrap_or_default(),
+            ) {
+                Ok(false) => return Decision::None,
+                Ok(true) => {}
+                Err(_) => {
+                    return match event {
+                        "PreToolUse" => {
+                            Decision::Deny("GATE: task session ownership unavailable".to_owned())
+                        }
+                        "Stop" | "SubagentStop" => {
+                            Decision::Block("GATE: task session ownership unavailable".to_owned())
+                        }
+                        _ => Decision::None,
+                    };
+                }
+            },
+            Ok(None) => {}
+            Err(_) => {
+                return match event {
+                    "PreToolUse" => {
+                        Decision::Deny("GATE: task lifecycle state unavailable".to_owned())
+                    }
+                    "Stop" | "SubagentStop" => {
+                        Decision::Block("GATE: task lifecycle state unavailable".to_owned())
+                    }
+                    _ => Decision::None,
+                };
+            }
         }
     }
     let event_id = text(payload, "event_id").map(str::to_owned).or_else(|| {
@@ -180,6 +364,65 @@ pub fn handle(payload: &Value, env: &mut Env) -> Decision {
         text(payload, "session_id"),
         event_id.as_deref().map(|id| (id, digest.as_str())),
         |dir| {
+            // The fast ownership check above can race an explicit resume. Recheck the
+            // staged task while with_task holds its OS lock, before Session can mutate it.
+            if !crate::autonomy::owns_session(dir, text(payload, "session_id").unwrap_or_default())?
+            {
+                return Ok(if event == "PreToolUse" && !read_only_tool(payload) {
+                    Decision::Deny("GATE: task ownership changed; explicit user resume is required before mutation".to_owned()).to_json().unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                });
+            }
+            if let Some((_, fingerprint)) = &intent_snapshot {
+                use crate::autonomy::IntentAuthority;
+                let (authority, current_fingerprint) = crate::autonomy::locked_intent_authority(
+                    &root,
+                    text(payload, "session_id").unwrap_or_default(),
+                )?;
+                let refusal = match authority {
+                    IntentAuthority::Pending => {
+                        Some(if event == "PreToolUse" {
+                            Decision::Deny("GATE: propose the current prompt intent before mutation or delegation".to_owned())
+                        } else {
+                            Decision::Block(
+                                "GATE: classify the current prompt before stopping".to_owned(),
+                            )
+                        })
+                    }
+                    IntentAuthority::Discussion => {
+                        Some(if event == "PreToolUse" {
+                            Decision::Deny("GATE: this prompt is discussion only; a new work prompt is required".to_owned())
+                        } else {
+                            Decision::None
+                        })
+                    }
+                    IntentAuthority::Actionable if &current_fingerprint != fingerprint => {
+                        Some(if event == "PreToolUse" {
+                            Decision::Deny("GATE: current prompt intent changed; retry under its approved scope".to_owned())
+                        } else {
+                            Decision::Block(
+                                "GATE: current prompt intent changed; retry before stopping"
+                                    .to_owned(),
+                            )
+                        })
+                    }
+                    IntentAuthority::Actionable => None,
+                };
+                if let Some(refusal) = refusal {
+                    return Ok(refusal.to_json().unwrap_or(Value::Null));
+                }
+                if event == "PreToolUse"
+                    && root.join("intents.json").exists()
+                    && lifecycle::active_task(&root)?.is_none()
+                {
+                    return Ok(Decision::Deny(
+                        "GATE: source mutation requires an active scoped task".to_owned(),
+                    )
+                    .to_json()
+                    .unwrap_or(Value::Null));
+                }
+            }
             env.state_dir = dir.to_path_buf();
             let decision = handle_inner(payload, env);
             env.state_dir = root.clone();
@@ -230,7 +473,12 @@ fn handle_inner(payload: &Value, env: &mut Env) -> Decision {
     let decision =
         process(payload, env, event, agent, &mut reasons, &mut trace).unwrap_or_else(|what| {
             reasons.push(format!("adapter error: {what}"));
-            fail_open(&what)
+            match event {
+                "Stop" | "SubagentStop" => {
+                    Decision::Block(format!("GATE: evidence unavailable: {what}"))
+                }
+                _ => fail_open(&what),
+            }
         });
     let line = journal::line(
         payload,
@@ -306,6 +554,9 @@ fn process(
         reasons,
         Some(&env.state_dir),
     )?;
+    if matches!(event, "Stop" | "SubagentStop") {
+        session.sync_observed_receipts(&env.state_dir, agent, reasons)?;
+    }
     let decision = match event {
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
         "Stop" => session.stop(payload, &env.state_dir, agent, now, reasons)?,
@@ -490,6 +741,11 @@ impl Session {
                 }
                 let mut task = Task::resume(contract, gate.checkpoint.clone());
                 if let Ok(current) = &observed {
+                    if task.state() == TaskState::Repairing {
+                        task.observe_candidate(current.clone())
+                            .map_err(|e| render(&e))?;
+                        task.finish_repair().map_err(|e| render(&e))?;
+                    }
                     restore(
                         &mut task,
                         &gate,
@@ -514,6 +770,142 @@ impl Session {
         })
     }
 
+    /// Receipts come from the protected observation journal, never from assistant prose.
+    fn sync_observed_receipts(
+        &mut self,
+        dir: &Path,
+        agent: &str,
+        reasons: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let Ok(current) = &self.observed else {
+            return Ok(());
+        };
+        if self.task.state().is_terminal() && self.task.state() != TaskState::Completed {
+            return Ok(());
+        }
+        let runs = observation::read_runs(dir, &self.task_id)?;
+        for run in runs.iter().filter(|run| {
+            (run.agent_id == agent || run.recovered_by.as_deref() == Some(agent))
+                && run.candidate == current.id
+                && run.cwd == run.execution_root
+        }) {
+            if !current_dispatch_reference(dir, &self.task_id, &run.reference)? {
+                continue;
+            }
+            for criterion in self.criteria.iter().filter(|c| c.accepts(&run.command)) {
+                if self
+                    .gate
+                    .receipts
+                    .iter()
+                    .any(|r| r.criterion == criterion.id && r.output_ref == run.reference)
+                {
+                    continue;
+                }
+                let receipt = VerificationReceipt {
+                    criterion: criterion.id.clone(),
+                    candidate: run.candidate.clone(),
+                    command: run.command.clone(),
+                    cwd: run.cwd.clone(),
+                    exit_code: run.exit_code,
+                    output_ref: run.reference.clone(),
+                    claim_supported: true,
+                    started_at: run.t,
+                    finished_at: run.finished,
+                };
+                if self.task.state() != TaskState::Completed {
+                    self.task
+                        .record_receipt(receipt.clone())
+                        .map_err(|e| render(&e))?;
+                }
+                reasons.push(format!(
+                    "recorded CHECK {} | {} | exit {}",
+                    criterion.id.0,
+                    run.command,
+                    run.exit_code
+                        .map_or("unknown".to_owned(), |n| n.to_string())
+                ));
+                self.gate.receipts.push(receipt);
+            }
+        }
+        Ok(())
+    }
+
+    /// The latest dispatch wins even when it has no valid completion. An older success
+    /// must not hide a newer failed, interrupted, pending, or invalidated execution.
+    fn latest_attempts(&self, dir: &Path, project: &Path) -> Result<(), String> {
+        crate::autonomy::validate_entrypoints(dir, project)?;
+        let Ok(current) = &self.observed else {
+            return Err("candidate identity could not be observed".to_owned());
+        };
+        let rows = match std::fs::read_to_string(dir.join("runs.jsonl")) {
+            Ok(text) => text
+                .lines()
+                .map(serde_json::from_str::<Value>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| "invalid command observation journal".to_owned())?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(_) => return Err("command observation journal unavailable".to_owned()),
+        };
+        let mut current_rows = Vec::new();
+        for row in rows {
+            if text(&row, "kind") == Some("dispatch") {
+                let dispatch =
+                    text(&row, "dispatch_id").ok_or("command dispatch has no identity")?;
+                if !crate::autonomy::dispatch_is_current(dir, dispatch)? {
+                    continue;
+                }
+            }
+            current_rows.push(row);
+        }
+        // Current criteria are project-root checks. Nested observations retain their
+        // actual cwd, but explicit nested criterion contexts need a separate contract API.
+        let execution_root = location::canonical_project(project);
+        for criterion in self.criteria.iter().filter(|c| c.mandatory) {
+            let latest = current_rows.iter().rev().find(|row| {
+                text(row, "kind") == Some("dispatch")
+                    && text(row, "cwd") == Some(execution_root.as_str())
+                    && text(row, "task_id") == Some(self.task_id.as_str())
+                    && text(row, "command").is_some_and(|s| criterion.accepts(s))
+                    && row.get("candidate").is_some_and(|v| {
+                        text(v, "base_commit") == Some(current.id.base_commit.as_str())
+                            && text(v, "dirty_digest") == Some(current.id.dirty_digest.as_str())
+                    })
+            });
+            let Some(latest) = latest else { continue };
+            if !observation::approved_context(latest) {
+                return Err(format!(
+                    "{} latest execution has unapproved or legacy execution context",
+                    criterion.id.0
+                ));
+            }
+            let dispatch = text(latest, "dispatch_id").ok_or("command dispatch has no identity")?;
+            let observed = format!("observed:{}:{dispatch}", self.task_id);
+            let reconstructed = format!("tc-reconstructed:{}:{dispatch}", self.task_id);
+            let receipt = self.gate.receipts.iter().rev().find(|r| {
+                r.criterion == criterion.id
+                    && r.candidate == current.id
+                    && (r.output_ref == observed || r.output_ref == reconstructed)
+                    && receipt_is_observed(dir, &self.task_id, r)
+            });
+            match receipt.and_then(|r| r.exit_code) {
+                Some(0) => {}
+                Some(exit) => {
+                    return Err(render(&GateError::FailingReceipt {
+                        criterion: criterion.id.clone(),
+                        exit_code: exit,
+                    }));
+                }
+                None => {
+                    return Err(format!(
+                        "{} latest execution has no observed completion",
+                        criterion.id.0
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn subagent_stop(
         &mut self,
         payload: &Value,
@@ -528,15 +920,28 @@ impl Session {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let prior = self.gate.handback_refusals.get(agent).copied().unwrap_or(0);
-        let Some(header) = header::parse(message) else {
+        let observed = observation::read_runs(dir, &self.task_id)?
+            .iter()
+            .any(|run| {
+                run.agent_id == agent && self.observed.as_ref().is_ok_and(|c| run.candidate == c.id)
+            });
+        let parsed = header::parse(message).or_else(|| {
+            observed.then_some(Header {
+                verdict: Verdict::Pass,
+                checks_run: 0,
+                checks: Vec::new(),
+                consistent: true,
+            })
+        });
+        let Some(header) = parsed else {
             if prior > 0 {
                 reasons.push("no header; released after one refusal".to_owned());
                 return Ok(Decision::None);
             }
             self.gate.handback_refusals.insert(agent.to_owned(), 1);
             return Ok(Decision::Block(
-                "GATE: handback refused: no header. Start the final message with the line VERDICT: PASS, FAIL or UNVERIFIED, then CHECKS RUN: <n>, then one line per check run in this session: CHECK <id> | <command> | exit <code>.".to_owned(),
-            ));
+                    "GATE: handback refused: no observed verification. Run the required check commands, or report this handback as unverified.".to_owned(),
+                ));
         };
         let cwd = text(payload, "cwd").unwrap_or_default();
         let (mut problems, mut instructions) =
@@ -546,8 +951,12 @@ impl Session {
             return Ok(Decision::None);
         }
         self.note_asserted(reasons);
+        if let Err(why) = self.latest_attempts(dir, Path::new(text(payload, "cwd").unwrap_or(".")))
+        {
+            problems.push(why);
+        }
         let completed = self.task.state() == TaskState::Completed;
-        let accepted = if completed {
+        let accepted = if completed || self.task.state() == TaskState::ReadyForReview {
             self.observed_evidence()
         } else {
             self.task.try_accept()
@@ -581,9 +990,9 @@ impl Session {
         self.gate.handback_refusals.insert(agent.to_owned(), k);
         if instructions.is_empty() {
             instructions.push(
-                "Run the check in this session and cite it as CHECK <id> | <command> | exit <code>."
-                    .to_owned(),
-            );
+                    "Run the check in this session and cite it as CHECK <id> | <command> | exit <code>."
+                        .to_owned(),
+                );
         }
         Ok(Decision::Block(format!(
             "GATE: handback refused (refusal {k} of 3): {}. {}",
@@ -616,12 +1025,7 @@ impl Session {
         }
         let task_id = lifecycle::task_identity(dir, &self.gate.contract_id)?;
         let runs = observation::read_runs(dir, &task_id)?;
-        let mut used: HashSet<String> = self
-            .gate
-            .receipts
-            .iter()
-            .map(|r| r.output_ref.clone())
-            .collect();
+        let mut used: HashSet<String> = HashSet::new();
         for line in &header.checks {
             let Some(criterion) = self.criteria.iter().find(|c| c.id.0 == line.criterion) else {
                 let problem = "unlinked CHECK [unknown criterion]".to_owned();
@@ -650,6 +1054,7 @@ impl Session {
             );
             let run = runs.iter().find(|r| {
                 r.agent_id == agent
+                    && r.cwd == r.execution_root
                     && r.command.trim() == line.command.trim()
                     && r.exit_code == Some(line.exit_code)
                     && self.observed.as_ref().is_ok_and(|c| c.id == r.candidate)
@@ -688,6 +1093,14 @@ impl Session {
                 started_at: at,
                 finished_at: run.map_or(at, |r| r.finished),
             };
+            if self
+                .gate
+                .receipts
+                .iter()
+                .any(|r| r.criterion == receipt.criterion && r.output_ref == receipt.output_ref)
+            {
+                continue;
+            }
             // The core takes no receipt once the task is completed (a chair may complete it
             // through MCP first). Keep a hook-linked one in gate.json, where
             // `observed_evidence` reads it; anything else is rejected as the core would.
@@ -729,12 +1142,17 @@ impl Session {
             .get("stop_hook_active")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        if !claim::claims_completion(message) {
+        if crate::autonomy::is_paused(dir)? {
+            reasons.push("task paused; no completion attempted".to_owned());
+            return Ok(Decision::None);
+        }
+        let autonomous = crate::autonomy::is_autonomous_task(dir)?;
+        if !autonomous && !claim::claims_completion(message) {
             reasons.push("no completion claim".to_owned());
             return Ok(Decision::None);
         }
         // A chair working alone cites its own runs the way a worker does.
-        let (problems, instructions) = match header::parse(message) {
+        let (mut problems, instructions) = match header::parse(message) {
             Some(header) => {
                 let cwd = text(payload, "cwd").unwrap_or_default();
                 self.link_checks(&header, dir, cwd, agent, now, reasons)?
@@ -742,18 +1160,25 @@ impl Session {
             None => (Vec::new(), Vec::new()),
         };
         self.note_asserted(reasons);
+        if let Err(why) = self.latest_attempts(dir, Path::new(text(payload, "cwd").unwrap_or(".")))
+        {
+            problems.push(why);
+        }
         let result = if problems.is_empty() {
-            match self.task.state() {
-                TaskState::Completed => self.observed_evidence(),
-                TaskState::ReadyForReview => self.task.complete(),
-                _ => self.task.try_accept().and_then(|()| self.task.complete()),
-            }
-            .map_err(|e| render(&e))
+            self.observed_evidence()
+                .map_err(|e| render(&e))
+                .and_then(|()| {
+                    match self.task.state() {
+                        TaskState::Completed => self.observed_evidence(),
+                        TaskState::ReadyForReview => self.task.complete(),
+                        _ => self.task.try_accept().and_then(|()| self.task.complete()),
+                    }
+                    .map_err(|e| render(&e))
+                })
         } else {
             // An unlinked CHECK line refuses before any acceptance is tried.
             Err(problems.join("; "))
         };
-        let state = state_name(self.task.state());
         match result {
             Ok(()) => {
                 reasons.push("completed".to_owned());
@@ -761,6 +1186,16 @@ impl Session {
             }
             Err(why) => {
                 reasons.push(why.clone());
+                if autonomous
+                    && matches!(
+                        self.task.state(),
+                        TaskState::Verifying | TaskState::ReadyForReview
+                    )
+                    && let Err(error) = self.task.request_repair()
+                {
+                    reasons.push(render(&error));
+                }
+                let state = state_name(self.task.state());
                 if active && self.gate.continuations >= 3 {
                     return Ok(Decision::System(format!(
                         "GATE: refusal cap reached; task remains {state}"
@@ -768,8 +1203,13 @@ impl Session {
                 }
                 self.gate.continuations += 1;
                 let run_instead: String = instructions.iter().map(|i| format!(" {i}")).collect();
+                let next = if !autonomous && header::parse(message).is_some() {
+                    "record the check with CHECK lines"
+                } else {
+                    "run the required check commands"
+                };
                 Ok(Decision::Block(format!(
-                    "GATE refuses completion (refusal {} of 3, harness cap 8): state {state}; {why}; record the check with CHECK lines or report the task as not complete.{run_instead}",
+                    "GATE refuses completion (refusal {} of 3, harness cap 8): state {state}; {why}; {next} or report the task as not complete.{run_instead}",
                     self.gate.continuations
                 )))
             }
@@ -778,6 +1218,33 @@ impl Session {
 
     fn pre_tool_use(&mut self, payload: &Value) -> Decision {
         self.gate.continuations = 0;
+        if !read_only_tool(payload) {
+            match self
+                .evidence_dir
+                .as_ref()
+                .map(|dir| crate::autonomy::is_paused(dir))
+            {
+                Some(Ok(true)) => {
+                    return Decision::Deny(
+                        "GATE: task is paused; resume through a new user prompt before mutation"
+                            .to_owned(),
+                    );
+                }
+                Some(Err(_)) => {
+                    return Decision::Deny("GATE: task lifecycle state unavailable".to_owned());
+                }
+                _ => {}
+            }
+        }
+        if self.task.state().is_terminal()
+            && !read_only_tool(payload)
+            && self
+                .evidence_dir
+                .as_ref()
+                .is_some_and(|dir| crate::autonomy::is_autonomous_task(dir).unwrap_or(true))
+        {
+            return Decision::Deny(format!("GATE: task is {}", state_name(self.task.state())));
+        }
         let tool = text(payload, "tool_name").unwrap_or_default();
         if !matches!(tool, "Write" | "Edit" | "Agent") {
             return Decision::None;

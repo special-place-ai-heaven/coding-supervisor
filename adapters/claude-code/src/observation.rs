@@ -13,11 +13,13 @@ pub(crate) struct Run {
     pub agent_id: String,
     pub command: String,
     pub cwd: String,
+    pub execution_root: String,
     pub candidate: CandidateId,
     pub exit_code: Option<i32>,
     pub reference: String,
     pub t: u64,
     pub finished: u64,
+    pub recovered_by: Option<String>,
 }
 
 fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -79,10 +81,64 @@ fn identity(input: &Value, tool: &str) -> Option<(Value, String)> {
     ))
 }
 
-// Schema 2 records which tool supplied the command's authoritative field.
-// Earlier records remain on disk, but their command identity requires a rerun.
+// Only the inherited local execution profile is approved. Per-call runner changes
+// need a separately approved profile, not a fingerprint of caller-chosen settings.
+fn execution_profile(input: &Value) -> Value {
+    let mut approved = input.get("shell").is_none_or(Value::is_null);
+    let mut target_digest = None;
+    match input.get("env") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(values)) if values.is_empty() => {}
+        Some(Value::Array(values)) if values.len() == 1 => {
+            let value = &values[0];
+            let inherited = std::env::var("CARGO_TARGET_DIR")
+                .ok()
+                .filter(|v| !v.is_empty());
+            if value.as_object().is_some_and(|fields| fields.len() == 2)
+                && text(value, "key") == Some("CARGO_TARGET_DIR")
+                && inherited
+                    .as_deref()
+                    .is_some_and(|target| text(value, "value") == Some(target))
+            {
+                // This setting is nonsecret and already approved by the host. Its
+                // digest binds dispatch to completion without storing its value.
+                target_digest = inherited.map(|target| crate::sha256::hex(target.as_bytes()));
+            } else {
+                approved = false;
+            }
+        }
+        _ => approved = false,
+    }
+    json!({"name":"local-default-v1", "approved":approved, "cargo_target_sha256":target_digest})
+}
+
+/// Validate stored approval without reapproving old records from today's environment.
+pub(crate) fn approved_context(record: &Value) -> bool {
+    let Some(profile) = record.get("execution_profile") else {
+        return false;
+    };
+    valid_identity(record)
+        && profile.as_object().is_some_and(|fields| fields.len() == 3)
+        && text(profile, "name") == Some("local-default-v1")
+        && profile.get("approved").and_then(Value::as_bool) == Some(true)
+        && profile.get("cargo_target_sha256").is_some_and(|value| {
+            value.is_null()
+                || value.as_str().is_some_and(|hash| {
+                    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+        })
+        && text(record, "execution_root").is_some()
+        && text(record, "execution_root") == text(record, "execution_project")
+        && text(record, "execution_project")
+            == text(record, "cwd")
+                .map(|cwd| crate::location::canonical_project(Path::new(cwd)))
+                .as_deref()
+}
+
+// Schema 3 binds command identity to an approved execution profile and root.
+// Older records stay on disk, but cannot authorize completion without a rerun.
 fn valid_identity(record: &Value) -> bool {
-    if record.get("identity_schema").and_then(Value::as_u64) != Some(2) {
+    if record.get("identity_schema").and_then(Value::as_u64) != Some(3) {
         return false;
     }
     let (Some(tool), Some(stored), Some(command)) = (
@@ -191,6 +247,10 @@ pub(crate) fn observe(
     now: u64,
     criteria: &[Criterion],
 ) -> Result<bool, String> {
+    let session = text(payload, "session_id").unwrap_or_default();
+    if !crate::autonomy::owns_session(dir, session)? {
+        return Ok(false);
+    }
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let Some(tool) = text(payload, "tool_name") else {
         return Ok(false);
@@ -268,8 +328,9 @@ pub(crate) fn observe(
         }
         append(&json!({"kind":"dispatch", "task_id":task, "agent_id":agent,
             "session_id":payload.get("session_id"), "dispatch_id":id, "tool":tool,
-            "identity_schema":2, "identity":identity, "command":command, "cwd":cwd(workdir, base),
-            "execution_project":project,
+            "identity_schema":3, "identity":identity, "command":command, "cwd":cwd(workdir, base),
+            "execution_project":project, "execution_root":project,
+            "execution_profile":execution_profile(input),
             "candidate":{"base_commit":candidate.id.base_commit,"dirty_digest":candidate.id.dirty_digest},
             "target_id":input.get("target_id"), "t":now}))?;
         return Ok(true);
@@ -285,24 +346,48 @@ pub(crate) fn observe(
                 && text(v, "tool") == Some(tool)
                 && identity(input, tool)
                     .is_some_and(|(identity, _)| v.get("identity") == Some(&identity))
+                && v.get("execution_profile") == Some(&execution_profile(input))
         })
     } else if matches!(tc, Some("command_status" | "bucket_wait")) {
-        previous.iter().find(|v| {
-            text(v, "kind") == Some("job")
-                && same_scope(v, payload, task, agent)
+        let mut found = None;
+        for v in &previous {
+            let same_owner = same_scope(v, payload, task, agent);
+            let recovered = text(v, "task_id") == Some(task)
+                && crate::autonomy::recovers_session(
+                    dir,
+                    task,
+                    text(v, "session_id").unwrap_or_default(),
+                    session,
+                )?;
+            if text(v, "kind") == Some("job")
+                && (same_owner || recovered)
                 && (if tc == Some("command_status") {
                     text(v, "job_id") == text(input, "job_id")
                         && v.get("target_id") == Some(&json!(input.get("target_id")))
                 } else {
                     text(v, "bucket_id") == text(input, "bucket_id")
                 })
-        })
+            {
+                found = Some(v);
+                break;
+            }
+        }
+        found
     } else {
         None
     };
     let Some(dispatch) = dispatch else {
         return Ok(false);
     };
+    if !starts
+        && text(dispatch, "session_id") != Some(session)
+        && text(payload, "cwd")
+            .map(|cwd| crate::location::canonical_project(Path::new(cwd)))
+            .as_deref()
+            != text(dispatch, "execution_project")
+    {
+        return Ok(false);
+    }
     if starts && !shell {
         let Some(base) = text(payload, "cwd") else {
             return Ok(false);
@@ -314,7 +399,7 @@ pub(crate) fn observe(
             return Ok(false);
         }
     }
-    if !valid_identity(dispatch) {
+    if !approved_context(dispatch) {
         return Ok(false);
     }
     // Require the binding written at dispatch, including for pre-upgrade journals.
@@ -332,7 +417,9 @@ pub(crate) fn observe(
     let id = text(dispatch, "dispatch_id").unwrap_or_default();
     if previous.iter().any(|v| {
         matches!(text(v, "kind"), Some("completed" | "invalidated"))
-            && same_scope(v, payload, task, agent)
+            && text(v, "task_id") == text(dispatch, "task_id")
+            && text(v, "agent_id") == text(dispatch, "agent_id")
+            && v.get("session_id") == dispatch.get("session_id")
             && text(v, "dispatch_id") == Some(id)
     }) {
         return Ok(false);
@@ -447,15 +534,106 @@ pub(crate) fn observe(
     run["completion_trust"] = completion_trust.into();
     run["exit_code"] = exit.into();
     run["finished"] = now.into();
+    if text(dispatch, "session_id") != Some(session) {
+        run["recovered_by_session"] = session.into();
+        run["recovered_by_agent"] = agent.into();
+    }
     append(&run)?;
     Ok(true)
 }
 
+/// Sanitized pending job context. It reports linkage, never a successful command outcome.
+pub(crate) fn pending_jobs(dir: &Path, task: &str) -> Result<Value, String> {
+    let (contract, _) = state::read_contract(dir)?;
+    let Some(contract) = contract else {
+        return Ok(json!([]));
+    };
+    let rows = records(dir)?;
+    let mut jobs = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for row in rows.iter().rev() {
+        let (Some(dispatch), Some(job), Some(command), Some(workdir)) = (
+            text(row, "dispatch_id"),
+            text(row, "job_id"),
+            text(row, "command"),
+            text(row, "cwd"),
+        ) else {
+            continue;
+        };
+        if text(row, "kind") != Some("job")
+            || text(row, "task_id") != Some(task)
+            || !approved_context(row)
+            || text(row, "execution_project")
+                != Some(crate::location::canonical_project(Path::new(workdir)).as_str())
+        {
+            continue;
+        }
+        let key = json!([row.get("session_id"), row.get("agent_id"), dispatch]).to_string();
+        if !seen.insert(key) {
+            continue;
+        }
+        let same_dispatch = |other: &&Value| {
+            text(other, "dispatch_id") == Some(dispatch)
+                && other.get("task_id") == row.get("task_id")
+                && other.get("session_id") == row.get("session_id")
+                && other.get("agent_id") == row.get("agent_id")
+        };
+        if rows.iter().filter(same_dispatch).any(|other| {
+            text(other, "kind") == Some("completed")
+                && approved_context(other)
+                && matches!(
+                    text(other, "completion_trust"),
+                    Some("observed" | "tc-reconstructed")
+                )
+        }) {
+            continue;
+        }
+        let criteria: Vec<_> = contract
+            .criteria
+            .iter()
+            .filter(|criterion| criterion.accepts(command))
+            .map(|criterion| criterion.id.0.clone())
+            .collect();
+        if criteria.is_empty() {
+            continue;
+        }
+        let invalidated = !crate::autonomy::dispatch_is_current(dir, dispatch)?
+            || row.get("pipeline_exit_masked").and_then(Value::as_bool) == Some(true)
+            || rows
+                .iter()
+                .filter(same_dispatch)
+                .any(|other| text(other, "kind") == Some("invalidated"));
+        let candidate = row.get("candidate");
+        jobs.push(json!({"job_id":job,"bucket_id":text(row,"bucket_id"),"dispatch_id":dispatch,"candidate":{"base_commit":candidate.and_then(|c| text(c,"base_commit")),"dirty_digest":candidate.and_then(|c| text(c,"dirty_digest"))},"session_id":text(row,"session_id"),"agent_id":text(row,"agent_id"),"task_id":task,"cwd":workdir,"command":command,"criteria":criteria,"status":"pending","validity":if invalidated { "invalidated" } else { "current" }}));
+    }
+    jobs.reverse();
+    Ok(jobs.into())
+}
+
 pub(crate) fn read_runs(dir: &Path, task: &str) -> Result<Vec<Run>, String> {
-    Ok(records(dir)?
+    let rows = records(dir)?;
+    let mut recovered = std::collections::BTreeMap::new();
+    for row in &rows {
+        if let (Some(session), Some(agent), Some(dispatch)) = (
+            text(row, "recovered_by_session"),
+            text(row, "recovered_by_agent"),
+            text(row, "dispatch_id"),
+        ) && crate::autonomy::recovers_session(
+            dir,
+            task,
+            text(row, "session_id").unwrap_or_default(),
+            session,
+        )? {
+            recovered.insert(
+                json!([row.get("session_id"), row.get("agent_id"), dispatch]).to_string(),
+                agent.to_owned(),
+            );
+        }
+    }
+    Ok(rows
         .iter()
         .filter_map(|v| {
-            if !valid_identity(v)
+            if !approved_context(v)
                 || text(v, "kind") != Some("completed")
                 || !matches!(
                     text(v, "completion_trust"),
@@ -473,6 +651,7 @@ pub(crate) fn read_runs(dir: &Path, task: &str) -> Result<Vec<Run>, String> {
                 agent_id: text(v, "agent_id")?.to_owned(),
                 command: text(v, "command")?.to_owned(),
                 cwd: text(v, "cwd")?.to_owned(),
+                execution_root: text(v, "execution_root")?.to_owned(),
                 candidate: CandidateId {
                     base_commit: text(v.get("candidate")?, "base_commit")?.to_owned(),
                     dirty_digest: text(v.get("candidate")?, "dirty_digest")?.to_owned(),
@@ -488,6 +667,12 @@ pub(crate) fn read_runs(dir: &Path, task: &str) -> Result<Vec<Run>, String> {
                 ),
                 t: v.get("t")?.as_u64()?,
                 finished: v.get("finished")?.as_u64()?,
+                recovered_by: text(v, "dispatch_id")
+                    .and_then(|id| {
+                        recovered
+                            .get(&json!([v.get("session_id"), v.get("agent_id"), id]).to_string())
+                    })
+                    .cloned(),
             })
         })
         .collect())
@@ -806,18 +991,23 @@ mod tests {
 
     #[test]
     fn marked_stored_identity_must_match_tool_shape_and_command() {
-        for invalid in ["wrong-command", "mixed-shape", "future-schema"] {
+        for invalid in [
+            "wrong-command",
+            "mixed-shape",
+            "future-schema",
+            "legacy-schema",
+        ] {
             let (d, mut p, c) = setup();
             assert!(event(&d, &p, "PreToolUse", &c));
             p["tool_response"] = final_response();
             assert!(event(&d, &p, "PostToolUse", &c));
             let mut journal = records(&d.0).unwrap();
             for row in &mut journal {
-                row["identity_schema"] = 2.into();
                 match invalid {
                     "wrong-command" => row["command"] = "echo harmless".into(),
                     "mixed-shape" => row["identity"]["shell_line"] = "cargo test".into(),
                     "future-schema" => row["identity_schema"] = 999.into(),
+                    "legacy-schema" => row["identity_schema"] = 2.into(),
                     _ => unreachable!(),
                 }
             }
@@ -1177,15 +1367,92 @@ mod tests {
         let (d, mut p, c) = setup();
         let marker = "synthetic-shell-output-marker";
         p["tool_name"] = "PowerShell".into();
-        p["tool_input"] = json!({"command":"cargo test","shell":marker});
+        p["tool_input"] = json!({"command":"cargo test"});
         assert!(event(&d, &p, "PreToolUse", &c));
         p["error"] = format!("Exit code 7\n{marker}").into();
         assert!(event(&d, &p, "PostToolUseFailure", &c));
         assert_eq!(read_runs(&d.0, "task-1").unwrap()[0].exit_code, Some(7));
+        p["tool_use_id"] = "unapproved-interpreter".into();
+        p["tool_input"]["shell"] = marker.into();
+        assert!(event(&d, &p, "PreToolUse", &c));
+        assert!(!event(&d, &p, "PostToolUseFailure", &c));
+        assert_eq!(read_runs(&d.0, "task-1").unwrap().len(), 1);
         assert!(
             !std::fs::read_to_string(d.0.join("runs.jsonl"))
                 .unwrap()
                 .contains(marker)
+        );
+    }
+
+    #[test]
+    fn new_explicit_owner_recovers_job_without_rebinding_original_dispatch() {
+        let (d, mut p, c) = setup();
+        p["hook_event_name"] = "PreToolUse".into();
+        assert!(observe(&d.0, &p, "task-1", "worker-1", Some(&c), 100, &criteria()).unwrap());
+        p["tool_response"] = json!({"job_id":"job-1","bucket_id":"bucket-1"});
+        p["hook_event_name"] = "PostToolUse".into();
+        observe(&d.0, &p, "task-1", "worker-1", Some(&c), 100, &criteria()).unwrap();
+        std::fs::write(
+            d.0.join("task.json"),
+            json!({"task_id":"task-1"}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(d.0.join("autonomy.json"), json!({"schema":1,"source":"hook","session_id":"session-2","paused":false,"revisions":[{"action":"start"},{"action":"resume","from_session":"session-1","to_session":"session-2"}]}).to_string()).unwrap();
+        let status = json!({"tool_name":format!("{TC}command_status"),"session_id":"session-2","cwd":d.0,"tool_input":{"job_id":"job-1"},"tool_response":final_response()});
+        let mut old = status.clone();
+        old["session_id"] = "session-1".into();
+        assert!(!event(&d, &old, "PostToolUse", &c));
+        let mut forged = status.clone();
+        forged["session_id"] = "sibling".into();
+        assert!(!event(&d, &forged, "PostToolUse", &c));
+        let mut wrong = status.clone();
+        wrong["tool_input"]["job_id"] = "other-job".into();
+        assert!(!event(&d, &wrong, "PostToolUse", &c));
+        let other = d.0.join("other-worktree");
+        std::fs::create_dir(&other).unwrap();
+        let mut wrong_worktree = status.clone();
+        wrong_worktree["cwd"] = json!(other);
+        assert!(!event(&d, &wrong_worktree, "PostToolUse", &c));
+        let mut unknown = status.clone();
+        unknown["tool_response"]["outcome_trust"] = "unknown".into();
+        assert!(!event(&d, &unknown, "PostToolUse", &c));
+        assert!(event(&d, &status, "PostToolUse", &c));
+        assert!(!event(&d, &status, "PostToolUse", &c));
+        let rows = records(&d.0).unwrap();
+        let completed = rows.iter().find(|r| r["kind"] == "completed").unwrap();
+        assert_eq!(completed["session_id"], "session-1");
+        assert_eq!(completed["agent_id"], "worker-1");
+        assert_eq!(completed["recovered_by_session"], "session-2");
+        assert_eq!(completed["recovered_by_agent"], "main");
+        assert_eq!(read_runs(&d.0, "task-1").unwrap()[0].candidate, c.id);
+        assert_eq!(
+            read_runs(&d.0, "task-1").unwrap()[0]
+                .recovered_by
+                .as_deref(),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn pending_jobs_expose_identifiers_and_criteria_without_output_and_keep_invalidated_jobs() {
+        let (d, mut p, c) = setup();
+        assert!(event(&d, &p, "PreToolUse", &c));
+        p["tool_response"] =
+            json!({"job_id":"job-1","bucket_id":"bucket-1","stdout":"private-output-marker"});
+        event(&d, &p, "PostToolUse", &c);
+        std::fs::write(d.0.join("contract.json"), json!({"id":"fixture","goal":"fixture","criteria":[{"id":"C1","check":"test","mandatory":true,"command":"cargo test"}],"scope":["src/"],"forbidden_effects":[],"max_repair_rounds":2}).to_string()).unwrap();
+        std::fs::write(d.0.join("autonomy.json"), json!({"schema":1,"source":"hook","session_id":"session-1","paused":false,"revisions":[{"action":"start"}],"invalidated_dispatches":["dispatch-1"]}).to_string()).unwrap();
+        let jobs = crate::autonomy::pending_jobs(&d.0, "task-1").unwrap();
+        assert_eq!(jobs.as_array().unwrap().len(), 1);
+        assert_eq!(jobs[0]["job_id"], "job-1");
+        assert_eq!(jobs[0]["dispatch_id"], "dispatch-1");
+        assert_eq!(jobs[0]["session_id"], "session-1");
+        assert_eq!(jobs[0]["validity"], "invalidated");
+        assert_eq!(jobs[0]["criteria"], json!(["C1"]));
+        assert!(!jobs.to_string().contains("private-output-marker"));
+        assert_eq!(
+            crate::autonomy::pending_jobs(&d.0, "other-task").unwrap(),
+            json!([])
         );
     }
 }

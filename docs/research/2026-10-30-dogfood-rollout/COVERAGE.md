@@ -2,6 +2,66 @@
 
 As of 2026-10-30. This document separates action authorization from completion evidence. New cases below are deterministic fixtures against temporary state, not live model enforcement claims. Same-user writable hooks and policy files are not an unbypassable security boundary.
 
+## Autonomous candidate evidence boundary
+
+The autonomy development candidate adds prompt-bound contract proposals,
+headerless observed completion and lifecycle history. Its installer registers
+the supervisor on all tool-event routes so pending intent can be checked before
+covered mutations. This changes event delivery, not the supported action-policy
+categories below. Unknown shell programs are not a sandbox; arbitrary same-user
+processes can still impersonate hook input or change writable installation files.
+
+Contract validation preserves captured repository checks and rejects weakened
+criteria, malformed scope and unauthorized lifecycle transitions. It does not
+prove semantic completeness of an LLM's interpretation. Caller-asserted Codex
+intent and receipts remain advisory. Pause and discussion retain unfinished work
+without permitting covered edits, and a revised contract requires fresh checks.
+Captured npm script hashes prevent replacing a declared verification entry point
+with a no-op under the same command name. This is not an attestation of arbitrary
+test contents, build scripts or dependency behavior. Intentional verification
+runner migration is a material contract change, not an automatic waiver.
+Ownership is checked again within the task transaction; stale-session delivery
+must not consume repair rounds or mutate the resumed task. Recovered jobs retain
+their original provenance, with recovery ownership recorded separately.
+
+**Live Claude enforcement of these changes is unverified and deferred by the
+owner's quota restriction.** Earlier live traces below describe earlier code.
+Current replay and subprocess results must not be relabeled as live model
+acceptance. Final candidate evidence is external under
+`C:\Target\coding-supervisor\autonomy-20261030`; the amended acceptance scope is
+in [AUTONOMY-GOAL.md](AUTONOMY-GOAL.md), with
+[deferred rerun instructions](AUTONOMY-DEFERRED-CLAUDE.md).
+
+## Repaired evidence context
+
+Schema 3 binds observed runs to an approved local execution profile. Unknown or
+unapproved per-call environment/interpreter changes do not authorize checks;
+arbitrary caller-selected environment hashes are not approval. Only an exact
+nonempty inherited `CARGO_TARGET_DIR` override is permitted, with a digest rather
+than its value recorded. This does not attest the daemon's ambient environment.
+
+Current criteria bind execution cwd to the canonical project root. Nested runs
+retain their actual cwd and worktree provenance, but are not interchangeable
+with root checks. A contract API for distinct nested execution contexts is not
+implemented. Separate worktrees and external directories remain rejected even
+when commits or files match. Root completion and successor rollover select the
+same evidence context.
+
+Canonical identity does not upgrade legacy discovery provenance. Unproven nested
+snapshots and receipts require fresh evidence; explicit cancellation/restart
+preserves their history. Raw-root spelling/case compatibility is retained.
+
+The original skipped-test counterexample uses real command execution surrounded
+by deterministic hook delivery. It is not live Claude enforcement. A separate
+benign Python cwd fixture covers generic context discrimination; the additional
+safety-rejected npm nested-context probe remains unverified. See
+[the repair record](FRESH-AUDIT-REPAIRS.md) for current evidence locations.
+
+An observed nonzero TC job may report `state=failed`; the existing parser expects
+`exited` and then leaves that job pending rather than recording its nonzero exit.
+Completion still refuses. This pre-existing reporting limitation is recorded
+separately and is not claimed fixed by the execution-context repair.
+
 ## Status contract
 
 `supervisor status [--project <directory>] [--harness claude-code|codex] [--json]` defaults to Claude Code and reads a consistent project snapshot. It creates no task contract and does not run checks. Human and JSON reports distinguish:

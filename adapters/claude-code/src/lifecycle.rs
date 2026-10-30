@@ -121,8 +121,24 @@ pub fn start(
     requested: Option<&str>,
     expected: Option<&str>,
 ) -> Result<Value, String> {
-    let parsed = state::contract_from(contract)?;
     let tx = Transaction::open(root)?;
+    if root.join("intents.json").exists() {
+        return Err("prompt-managed lifecycle requires an event-bound proposal".to_owned());
+    }
+    let (response, writes) = plan_start(root, contract, next, requested, expected)?;
+    tx.commit(writes)?;
+    Ok(response)
+}
+
+/// Caller holds the project transaction lock; allows prompt consumption and activation to commit together.
+pub(crate) fn plan_start(
+    root: &Path,
+    contract: &Value,
+    next: bool,
+    requested: Option<&str>,
+    expected: Option<&str>,
+) -> Result<(Value, Vec<(PathBuf, String)>), String> {
+    let parsed = state::contract_from(contract)?;
     legacy_pending(root)?;
     let previous = active_task(root)?;
     if let Some(previous) = &previous {
@@ -167,9 +183,10 @@ pub fn start(
             Err(error) => return Err(error.to_string()),
         }
         if let Some((previous, contract_id)) = replay {
-            return Ok(
+            return Ok((
                 json!({"schema":2,"task_id":previous.task_id,"contract_id":contract_id,"state":state_of(&previous.dir)?,"replayed":true}),
-            );
+                Vec::new(),
+            ));
         }
     }
     if previous.is_some() && !next {
@@ -204,15 +221,18 @@ pub fn start(
         PathBuf::from("active.json"),
         format!("{}\n", json!({"schema":2,"task_id":id})),
     ));
-    tx.commit(writes)?;
-    Ok(
+    Ok((
         json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"state":"queued","recovery_of":recovery_of}),
-    )
+        writes,
+    ))
 }
 
 pub fn deactivate(root: &Path, expected: &str, requested: Option<&str>) -> Result<Value, String> {
     let tx = Transaction::open(root)?;
     let active = active_task(root)?.ok_or("no active task")?;
+    if crate::autonomy::is_autonomous_task(&active.dir)? {
+        return Err("autonomous tasks require a prompt-bound cancellation proposal".to_owned());
+    }
     if active.task_id != expected {
         return Err("active task changed".to_owned());
     }
@@ -251,6 +271,9 @@ pub fn rebind(root: &Path, expected: &str, session: &str) -> Result<Value, Strin
     }
     let tx = Transaction::open(root)?;
     let active = active_task(root)?.ok_or("no active task")?;
+    if crate::autonomy::is_autonomous_task(&active.dir)? {
+        return Err("autonomous session bindings are controlled by prompt proposals".to_owned());
+    }
     if active.task_id != expected {
         return Err("active task changed".to_owned());
     }
@@ -365,7 +388,7 @@ pub fn with_task(
             return Err("event ID reused with different input".to_owned());
         }
         if cached.get("state_digest").and_then(Value::as_str)
-            != Some(task_digest(&source)?.as_str())
+            != Some(task_digest(root, &source)?.as_str())
         {
             return Err("task state changed after event; cached response refused".to_owned());
         }
@@ -383,7 +406,7 @@ pub fn with_task(
     if let Some((id, digest)) = event {
         events.as_object_mut().ok_or("invalid event index")?.insert(
             id.to_owned(),
-            json!({"digest":digest,"state_digest":task_digest(&stage)?,"response":response}),
+            json!({"digest":digest,"state_digest":task_digest(root, &stage)?,"response":response}),
         );
         atomic_write(
             &stage.join("applied-events.json"),
@@ -399,16 +422,18 @@ pub fn with_task(
     Ok(response)
 }
 
-fn task_digest(dir: &Path) -> Result<String, String> {
+fn task_digest(root: &Path, dir: &Path) -> Result<String, String> {
     let mut bytes = Vec::new();
-    for name in [
-        "contract.json",
-        "gate.json",
-        "runs.jsonl",
-        "mcp-candidate.json",
+    for (base, name) in [
+        (dir, "contract.json"),
+        (dir, "gate.json"),
+        (dir, "runs.jsonl"),
+        (dir, "mcp-candidate.json"),
+        (dir, "autonomy.json"),
+        (root, "intents.json"),
     ] {
         bytes.extend_from_slice(name.as_bytes());
-        match fs::read(dir.join(name)) {
+        match fs::read(base.join(name)) {
             Ok(content) => bytes.extend_from_slice(&content),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.to_string()),
