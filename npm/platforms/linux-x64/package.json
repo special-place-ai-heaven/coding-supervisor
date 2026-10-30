@@ -1,6 +1,6 @@
 {
   "name": "coding-supervisor-linux-x64",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Linux x64 native binaries for coding-supervisor (supervisor, supervisor-mcp, supervisor-claude-code)",
   "license": "MIT",
   "repository": {
