@@ -235,7 +235,13 @@ fn terminal(v: &Value) -> Option<i32> {
     {
         return None;
     }
-    i32::try_from(v.get("exit_code")?.as_i64()?).ok()
+    let exit = i32::try_from(v.get("exit_code")?.as_i64()?).ok()?;
+    // A failed status with a zero exit is contradictory daemon output; journaling
+    // it would mint a passing receipt from a job the daemon says failed.
+    if text(v, "state") == Some("failed") && exit == 0 {
+        return None;
+    }
+    Some(exit)
 }
 
 /// The caller serializes this operation with every other task mutation.
@@ -824,6 +830,23 @@ mod tests {
         degraded["degraded"] = true.into();
         let status = json!({"tool_name":format!("{TC}command_status"),"tool_use_id":"status-1",
             "session_id":"session-1","cwd":d.0,"tool_input":{"job_id":"job-1"},"tool_response":degraded});
+        assert!(!event(&d, &status, "PostToolUse", &c));
+        assert!(read_runs(&d.0, "task-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn tc_failed_state_with_zero_exit_stays_pending() {
+        let (d, mut p, c) = setup();
+        event(&d, &p, "PreToolUse", &c);
+        p["tool_response"] = json!({"job_id":"job-1","bucket_id":"bucket-1"});
+        event(&d, &p, "PostToolUse", &c);
+        let mut failed = final_response();
+        failed["state"] = "failed".into();
+        failed["exit_code"] = 0.into();
+        let status = json!({"tool_name":format!("{TC}command_status"),"tool_use_id":"status-1",
+            "session_id":"session-1","cwd":d.0,"tool_input":{"job_id":"job-1"},"tool_response":failed});
+        // A failed status with a zero exit is contradictory daemon output; journaling
+        // it would mint a passing receipt from a job the daemon says failed.
         assert!(!event(&d, &status, "PostToolUse", &c));
         assert!(read_runs(&d.0, "task-1").unwrap().is_empty());
     }

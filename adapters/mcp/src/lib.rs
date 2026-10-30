@@ -589,11 +589,15 @@ fn describe(
         .map(|c| {
             let recorded = cp.state.is_terminal()
                 && cp.candidate.as_ref().is_some_and(|candidate| {
-                    session
-                        .gate
-                        .receipts
-                        .iter()
-                        .any(|r| r.criterion == c.id && &r.candidate == candidate)
+                    session.gate.receipts.iter().any(|r| {
+                        r.criterion == c.id
+                            && &r.candidate == candidate
+                            // A failed or unsupported claim does not evidence the
+                            // criterion even in the advisory table; mcp-asserted
+                            // receipts stay counted here by design.
+                            && r.exit_code == Some(0)
+                            && r.claim_supported
+                    })
                 });
             let status = if recorded {
                 "recorded"

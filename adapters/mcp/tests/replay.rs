@@ -468,3 +468,58 @@ fn completed_task_state_reports_recorded_receipts() {
         assert_eq!(now["receipts"][c], "recorded", "{c}: {}", now["receipts"]);
     }
 }
+
+#[test]
+fn terminal_state_hides_failing_receipts() {
+    // The advisory display counts mcp-asserted receipts by design, but a receipt
+    // whose command failed does not evidence a satisfied criterion.
+    let d = dir("recorded-failing");
+    let s = server(&d);
+    started(&s);
+    ok(
+        &s,
+        "receipt_record",
+        receipt("C1", "cargo test", json!(1), true),
+    );
+    ok(
+        &s,
+        "finding_raise",
+        json!({"id": "F1", "severity": "high", "location": "src/lib.rs:1", "evidence_ref": "review-1"}),
+    );
+    ok(&s, "repair_request", json!({}));
+    observe(&s, "one", &["src/lib.rs"]);
+    ok(&s, "repair_request", json!({}));
+    observe(&s, "one", &["src/lib.rs"]);
+    let text = refused(&s, "repair_request", json!({}));
+    assert!(text.contains("budget"), "{text}");
+    let now = task_state(&s);
+    assert_eq!(state(&now), "budget_exhausted");
+    assert_eq!(now["receipts"]["C1"], "missing", "{}", now["receipts"]);
+}
+
+#[test]
+fn terminal_state_hides_foreign_candidate_receipts() {
+    // A receipt bound to another candidate never displays as recorded, however
+    // terminal the checkpoint is (pin for the candidate-equality guard).
+    let d = dir("recorded-foreign");
+    let s = server(&d);
+    started(&s);
+    for c in ["C1", "C2", "C3", "C4"] {
+        pass(&s, c);
+    }
+    ok(
+        &s,
+        "finding_raise",
+        json!({"id": "F1", "severity": "high", "location": "src/lib.rs:1", "evidence_ref": "review-1"}),
+    );
+    ok(&s, "repair_request", json!({}));
+    observe(&s, "two", &["src/lib.rs"]);
+    ok(&s, "repair_request", json!({}));
+    observe(&s, "two", &["src/lib.rs"]);
+    refused(&s, "repair_request", json!({}));
+    let now = task_state(&s);
+    assert_eq!(state(&now), "budget_exhausted");
+    for c in ["C1", "C2", "C3", "C4"] {
+        assert_eq!(now["receipts"][c], "missing", "{c}: {}", now["receipts"]);
+    }
+}

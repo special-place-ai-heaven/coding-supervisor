@@ -473,6 +473,73 @@ fn completed_gate_reports_recorded_receipts() {
 }
 
 #[test]
+fn completed_gate_hides_receipts_the_acceptance_path_refuses() {
+    // The summary must not call a receipt "recorded" when this same surface's
+    // acceptance path refuses it: an mcp-asserted receipt is unlinked here, and a
+    // failing hook-observed run does not satisfy its criterion.
+    let d = dir("recorded-coherent");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    assert_eq!(worker(&mut env, "w1", "PASS", &ALL4), Decision::None);
+    assert_eq!(
+        handle(&stop("All checks pass.", false), &mut env),
+        Decision::None
+    );
+    let (_, digest) = read_contract(&env.state_dir).unwrap();
+    let Stored::Valid(mut g) = load_gate(&env.state_dir, &digest).unwrap() else {
+        panic!("gate.json not valid after completion");
+    };
+    for r in g.receipts.iter_mut() {
+        match r.criterion.0.as_str() {
+            "C1" => r.output_ref = format!("{MCP_ASSERTED}run-1"),
+            "C2" => r.exit_code = Some(1),
+            _ => {}
+        }
+    }
+    save_gate(&env.state_dir, &g, &digest).unwrap();
+    let r = handle(
+        &template(FOREGROUND, "PostToolUse", Some("Agent")),
+        &mut env,
+    );
+    let text = context(&r);
+    assert!(text.contains("missing: [C1, C2];"), "{text}");
+    assert!(text.contains("recorded: [C3, C4];"), "{text}");
+    assert!(!text.contains("recorded: [C1"), "{text}");
+    assert!(!text.contains("recorded: [C2"), "{text}");
+}
+
+#[test]
+fn terminal_gate_hides_foreign_candidate_receipts() {
+    // A receipt bound to another candidate never displays as recorded, however
+    // terminal the checkpoint is (pin for the candidate-equality guard).
+    let d = dir("recorded-mask");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    assert_eq!(worker(&mut env, "w1", "PASS", &ALL4), Decision::None);
+    assert_eq!(
+        handle(&stop("All checks pass.", false), &mut env),
+        Decision::None
+    );
+    let (_, digest) = read_contract(&env.state_dir).unwrap();
+    let Stored::Valid(mut g) = load_gate(&env.state_dir, &digest).unwrap() else {
+        panic!("gate.json not valid after completion");
+    };
+    let other = CandidateId {
+        base_commit: "base".into(),
+        dirty_digest: "two".into(),
+    };
+    for r in g.receipts.iter_mut() {
+        r.candidate = other.clone();
+    }
+    save_gate(&env.state_dir, &g, &digest).unwrap();
+    let r = handle(
+        &template(FOREGROUND, "PostToolUse", Some("Agent")),
+        &mut env,
+    );
+    let text = context(&r);
+    assert!(text.contains("missing: [C1, C2, C3, C4];"), "{text}");
+    assert!(text.contains("recorded: [];"), "{text}");
+}
+
+#[test]
 fn replay_r26_failing_mandatory_check_refuses_completion() {
     let d = dir("r26");
     let mut env = env(

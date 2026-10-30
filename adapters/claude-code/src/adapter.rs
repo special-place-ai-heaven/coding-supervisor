@@ -1351,10 +1351,16 @@ impl Session {
                     self.criteria
                         .iter()
                         .filter(|c| {
-                            self.gate
-                                .receipts
-                                .iter()
-                                .any(|r| r.criterion == c.id && r.candidate == candidate)
+                            self.gate.receipts.iter().any(|r| {
+                                r.criterion == c.id
+                                    && r.candidate == candidate
+                                    // The acceptance path refuses mcp-asserted receipts
+                                    // here and a failing run satisfies nothing; the
+                                    // display must agree with it.
+                                    && !r.output_ref.starts_with(MCP_ASSERTED)
+                                    && r.exit_code == Some(0)
+                                    && r.claim_supported
+                            })
                         })
                         .map(|c| c.id.0.as_str())
                         .collect()
