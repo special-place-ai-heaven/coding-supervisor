@@ -227,7 +227,8 @@ fn terminal(v: &Value) -> Option<i32> {
         },
         |degraded| !degraded,
     );
-    if text(v, "state") != Some("exited")
+    // Repair: TC "failed" jobs now journal their exit code instead of staying pending.
+    if !matches!(text(v, "state"), Some("exited" | "failed"))
         || v.get("complete").and_then(Value::as_bool) == Some(false)
         || !healthy
         || v.get("pipeline_exit_masked").and_then(Value::as_bool) != Some(false)
@@ -782,6 +783,49 @@ mod tests {
         recovered["tool_response"]["outcome_trust"] = "reconstructed".into();
         assert!(!event(&d, &recovered, "PostToolUse", &c));
         assert_eq!(read_runs(&d.0, "task-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn tc_failed_state_records_the_exit_code() {
+        let (d, mut p, c) = setup();
+        event(&d, &p, "PreToolUse", &c);
+        p["tool_response"] = json!({"job_id":"job-1","bucket_id":"bucket-1"});
+        event(&d, &p, "PostToolUse", &c);
+        let mut failed = final_response();
+        failed["state"] = "failed".into();
+        failed["exit_code"] = 3.into();
+        let status = json!({"tool_name":format!("{TC}command_status"),"tool_use_id":"status-1",
+            "session_id":"session-1","cwd":d.0,"tool_input":{"job_id":"job-1"},"tool_response":failed});
+        // A TC job whose process failed must still be recorded as terminal
+        // with its exit code, not left pending forever.
+        assert!(event(&d, &status, "PostToolUse", &c));
+        let runs = read_runs(&d.0, "task-1").unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].command, "cargo test");
+        assert_eq!(runs[0].exit_code, Some(3));
+        let completed = records(&d.0)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r["kind"] == "completed")
+            .collect::<Vec<_>>();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0]["exit_code"], 3);
+    }
+
+    #[test]
+    fn tc_degraded_failed_state_is_not_recorded() {
+        let (d, mut p, c) = setup();
+        event(&d, &p, "PreToolUse", &c);
+        p["tool_response"] = json!({"job_id":"job-1","bucket_id":"bucket-1"});
+        event(&d, &p, "PostToolUse", &c);
+        let mut degraded = final_response();
+        degraded["state"] = "failed".into();
+        degraded["exit_code"] = 3.into();
+        degraded["degraded"] = true.into();
+        let status = json!({"tool_name":format!("{TC}command_status"),"tool_use_id":"status-1",
+            "session_id":"session-1","cwd":d.0,"tool_input":{"job_id":"job-1"},"tool_response":degraded});
+        assert!(!event(&d, &status, "PostToolUse", &c));
+        assert!(read_runs(&d.0, "task-1").unwrap().is_empty());
     }
 
     #[test]
