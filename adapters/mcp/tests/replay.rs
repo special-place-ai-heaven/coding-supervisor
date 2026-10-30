@@ -451,3 +451,20 @@ fn task_state_returns_the_criteria_table() {
         .collect();
     assert_eq!(task_state(&s)["criteria"], json!(expected));
 }
+
+#[test]
+fn completed_task_state_reports_recorded_receipts() {
+    let d = dir("recorded");
+    let s = server(&d);
+    started(&s);
+    for c in ["C1", "C2", "C3", "C4"] {
+        pass(&s, c);
+    }
+    assert_eq!(state(&ok(&s, "accept_try", json!({}))), "ready_for_review");
+    assert_eq!(state(&ok(&s, "task_complete", json!({}))), "completed");
+    let now = task_state(&s);
+    assert_eq!(state(&now), "completed");
+    for c in ["C1", "C2", "C3", "C4"] {
+        assert_eq!(now["receipts"][c], "recorded", "{c}: {}", now["receipts"]);
+    }
+}

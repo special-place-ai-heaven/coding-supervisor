@@ -1342,7 +1342,31 @@ impl Session {
     /// Receipt status per criterion, read without any transition.
     fn summary(&self) -> String {
         let (mut current, mut stale, mut missing) = (Vec::new(), Vec::new(), Vec::new());
+        let cp = self.task.checkpoint();
+        // Repair: restore() skips receipt replay for terminal states, so after a resume the
+        // persisted gate receipts are the only evidence the summary can still report.
+        let recorded: Vec<&str> = if cp.state.is_terminal() {
+            cp.candidate
+                .map(|candidate| {
+                    self.criteria
+                        .iter()
+                        .filter(|c| {
+                            self.gate
+                                .receipts
+                                .iter()
+                                .any(|r| r.criterion == c.id && r.candidate == candidate)
+                        })
+                        .map(|c| c.id.0.as_str())
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         for c in &self.criteria {
+            if recorded.contains(&c.id.0.as_str()) {
+                continue;
+            }
             match self.task.receipt_status(&c.id) {
                 Some(ReceiptStatus::Current) => current.push(c.id.0.as_str()),
                 Some(ReceiptStatus::Stale) => stale.push(c.id.0.as_str()),
@@ -1361,11 +1385,12 @@ impl Session {
             format!("not accepted (state {})", state_name(state))
         };
         format!(
-            "GATE: state {}; current receipts: [{}]; missing: [{}]; stale: [{}]; decision: {decision}",
+            "GATE: state {}; current receipts: [{}]; missing: [{}]; stale: [{}]; recorded: [{}]; decision: {decision}",
             state_name(state),
             current.join(", "),
             missing.join(", "),
-            stale.join(", ")
+            stale.join(", "),
+            recorded.join(", ")
         )
     }
 }

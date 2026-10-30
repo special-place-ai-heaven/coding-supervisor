@@ -418,7 +418,7 @@ fn replay_a20_resume_keeps_state_continuations_candidate_and_receipts() {
     );
     assert_eq!(
         context(&r),
-        "GATE: state verifying; current receipts: [C1, C2, C3]; missing: [C4]; stale: []; decision: not accepted (missing C4)"
+        "GATE: state verifying; current receipts: [C1, C2, C3]; missing: [C4]; stale: []; recorded: []; decision: not accepted (missing C4)"
     );
     let g = gate(&env);
     assert_eq!(g["state"], "verifying");
@@ -449,6 +449,26 @@ fn replay_c1_c4_all_four_checks_needed_then_completion_allowed() {
     assert_eq!(
         r.to_json().unwrap(),
         json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "GATE: Write refused: task is completed"}})
+    );
+}
+
+#[test]
+fn completed_gate_reports_recorded_receipts() {
+    let d = dir("recorded");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    assert_eq!(worker(&mut env, "w1", "PASS", &ALL4), Decision::None);
+    assert_eq!(
+        handle(&stop("All checks pass.", false), &mut env),
+        Decision::None
+    );
+    assert_eq!(gate(&env)["state"], "completed");
+    let r = handle(
+        &template(FOREGROUND, "PostToolUse", Some("Agent")),
+        &mut env,
+    );
+    assert_eq!(
+        context(&r),
+        "GATE: state completed; current receipts: []; missing: []; stale: []; recorded: [C1, C2, C3, C4]; decision: accepted"
     );
 }
 

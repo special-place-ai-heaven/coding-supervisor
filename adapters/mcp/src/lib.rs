@@ -581,13 +581,28 @@ fn describe(
 ) -> Value {
     let task = &session.task;
     let cp = task.checkpoint();
+    // Repair: after completion the resumed task no longer replays receipts, so a terminal
+    // checkpoint reports a criterion as "recorded" when the stored gate holds a receipt for
+    // it bound to the checkpoint's candidate.
     let receipts: Map<String, Value> = criteria
         .iter()
         .map(|c| {
-            let status = match task.receipt_status(&c.id) {
-                Some(ReceiptStatus::Current) => "current",
-                Some(ReceiptStatus::Stale) => "stale",
-                None => "missing",
+            let recorded = cp.state.is_terminal()
+                && cp.candidate.as_ref().is_some_and(|candidate| {
+                    session
+                        .gate
+                        .receipts
+                        .iter()
+                        .any(|r| r.criterion == c.id && &r.candidate == candidate)
+                });
+            let status = if recorded {
+                "recorded"
+            } else {
+                match task.receipt_status(&c.id) {
+                    Some(ReceiptStatus::Current) => "current",
+                    Some(ReceiptStatus::Stale) => "stale",
+                    None => "missing",
+                }
             };
             (c.id.0.clone(), status.into())
         })
