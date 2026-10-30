@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.1.0...v0.1.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* bind completion evidence to explicit task lifecycle ([6e295b2](https://github.com/special-place-ai-heaven/coding-supervisor/commit/6e295b22190550e373a3d64fbda5e55669d67061))
+
 ## 0.1.0 (2026-10-29)
 
 
