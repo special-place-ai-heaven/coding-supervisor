@@ -39,6 +39,11 @@ fn command(program: &str, args: &[&str], cwd: &Path) -> std::process::Output {
     }
     command.output().unwrap()
 }
+fn python_cmd() -> &'static str {
+    // The fixtures spawn a real interpreter; Windows installs `python`, while
+    // Linux images ship `python3` and usually no `python` launcher.
+    if cfg!(windows) { "python" } else { "python3" }
+}
 fn setup(required: &str) -> (Fixture, Env) {
     let fixture = Fixture(std::env::temp_dir().join(format!(
         "supervisor-execution-context-{}-{}",
@@ -192,7 +197,7 @@ fn harmless_root_and_nested_checks_keep_distinct_execution_context() {
             "from pathlib import Path\nPath('executed-cwd.txt').write_text(str(Path.cwd()))\n",
         )
         .unwrap();
-        let actual = command("python", &["check.py"], root);
+        let actual = command(python_cmd(), &["check.py"], root);
         assert!(actual.status.success());
         let marker = fs::read_to_string(root.join("executed-cwd.txt")).unwrap();
         assert_eq!(
