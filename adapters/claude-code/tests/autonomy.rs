@@ -70,6 +70,11 @@ impl Drop for Fixture {
 fn contract() -> Value {
     json!({"id":"ordinary-task","goal":"implement requested change","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test -p fixture"}],"forbidden_effects":["publish"],"scope":["src/"],"max_repair_rounds":2})
 }
+fn python_cmd() -> &'static str {
+    // The fixtures spawn a real interpreter; Windows installs `python`, while
+    // Linux images ship `python3` and usually no `python` launcher.
+    if cfg!(windows) { "python" } else { "python3" }
+}
 
 #[test]
 fn git_only_discovery_retains_previously_approved_custom_checks() {
@@ -496,7 +501,7 @@ fn root_success_then_nested_success_allows_observed_completion_and_rollover() {
         let mut event = json!({"hook_event_name":"PreToolUse","cwd":f.project,"session_id":"session","agent_id":"main","tool_use_id":id,
             "tool_name":"mcp__terminal_commander__run_and_watch","tool_input":{"argv":["python","check.py"],"cwd":cwd}});
         assert_eq!(handle(&event, &mut env), Decision::None);
-        let actual = execute("python", &["check.py"], cwd);
+        let actual = execute(python_cmd(), &["check.py"], cwd);
         assert!(actual.status.success());
         assert_eq!(
             PathBuf::from(fs::read_to_string(cwd.join("executed-cwd.txt")).unwrap())
@@ -642,7 +647,7 @@ fn legacy_nested_pass_receipt_and_failing_root_check_cannot_complete_or_roll_ove
     )
     .unwrap();
     fs::write(f.project.join("root_check.py"), "from pathlib import Path\nPath('root-ran.txt').write_text('failed')\nraise SystemExit(23)\n").unwrap();
-    let nested_result = execute("python", &["check.py"], &nested);
+    let nested_result = execute(python_cmd(), &["check.py"], &nested);
     assert_eq!(nested_result.status.code(), Some(0));
     assert!(nested.join("nested-passed.txt").is_file());
     let mut approved = contract();
@@ -712,7 +717,7 @@ fn legacy_nested_pass_receipt_and_failing_root_check_cannot_complete_or_roll_ove
     };
     let mut event = json!({"hook_event_name":"PreToolUse","cwd":f.project,"session_id":"session","agent_id":"main","tool_use_id":"root-failure","tool_name":"mcp__terminal_commander__run_and_watch","tool_input":{"argv":["python","root_check.py"],"cwd":f.project}});
     assert_eq!(handle(&event, &mut env), Decision::None);
-    let failed = execute("python", &["root_check.py"], &f.project);
+    let failed = execute(python_cmd(), &["root_check.py"], &f.project);
     assert_eq!(failed.status.code(), Some(23));
     assert!(f.project.join("root-ran.txt").is_file());
     event["hook_event_name"] = "PostToolUse".into();

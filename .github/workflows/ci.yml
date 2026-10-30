@@ -53,6 +53,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
 
+      # The autonomy fixtures spawn a real interpreter; Ubuntu images ship
+      # python3 but usually no `python` launcher (Windows images have one).
+      - name: Ensure python3 exists
+        run: |
+          command -v python3 || {
+            sudo apt-get update && sudo apt-get install -y python3
+          }
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -84,6 +92,14 @@ jobs:
         run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
+
+      # The autonomy fixtures spawn a real interpreter; Ubuntu images ship
+      # python3 but usually no `python` launcher (Windows images have one).
+      - name: Ensure python3 exists
+        run: |
+          command -v python3 || {
+            sudo apt-get update && sudo apt-get install -y python3
+          }
 
       - name: Check formatting
         run: cargo fmt --all -- --check
