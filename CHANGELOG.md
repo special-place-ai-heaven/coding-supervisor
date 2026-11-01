@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.2.1...v0.3.0) (2026-11-01)
+
+
+### Features
+
+* **verdict:** add supervisor verdict --require observed|asserted ([05a221e](https://github.com/special-place-ai-heaven/coding-supervisor/commit/05a221e550344559e3a5f06070c07cf2f8676ca7))
+* **verdict:** add supervisor verdict --require observed|asserted ([f4ee24f](https://github.com/special-place-ai-heaven/coding-supervisor/commit/f4ee24f6865b993c50ea63be4dc3cd5c5757fa59))
+* **verdict:** conform verdict to contract r3 ([1234161](https://github.com/special-place-ai-heaven/coding-supervisor/commit/12341612095152215542a94eb34a7aaefbdcd2e4))
+
 ## [0.2.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.2.0...v0.2.1) (2026-10-30)
 
 
