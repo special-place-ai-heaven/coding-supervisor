@@ -55,7 +55,7 @@ fn only_a_self_hosted_runner_may_skip_the_suite_without_node() {
     assert!(!skip_without_node(Some("Self-Hosted")));
 }
 
-/// The TAP summary has no failure and at least 10 passes (every OS skips one of the 11 tests: the
+/// The TAP summary has no failure and at least 11 passes (every OS skips one of the 12 tests: the
 /// signal test on Windows, the shim test elsewhere), and on Windows the shim test ran and passed.
 fn check(tap: &str, log: &str, windows: bool) {
     let count = |key: &str| -> u32 {
@@ -67,8 +67,8 @@ fn check(tap: &str, log: &str, windows: bool) {
     assert_eq!(count("fail"), 0, "{log}");
     let pass = count("pass");
     assert!(
-        pass >= 10,
-        "expected at least 10 passing tests, got {pass}\n{log}"
+        pass >= 11,
+        "expected at least 11 passing tests, got {pass}\n{log}"
     );
     if windows {
         let shim = tap
