@@ -19,7 +19,8 @@ const HUNG: Duration = Duration::from_secs(60);
 /// A `git` that records whether `STUB_GIT_PROBE` is exclusively locked, sleeps
 /// `STUB_GIT_SLEEP_MS` and then fails as outside a repository. On `rev-parse HEAD`, with
 /// `STUB_GIT_HOLD_AT_HEAD` set, it first starts a copy of itself that holds that lock for 30 s
-/// and touches `STUB_GIT_HELD` once it has it. Compiled, so Windows finds it.
+/// and touches `STUB_GIT_HELD` once it has it, then sleeps `STUB_GIT_SLEEP_AT_HEAD_MS`.
+/// Compiled, so Windows finds it.
 const STUB: &str = r#"
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -46,6 +47,8 @@ fn main() {
         while !std::path::Path::new(&held).exists() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        let ms = std::env::var("STUB_GIT_SLEEP_AT_HEAD_MS").ok().and_then(|v| v.parse().ok());
+        std::thread::sleep(std::time::Duration::from_millis(ms.unwrap_or(0)));
     }
     if let (Ok(probe), Ok(log)) = (std::env::var("STUB_GIT_PROBE"), std::env::var("STUB_GIT_LOG")) {
         let held = std::fs::File::open(&probe)
@@ -336,4 +339,155 @@ fn lock_taken_after_state_preparation_denies_and_blocks_and_records_nothing() {
             });
         }
     });
+}
+
+/// Runs one hook whose lock is taken by another process just before `observe_connection` (and
+/// whose candidate `rev-parse HEAD` then sleeps `head_sleep_ms`). Asserts that nothing under the
+/// state dir or the project changed: no journal or `events.jsonl` line, no receipt.
+fn busy_at_connection(
+    name: &str,
+    payload: fn(&Fixture) -> Value,
+    head_sleep_ms: &str,
+) -> (Value, Duration) {
+    let f = Fixture::new(name);
+    f.task_start();
+    let path = f.stub_path();
+    let root = f.state_root();
+    let lock = root.join("state.lock");
+    let held = f.root.join("held");
+    let before = (snapshot(&root), snapshot(&f.project));
+    assert!(!before.0.is_empty());
+    let (decision, elapsed) = f.hook(
+        payload(&f),
+        &[
+            ("PATH", path.as_os_str()),
+            ("STUB_GIT_HOLD_AT_HEAD", lock.as_os_str()),
+            ("STUB_GIT_HELD", held.as_os_str()),
+            ("STUB_GIT_SLEEP_AT_HEAD_MS", head_sleep_ms.as_ref()),
+        ],
+    );
+    assert!(held.exists(), "{decision}");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock)
+        .unwrap();
+    file.lock().unwrap();
+    drop(file);
+    assert_eq!(
+        (snapshot(&root), snapshot(&f.project)),
+        before,
+        "{decision}"
+    );
+    (decision, elapsed)
+}
+
+fn subagent_stop(f: &Fixture) -> Value {
+    json!({"cwd":f.project,"session_id":"session-1","hook_event_name":"SubagentStop","agent_id":"agent-1","stop_hook_active":false})
+}
+
+#[test]
+fn busy_lock_stop_and_subagentstop_block_with_no_record() {
+    thread::scope(|s| {
+        for (name, payload) in [
+            ("busy-stop", Fixture::stop as fn(&Fixture) -> Value),
+            ("busy-subagent-stop", subagent_stop),
+        ] {
+            s.spawn(move || {
+                let (decision, elapsed) = busy_at_connection(name, payload, "0");
+                assert!(blocked(&decision).contains("state is busy"), "{decision}");
+                assert!(elapsed < Duration::from_secs(25), "{elapsed:?}");
+            });
+        }
+    });
+}
+
+#[test]
+fn busy_lock_after_git_timeout_at_stop_blocks_with_no_record() {
+    // The candidate's `rev-parse HEAD` is cut off at 5 s; then the connection lock is busy.
+    let (decision, elapsed) = busy_at_connection("busy-git-stop", Fixture::stop, "600000");
+    assert!(blocked(&decision).contains("state is busy"), "{decision}");
+    assert!(elapsed < Duration::from_secs(25), "{elapsed:?}");
+}
+
+#[test]
+fn busy_lock_other_events_fail_open_unchanged() {
+    fn post_tool_use(f: &Fixture) -> Value {
+        json!({"cwd":f.project,"session_id":"session-1","hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"src/lib.rs","content":"x"},"tool_response":{"success":true}})
+    }
+    fn session_start(f: &Fixture) -> Value {
+        json!({"cwd":f.project,"session_id":"session-1","hook_event_name":"SessionStart","source":"startup"})
+    }
+    thread::scope(|s| {
+        for (name, payload) in [
+            ("busy-post-tool-use", post_tool_use as fn(&Fixture) -> Value),
+            ("busy-session-start", session_start),
+        ] {
+            s.spawn(move || {
+                let (decision, elapsed) = busy_at_connection(name, payload, "0");
+                assert_eq!(decision.as_object().map(|o| o.len()), Some(1), "{decision}");
+                let message = decision["systemMessage"].as_str().unwrap_or_default();
+                assert!(message.starts_with("GATE adapter error: "), "{decision}");
+                assert!(message.contains("state is busy"), "{decision}");
+                assert!(elapsed < Duration::from_secs(25), "{elapsed:?}");
+            });
+        }
+    });
+}
+
+/// Runs `command` to completion; fails the test if it does not answer within `bound`.
+fn bounded(mut command: Command, bound: Duration) -> (std::process::Output, Duration) {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let started = Instant::now();
+    let mut child = command.spawn().unwrap();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > bound {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{command:?} did not answer within {bound:?}");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    let elapsed = started.elapsed();
+    (child.wait_with_output().unwrap(), elapsed)
+}
+
+#[test]
+fn busy_lock_verdict_and_status_exit_1_with_no_record() {
+    let f = Fixture::new("busy-cli");
+    f.task_start();
+    let root = f.state_root();
+    let run = |command: &str| {
+        let mut c = Command::new(BIN);
+        c.env("SUPERVISOR_STATE_DIR", &f.state)
+            .args([command, "--project"])
+            .arg(&f.project);
+        bounded(c, Duration::from_secs(15))
+    };
+    // Unlocked, status succeeds and verdict does not fail with 1.
+    assert!(run("status").0.status.success());
+    assert_ne!(run("verdict").0.status.code(), Some(1));
+    let before = (snapshot(&root), snapshot(&f.project));
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("state.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    for (command, reason) in [
+        ("verdict", "state is busy"),
+        ("status", "status could not resolve project state safely"),
+    ] {
+        let (output, elapsed) = run(command);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{command}: {stderr}");
+        assert!(output.stdout.is_empty(), "{command}");
+        assert!(stderr.contains(reason), "{command}: {stderr}");
+        assert!(elapsed < Duration::from_secs(13), "{command}: {elapsed:?}");
+    }
+    drop(lock);
+    assert_eq!((snapshot(&root), snapshot(&f.project)), before);
 }
