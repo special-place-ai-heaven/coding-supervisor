@@ -5,6 +5,7 @@ mod init;
 mod install;
 mod status;
 mod task;
+mod verdict;
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ const USAGE: &str = "usage: supervisor mcp [--project <dir>]  (serve the gate as
        supervisor task rebind --task <active-id> --session <session-id> [--project <dir>]
        supervisor task migrate --legacy <directory> [--project <dir>]
        supervisor status [--project <dir>] [--harness <claude-code|codex>] [--json]
+       supervisor verdict [--project <dir>] [--task <active-id>] [--require <observed|asserted>] [--json]  (exit 0 pass, 3 requirements unmet, 1 error, 2 usage)
        supervisor install --harness <claude-code|codex|cursor|omp|grok> [--project <dir>] [--home <dir>] [--binary <path>] [--dry-run]";
 
 fn main() -> ExitCode {
@@ -55,6 +57,10 @@ fn main() -> ExitCode {
             parse_flags(rest, &["--project", "--harness"], &["--json"])
                 .and_then(|f| status::run(&f))
         }
+        Some((command, rest)) if command == "verdict" => {
+            parse_flags(rest, &["--project", "--task", "--require"], &["--json"])
+                .and_then(|f| verdict::run(&f))
+        }
         Some((command, rest)) if command == "install" => parse_flags(
             rest,
             &["--harness", "--project", "--home", "--binary"],
@@ -76,6 +82,7 @@ fn main() -> ExitCode {
             let _ = writeln!(io::stderr(), "error: {why}");
             ExitCode::from(1)
         }
+        Err(Failure::Unmet) => ExitCode::from(verdict::EXIT_UNMET),
     }
 }
 
@@ -99,6 +106,8 @@ pub enum Failure {
     Usage(String),
     /// The command could not do its work: exit 1, nothing further written.
     Error(String),
+    /// `verdict` answered and its answer is fail: exit 3, the verdict already written.
+    Unmet,
 }
 
 /// Parsed `--name value` options and bare `--switch` flags.

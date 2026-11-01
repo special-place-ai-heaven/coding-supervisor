@@ -103,6 +103,18 @@ The MCP server adds `intent_record` and `intent_apply` to the existing eight too
 `repair_request`, `accept_try`, `task_complete` and `task_state`. MCP receipts and
 intent registration remain caller-asserted; MCP responses do not block the harness.
 
+`supervisor verdict [--project <dir>] [--task <active-id>] [--require observed|asserted] [--json]`
+recomputes the active task's result from its receipts, the hook run journal and the
+live git HEAD; it never reads the stored gate state. Each criterion is reported as
+`observed`, `asserted_not_observed`, `unverified`, `failed`, `stale` or `missing`.
+Only a receipt backed by a hook-observed run counts as observed; an MCP receipt is
+`asserted_not_observed`, and a receipt with neither is `unverified`. A receipt recorded
+at another HEAD or before a worktree edit is `stale`. `--require observed` (the default)
+passes only when every mandatory criterion is observed; `--require asserted` also
+accepts asserted receipts and lists them under `flags`. An undeterminable HEAD is
+reported as `null` with a reason and fails. Exit codes: 0 pass, 3 requirements unmet,
+1 error, 2 usage.
+
 For Terminal Commander jobs, use an explicit absolute working directory, preserve argument boundaries and retrieve the final status of the same job. Dispatch binds task, candidate and cwd; changes during execution can make evidence stale. After a daemon restart, reconstructed status can support recovery only with persisted matching dispatch and durable process-completion evidence. It is labeled `tc-reconstructed`, separately from live observations. Missing linkage, masked pipelines and old records without current provenance require investigation or a fresh check. See [recovery details](docs/research/2026-10-30-dogfood-rollout/OPERATIONS.md#durable-jobs-and-crash-recovery) and [repair evidence](docs/research/2026-10-30-dogfood-rollout/REPAIR-RESULTS.md).
 
 ## Harness support
