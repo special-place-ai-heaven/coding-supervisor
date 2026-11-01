@@ -97,13 +97,13 @@ impl Env {
         let lookup = |name: &str| std::env::var(name).ok();
         let config_dir = level::config_dir(&lookup);
         let read_only = location::resolve_state_dir_read_only(cwd, &lookup);
-        let (level, error) = match read_only
+        let (level, source, error) = match read_only
             .as_ref()
             .map_err(String::clone)
             .and_then(|(root, _)| level::effective(root, config_dir.as_deref()))
         {
-            Ok((level, _)) => (level, None),
-            Err(why) => (Level::Full, Some(why)),
+            Ok((level, source)) => (level, source, None),
+            Err(why) => (Level::Full, "unreadable", Some(why)),
         };
         // At `off` nothing is written, so the state root is located without being created.
         let (state_dir, state_location) = match read_only {
@@ -119,6 +119,7 @@ impl Env {
             clock: now,
             level: level::Setting {
                 level,
+                source,
                 config_dir,
                 error,
             },
@@ -551,7 +552,11 @@ fn handle_inner(payload: &Value, env: &mut Env) -> Decision {
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let agent = text(payload, "agent_id").unwrap_or("main");
     let mut reasons: Vec<String> = env.level.error.iter().cloned().collect();
-    let mut trace = Trace::default();
+    let mut trace = Trace {
+        level: Some(env.level.level),
+        level_source: Some(env.level.source),
+        ..Trace::default()
+    };
     let decision =
         process(payload, env, event, agent, &mut reasons, &mut trace).unwrap_or_else(|what| {
             reasons.push(format!("adapter error: {what}"));
@@ -718,6 +723,7 @@ fn project_relative(project: &str, path: &Path) -> Option<String> {
     let text = resolved.to_string_lossy().replace('\\', "/");
     let text = text.strip_prefix("//?/").unwrap_or(&text);
     let head = text.get(..project.len())?;
+    // `canonical_project` is already lower-case on Windows.
     let same = if cfg!(windows) {
         head.to_lowercase() == project
     } else {

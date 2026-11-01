@@ -4,9 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use supervisor_claude_code::lifecycle;
 use supervisor_claude_code::location::{canonical_project, resolve_state_dir_checked};
 use supervisor_claude_code::state::{Stored, load_gate, read_contract, state_name};
+use supervisor_claude_code::{level, lifecycle};
 
 use crate::{Failure, Flags};
 
@@ -321,13 +321,17 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
     })
     .map(|(_, label)| label)
     .collect();
+    let (effective, level_source) = level::in_effect(
+        root,
+        level::config_dir(&|key| std::env::var(key).ok()).as_deref(),
+    );
     json!({
         "schema_version":1,"harness":harness,"project":project,"project_state":root,"location_rule":rule,
         "reporting_binary":{"path":std::env::current_exe().ok(),"version":env!("CARGO_PKG_VERSION"),"running":true},
         "registration":configuration(project,harness),"hooks":hooks,
         "connection":connection(root,harness),
         "action_policy":supervisor_claude_code::policy::configuration_status(root),
-        "task":active,"mode":mode,"receipt_provenance":provenance,
+        "task":active,"mode":mode,"effective_level":effective.name(),"level_source":level_source,"receipt_provenance":provenance,
         "coverage":{"completion":completion,"basis":"supported unrestricted project hook configuration; adapter fixtures and recorded Claude 2.1.312 trials; global settings and current model loading unproven","action_policy":"configured simple commands and exact tools only; see COVERAGE.md","same_user_security_boundary":false}
     })
 }
@@ -378,7 +382,7 @@ fn human(report: &Value) -> String {
         })
         .unwrap_or_else(|| "unknown".to_owned());
     format!(
-        "supervisor {} ({})\nharness: {}\nproject: {}\nregistration: {} (configured binary: {}; configured version: {})\nconnection: {}; model session loaded: {}\ntask: {} (gate: {}; id: {})\nmode: {}\nreceipts: {} observed; {} reconstructed; {} asserted; {} unverified\ncompletion coverage: {}\nbasis: {}\naction policy: {}\ncoverage: {}; same-user security boundary: false",
+        "supervisor {} ({})\nharness: {}\nproject: {}\nregistration: {} (configured binary: {}; configured version: {})\nconnection: {}; model session loaded: {}\ntask: {} (gate: {}; id: {})\nmode: {}\nlevel: {} ({})\nreceipts: {} observed; {} reconstructed; {} asserted; {} unverified\ncompletion coverage: {}\nbasis: {}\naction policy: {}\ncoverage: {}; same-user security boundary: false",
         s("/reporting_binary/version"),
         s("/reporting_binary/path"),
         s("/harness"),
@@ -395,6 +399,8 @@ fn human(report: &Value) -> String {
         s("/task/gate_state"),
         s("/task/task_id"),
         s("/mode"),
+        s("/effective_level"),
+        s("/level_source"),
         count("/receipt_provenance/observed"),
         count("/receipt_provenance/reconstructed"),
         count("/receipt_provenance/asserted"),

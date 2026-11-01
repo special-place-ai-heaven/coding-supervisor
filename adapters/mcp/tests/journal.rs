@@ -7,6 +7,7 @@ use std::fs;
 use common::{GOAL, dir, ok, pass, receipt, refused, server, started};
 use serde_json::{Value, json};
 use supervisor_claude_code::measure::collect;
+use supervisor_mcp::Server;
 
 #[test]
 fn every_call_is_one_v1_line_without_goal_text_and_measure_reads_it() {
@@ -86,4 +87,42 @@ fn every_call_is_one_v1_line_without_goal_text_and_measure_reads_it() {
     assert_eq!(stats.accepted_mcp, 1);
     assert_eq!(stats.recorded, 4);
     assert_eq!(stats.refusals, 0, "advisory answers are not refusals");
+}
+
+#[test]
+fn every_line_stamps_the_effective_level_and_its_source() {
+    let d = dir("journal-level");
+    let state = d.0.join("state").to_string_lossy().into_owned();
+    let config = d.0.join("config");
+    let config_dir = config.to_string_lossy().into_owned();
+    let s = Server::new(&d.0.join("project"), &move |name| match name {
+        "SUPERVISOR_STATE_DIR" => Some(state.clone()),
+        "SUPERVISOR_CONFIG_DIR" => Some(config_dir.clone()),
+        _ => None,
+    });
+    started(&s);
+    fs::create_dir_all(&config).unwrap();
+    fs::write(config.join("level"), "lite\n").unwrap();
+    ok(&s, "task_state", json!({}));
+    fs::write(s.state_dir().join("level"), "off\n").unwrap();
+    ok(&s, "task_state", json!({}));
+    fs::write(s.state_dir().join("level"), "nope\n").unwrap();
+    ok(&s, "task_state", json!({}));
+
+    let text = fs::read_to_string(s.task_dir().unwrap().join("events.jsonl")).unwrap();
+    let stamps: Vec<(Value, Value)> = text
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .map(|l| (l["effective_level"].clone(), l["level_source"].clone()))
+        .collect();
+    assert_eq!(
+        stamps,
+        [
+            (json!("full"), json!("default")),
+            (json!("full"), json!("default")),
+            (json!("lite"), json!("global")),
+            (json!("off"), json!("project")),
+            (json!("full"), json!("unreadable")),
+        ]
+    );
 }

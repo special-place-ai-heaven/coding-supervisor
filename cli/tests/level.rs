@@ -99,8 +99,11 @@ impl Fixture {
     }
     /// An explicitly started task whose scope is `src/` and whose one criterion has no receipt.
     fn start_task(&self) -> PathBuf {
+        self.start_scoped(json!(["src/"]))
+    }
+    fn start_scoped(&self, scope: Value) -> PathBuf {
         let contract = self.root.join("contract.json");
-        fs::write(&contract, json!({"id":"level-fixture","goal":"exercise levels","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test"}],"scope":["src/"],"forbidden_effects":[],"max_repair_rounds":2}).to_string()).unwrap();
+        fs::write(&contract, json!({"id":"level-fixture","goal":"exercise levels","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test"}],"scope":scope,"forbidden_effects":[],"max_repair_rounds":2}).to_string()).unwrap();
         let out = self.supervisor(&[
             "task",
             "start",
@@ -147,6 +150,16 @@ impl Fixture {
     fn tool(&self, id: &str, tool: &str, input: Value) -> Value {
         self.hook(json!({"hook_event_name":"PreToolUse","tool_use_id":id,"tool_name":tool,"tool_input":input}))
     }
+    /// `supervisor <command> --json` for the project; its exit code is not asserted.
+    fn report(&self, command: &str) -> Value {
+        let out = self.supervisor(&[
+            command,
+            "--json",
+            "--project",
+            self.project.to_str().unwrap(),
+        ]);
+        serde_json::from_str(stdout(&out)).unwrap_or_else(|e| panic!("{command}: {e}: {out:?}"))
+    }
 }
 
 fn stdout(out: &Output) -> &str {
@@ -154,6 +167,26 @@ fn stdout(out: &Output) -> &str {
 }
 fn denied(decision: &Value) -> bool {
     decision["hookSpecificOutput"]["permissionDecision"] == "deny"
+}
+fn decision_kind(v: &Value) -> &'static str {
+    if denied(v) {
+        "deny"
+    } else if v["decision"] == "block" {
+        "block"
+    } else if v.get("systemMessage").is_some() {
+        "system"
+    } else if v.is_null() {
+        "none"
+    } else {
+        "other"
+    }
+}
+fn events(task: &std::path::Path) -> Vec<Value> {
+    fs::read_to_string(task.join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
 }
 fn continuations(task: &std::path::Path) -> Value {
     let gate: Value =
@@ -344,4 +377,293 @@ fn unreadable_level_file_runs_the_hook_at_full_and_journals_why() {
     assert_eq!(stop["decision"], "block", "{stop}");
     let events = fs::read_to_string(task.join("events.jsonl")).unwrap();
     assert!(events.contains("unknown level \\\"off-ish\\\""), "{events}");
+}
+
+#[test]
+fn agents_cannot_change_the_level_at_lite_or_off() {
+    for word in ["lite", "off"] {
+        let f = Fixture::new(&format!("kguard-{word}"));
+        f.start_task();
+        f.set(&[word]);
+        let attempts = [
+            ("Bash", json!({"command":"supervisor level full"})),
+            (
+                "Write",
+                json!({"file_path":f.config.join("level"),"content":"off"}),
+            ),
+        ];
+        for (i, (tool, input)) in attempts.into_iter().enumerate() {
+            let decision = f.tool(&format!("t{i}"), tool, input.clone());
+            assert!(denied(&decision), "at {word}: {tool} {input}: {decision}");
+        }
+    }
+}
+
+#[test]
+fn showing_the_level_creates_no_state() {
+    let f = Fixture::new("kshow");
+    let out = f.level(&[]);
+    assert_eq!(
+        (out.status.code(), stdout(&out)),
+        (Some(0), "level: full (default)\n")
+    );
+    assert!(!f.state.exists(), "show created {}", f.state.display());
+}
+
+#[test]
+fn lite_reports_a_pretooluse_refusal_instead_of_denying_it() {
+    let f = Fixture::new("klitepre");
+    let _ = f.hook(json!({"hook_event_name":"UserPromptSubmit","prompt":"change the code"}));
+    let write = json!({"file_path":f.project.join("README"),"content":"x"});
+    let full = f.tool("t1", "Write", write.clone());
+    assert!(denied(&full), "control at full: {full}");
+    f.set(&["lite"]);
+    let lite = f.tool("t2", "Write", write);
+    assert_eq!(decision_kind(&lite), "system", "{lite}");
+}
+
+#[test]
+fn lite_reports_every_handback_refusal_without_counting_it() {
+    let f = Fixture::new("klitesub");
+    let task = f.start_task();
+    f.set(&["lite"]);
+    let handback = json!({"hook_event_name":"SubagentStop","agent_id":"w1","agent_type":"worker","last_assistant_message":"done","stop_hook_active":false});
+    for round in 1..=2 {
+        let lite = f.hook(handback.clone());
+        assert_eq!(decision_kind(&lite), "system", "round {round}: {lite}");
+    }
+    let gate: Value =
+        serde_json::from_str(&fs::read_to_string(task.join("gate.json")).unwrap()).unwrap();
+    assert!(gate["handback_refusals"].get("w1").is_none(), "{gate}");
+}
+
+#[test]
+fn ultra_file_scope_is_exact_not_a_prefix() {
+    let f = Fixture::new("kultrafile");
+    f.start_scoped(json!(["src/lib.rs"]));
+    f.set(&["ultra"]);
+    let inside = f.tool(
+        "t1",
+        "Write",
+        json!({"file_path":"src/lib.rs","content":"x"}),
+    );
+    assert!(!denied(&inside), "{inside}");
+    let sibling = f.tool(
+        "t2",
+        "Write",
+        json!({"file_path":"src/lib.rs.bak","content":"x"}),
+    );
+    assert!(denied(&sibling), "{sibling}");
+}
+
+#[test]
+fn every_record_stamps_the_effective_level_and_its_source() {
+    let f = Fixture::new("stamp");
+    let task = f.start_task();
+    let assert_stamped = |level: &str, source: &str| {
+        let before = fs::read_to_string(task.join("events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .count();
+        f.stop();
+        let lines = events(&task);
+        if level == "off" {
+            assert_eq!(lines.len(), before, "off journals nothing");
+        } else {
+            let last = &lines[lines.len() - 1];
+            assert_eq!(
+                (&last["effective_level"], &last["level_source"]),
+                (&json!(level), &json!(source)),
+                "{last}"
+            );
+        }
+        let verdict = f.report("verdict");
+        assert_eq!(
+            (&verdict["effective_level"], &verdict["level_source"]),
+            (&json!(level), &json!(source)),
+            "{verdict}"
+        );
+        let status = f.report("status");
+        assert_eq!(
+            (&status["effective_level"], &status["level_source"]),
+            (&json!(level), &json!(source)),
+            "{status}"
+        );
+        assert_eq!(status["schema_version"], 1);
+    };
+    assert_stamped("full", "default");
+    fs::create_dir_all(&f.config).unwrap();
+    fs::write(f.config.join("level"), "lite\n").unwrap();
+    assert_stamped("lite", "global");
+    f.set(&["ultra"]);
+    assert_stamped("ultra", "project");
+    f.set(&["off"]);
+    assert_stamped("off", "project");
+    // An unreadable file falls back to `full`, never to `off` or `lite`: not to the project's
+    // previous `off`, not to the global `lite` beneath it, and not from an unreadable global.
+    let project = f.state_root().join("level");
+    fs::write(&project, "nope\n").unwrap();
+    assert_stamped("full", "unreadable");
+    fs::remove_file(&project).unwrap();
+    fs::write(f.config.join("level"), "nope\n").unwrap();
+    assert_stamped("full", "unreadable");
+}
+
+/// Every file under `dir`, with its bytes.
+fn snapshot(dir: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                out.push((p.clone(), fs::read(&p).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn stop_at_off_writes_no_observed_receipt() {
+    let f = Fixture::new("offreceipt");
+    let task = f.start_task();
+    // An agent runs the mandatory check and claims it, then stops.
+    let run_and_claim = |id: &str| {
+        let _ = f.tool(id, "Bash", json!({"command":"cargo test"}));
+        let _ = f.hook(json!({"hook_event_name":"PostToolUse","tool_use_id":id,"tool_name":"Bash",
+            "tool_input":{"command":"cargo test"},"tool_response":{"stdout":"ok","stderr":"","interrupted":false}}));
+        f.hook(json!({"hook_event_name":"Stop","stop_hook_active":false,
+            "last_assistant_message":"VERDICT: PASS\nCHECKS RUN: 1\nCHECK C2 | cargo test | exit 0"}))
+    };
+    let c2 = |verdict: &Value| {
+        verdict["criteria"]
+            .as_array()
+            .and_then(|c| c.iter().find(|c| c["id"] == "C2"))
+            .cloned()
+            .unwrap_or_else(|| panic!("{verdict}"))
+    };
+    f.set(&["off"]);
+    let before = snapshot(&f.state);
+    let stop = run_and_claim("t1");
+    assert_eq!(stop, Value::Null, "off answers nothing: {stop}");
+    // Off writes nothing: no receipt in gate.json, no line in events.jsonl, no run record.
+    assert_eq!(
+        snapshot(&f.state),
+        before,
+        "off changed the state directory"
+    );
+    assert!(!task.join("runs.jsonl").exists(), "off wrote a run record");
+    // The consumer gate sees C2 as missing: neither asserted nor observed.
+    let verdict = f.report("verdict");
+    let off = c2(&verdict);
+    assert!(off["receipt"].is_null(), "{verdict}");
+    assert!(
+        !matches!(off["state"].as_str(), Some("observed" | "asserted")),
+        "{verdict}"
+    );
+    assert_ne!(verdict["verdict"], "pass", "{verdict}");
+    // The same run and claim at full is observed, so the payloads above are ones the hook certifies.
+    f.set(&["full"]);
+    let _ = run_and_claim("t2");
+    let verdict = f.report("verdict");
+    assert_eq!(c2(&verdict)["state"], "observed", "{verdict}");
+}
+
+fn journal_lines(task: &std::path::Path) -> usize {
+    fs::read_to_string(task.join("events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+/// Every entry under `dir`, directories included, with the bytes of each file.
+fn tree(dir: &std::path::Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                out.push((p.clone(), None));
+                stack.push(p);
+            } else {
+                out.push((p.clone(), Some(fs::read(&p).unwrap())));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn unresolvable_state_root_refuses_with_no_record() {
+    let f = Fixture::new("unresolvable");
+    let task = f.start_task();
+    let root = f.state_root();
+    let project = f.project.to_str().unwrap();
+    // Control: with a resolvable root the same Stop is refused and journalled, and verdict and
+    // status answer, so the assertions below are not true of a fixture that records nothing.
+    let before = journal_lines(&task);
+    let stop = f.stop();
+    assert_eq!(stop["decision"], "block", "control: {stop}");
+    assert_eq!(journal_lines(&task), before + 1, "control: Stop journals");
+    let verdict = f.supervisor(&["verdict", "--json", "--project", project]);
+    assert!(
+        serde_json::from_str::<Value>(stdout(&verdict)).is_ok(),
+        "control: {verdict:?}"
+    );
+    for args in [
+        &["status", "--project", project][..],
+        &["status", "--json", "--project", project],
+    ] {
+        let status = f.supervisor(args);
+        assert!(status.status.success(), "control: {args:?}: {status:?}");
+    }
+    // The state root now names another worktree, so it cannot be resolved for this project.
+    fs::write(
+        root.join("project.json"),
+        format!(
+            "{}\n",
+            json!({"schema":2,"canonical_worktree":"/elsewhere"})
+        ),
+    )
+    .unwrap();
+    let state = tree(&f.state);
+    let lines = journal_lines(&task);
+    let stop = f.stop();
+    assert_eq!(stop["decision"], "block", "{stop}");
+    assert!(
+        stop["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("state unavailable"),
+        "{stop}"
+    );
+    let verdict = f.supervisor(&["verdict", "--json", "--project", project]);
+    assert_eq!(
+        (verdict.status.code(), stdout(&verdict)),
+        (Some(1), ""),
+        "{verdict:?}"
+    );
+    for args in [
+        &["status", "--project", project][..],
+        &["status", "--json", "--project", project],
+    ] {
+        let status = f.supervisor(args);
+        assert!(!status.status.success(), "{args:?}: {status:?}");
+    }
+    // No record anywhere: no journal line, the state tree byte-identical, no fallback state.
+    assert_eq!(journal_lines(&task), lines, "refusal journalled");
+    assert!(
+        tree(&f.state) == state,
+        "refusal changed the state directory"
+    );
+    assert!(
+        !f.project.join(".supervisor").exists(),
+        "fallback state created"
+    );
 }

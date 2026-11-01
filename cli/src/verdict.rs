@@ -11,6 +11,7 @@ use coding_supervisor::{CandidateId, Criterion, VerificationReceipt};
 use serde_json::{Value, json};
 use supervisor_claude_code::adapter::{MCP_ASSERTED, receipts_observed};
 use supervisor_claude_code::candidate::{GitCandidate, Unobserved};
+use supervisor_claude_code::level::{self, Level};
 use supervisor_claude_code::lifecycle;
 use supervisor_claude_code::location::{canonical_project, resolve_state_dir_read_only};
 use supervisor_claude_code::state::{Stored, load_gate, read_contract};
@@ -251,6 +252,7 @@ fn report(
     head: &Head,
     require: Require,
     verdicts: &[CriterionVerdict<'_>],
+    (effective, level_source): (Level, &str),
 ) -> (Value, u8) {
     let mut unmet = Vec::new();
     let mut flags = Vec::new();
@@ -306,6 +308,8 @@ fn report(
         "reason": reason,
         "exit_code": exit_code,
         "require": require.code(),
+        "effective_level": effective.name(),
+        "level_source": level_source,
         "task": task.map(|t| json!({
             "task_id": t.task_id,
             "contract_id": t.contract_id,
@@ -425,10 +429,12 @@ fn human(report: &Value) -> String {
 pub fn run(flags: &Flags) -> Result<(), Failure> {
     let require = Require::parse(flags.value("--require"))?;
     let project = PathBuf::from(canonical_project(&flags.project()?));
-    let (root, _) = resolve_state_dir_read_only(&project, &|key| std::env::var(key).ok())
+    let env = |key: &str| std::env::var(key).ok();
+    let (root, _) = resolve_state_dir_read_only(&project, &env)
         .map_err(|e| Failure::Error(format!("verdict: project state unusable: {e}")))?;
     let _lock = read_lock(&root)
         .map_err(|e| Failure::Error(format!("verdict: project state not readable: {e}")))?;
+    let stamp = level::in_effect(&root, level::config_dir(&env).as_deref());
     // One HEAD snapshot, taken before any receipt is read, is what every receipt is judged by.
     let head = observe_head(&project);
     let task = lifecycle::active_task(&root)
@@ -441,7 +447,7 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         ));
     }
     let (value, exit_code) = match task {
-        None => report(None, &head, require, &[]),
+        None => report(None, &head, require, &[], stamp),
         Some(task) => {
             let (contract, digest) = read_contract(&task.dir).map_err(|e| {
                 Failure::Error(format!("verdict: active contract unavailable: {e}"))
@@ -479,7 +485,7 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
                 contract_id: &contract.id.0,
                 contract_digest: &digest,
             };
-            report(Some(&task_ref), &head, require, &verdicts)
+            report(Some(&task_ref), &head, require, &verdicts, stamp)
         }
     };
     if flags.switch("--json") {

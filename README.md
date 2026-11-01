@@ -137,6 +137,7 @@ none:
 
 ```json
 {"schema_version":1,"verdict":"fail","reason":"mandatory_unmet","exit_code":3,"require":"observed",
+ "effective_level":"full","level_source":"default",
  "task":{"task_id":"task-…","contract_id":"probe","contract_digest":"<64 hex>"},
  "head":{"sha":"<40 hex>","dirty_digest":"<64 hex>","reason":null},
  "criteria":[{"id":"C1","mandatory":true,"state":"asserted_not_observed","reason":null,"provenance":"mcp",
@@ -156,6 +157,7 @@ none:
 | `criteria[].reason` | `failed`: `exit_nonzero`, `no_exit_code` or `claim_unsupported`; `unverified`: `no_observation_record`; `stale`: `receipt_at_other_head`, `worktree_changed` or `head_unknown`; otherwise `null` |
 | `criteria[].receipt` | the deciding receipt, `null` when missing; `recorded_at` is RFC 3339 UTC with milliseconds |
 | `unmet`, `flags` | mandatory criteria not satisfied, and every `asserted_not_observed` criterion, in contract order |
+| `effective_level`, `level_source` | the hook's level and its source, read when the verdict runs; see [Levels](#levels) |
 
 Without `--json` the same result is printed as one `<id>: ` line per criterion and a
 final `verdict: pass (` or `verdict: fail (` line; only those prefixes are stable.
@@ -192,14 +194,18 @@ Harness hook capabilities and a supervisor adapter are separate questions. A con
 
 ## Levels
 
-`supervisor level [off|lite|full|ultra] [--project <dir>] [--global]` shows the effective level (`level: <name> (project|global|default)`) or writes one (`level <name> written (project|global): <path>`). Exit 0 done, 1 error (for example an unreadable `level` file), 2 usage. A `level` file in the project's state directory beats the global one in `SUPERVISOR_CONFIG_DIR`, else `%APPDATA%\coding-supervisor` on Windows, else `$XDG_CONFIG_HOME/coding-supervisor`, else `~/.config/coding-supervisor`; the default is `full`. The Claude Code hook reads it on every call:
+`supervisor level [off|lite|full|ultra] [--project <dir>] [--global]` shows the effective level (`level: <name> (project|global|default)`) or writes one (`level <name> written (project|global): <path>`). Exit 0 done, 1 error (for example an unreadable `level` file), 2 usage.
+
+Precedence: **project** (a `level` file in the project's state directory) over **global** (a `level` file in `SUPERVISOR_CONFIG_DIR`, else `%APPDATA%\coding-supervisor` on Windows, else `$XDG_CONFIG_HOME/coding-supervisor`, else `~/.config/coding-supervisor`) over **default** (`full`). The Claude Code hook reads it on every call:
 
 - `off`: nothing is judged or written; PreToolUse still denies writes to the gate's state and configured action-policy violations.
 - `lite`: judged as `full`, but every refusal is reported as a system message instead of blocking, and stop refusals do not count toward the refusal caps.
 - `full`: the gate as described above.
-- `ultra`: `full`, plus PreToolUse denies a `Write`, `Edit`, `MultiEdit` or `NotebookEdit` outside the active task's contract scope, under the same rule completion applies to changed paths.
+- `ultra`: `full`, plus PreToolUse denies a `Write`, `Edit`, `MultiEdit` or `NotebookEdit` outside the active task's contract scope, under the same rule completion applies to changed paths. This scope check covers those edit tools only: a shell command (`Bash`, `PowerShell`, Terminal Commander) or another MCP tool that writes outside the scope is not checked before it runs.
 
-An unreadable `level` file runs the hook at `full` and journals why. The hook denies agent tool calls that write either `level` file or run `supervisor level <level>`; this is the same text-matching guard as for the gate's state, with the same same-user limits. `off` and `lite` are user-chosen bypasses of enforcement.
+An unreadable `level` file runs the hook at `full` and journals why.
+
+Every events.jsonl line, from the hook and from the MCP server, carries `effective_level` (the level the call ran at) and `level_source` (`project`, `global`, `default` or `unreadable`). `supervisor verdict --json` and `supervisor status --json` carry the same two keys, and status prints a `level: <name> (<source>)` line in its text output. When a `level` file is unreadable, the level is `full`, never `off` or `lite`, and the source is `unreadable`. At `off` the hook writes nothing: no journal line, no run record and no receipt, so a check run or claimed at `off` never counts as observed. The verdict and status are where `off` shows. These keys are additive; `schema_version` and the journal's `v` stay 1, and they are not part of the gate.json hash chain. The hook denies agent tool calls that write either `level` file or run `supervisor level <level>`; this is the same text-matching guard as for the gate's state, with the same same-user limits. `off` and `lite` are user-chosen bypasses of enforcement.
 
 ## Optional action policy
 
