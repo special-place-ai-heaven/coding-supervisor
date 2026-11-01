@@ -25,6 +25,43 @@ supervisor status --project <project> --harness claude-code
 
 Replace `claude-code` with `codex`, `cursor`, `omp` or `grok` for installation. Follow the manual trust or approval steps printed by the installer. Installation registers the MCP server and two skills; only Claude Code receives supervisor hooks. It does not activate a task. The installer does not stop other processes; if a file is held open, close the harness session and retry. A malformed configuration is not rewritten.
 
+### Claude Code plugin
+
+Instead of hook entries in `.claude/settings.json`, Claude Code can take the gate's hooks from this repository's plugin. The plugin still needs the npm package, because its hook runs `supervisor` from `PATH`, and it declares no MCP server, so `supervisor install` stays the MCP registrar:
+
+```sh
+npm install -g coding-supervisor
+claude plugin marketplace add special-place-ai-heaven/coding-supervisor
+claude plugin install coding-supervisor@coding-supervisor
+supervisor install --harness claude-code --project <project>
+```
+
+When `enabledPlugins` has `coding-supervisor@coding-supervisor: true` in the most specific settings file that names it (the project's `.claude/settings.local.json`, then `.claude/settings.json`, then `~/.claude/settings.json`), install prints `the coding-supervisor@coding-supervisor plugin is enabled and runs the hooks: no hook entry is written, and any written earlier is removed`. It then writes no hook entry and removes the gate's earlier ones, so no event runs the gate twice. It still writes the MCP server, the `mcp__supervisor` allow rule and the skills. `supervisor status` reads hooks from the project's settings files only, so it reports plugin hooks as `not_configured`.
+
+The plugin adds hooks only, with no MCP server, command, agent, skill or executable, so it offers no way to change the [level](#levels); the level applies as with install's hooks. It registers `node hooks/supervisor-hook.js` on the same six events as install, with no matcher and a 30-second timeout. The script passes the payload to `supervisor hook` and its stdout back unchanged.
+
+The script looks `supervisor` up in the absolute `PATH` entries only, trying each `PATHEXT` extension in order on Windows. Empty and relative entries, which mean the current directory, are skipped, so a `supervisor` or `supervisor.cmd` written in the project is never run. A `.cmd` or `.bat` (npm's shim on Windows) is started as `cmd.exe /d /s /c` with its quoted absolute path; anything else is started with no shell. The child gets `NoDefaultCurrentDirectoryInExePath=1`, so cmd.exe, including the shim's own `node`, does not run programs from the current directory either.
+
+When the gate cannot answer, the script does the following:
+
+| Failure | PreToolUse, Stop, SubagentStop, or a payload with no `hook_event_name` | Stop or SubagentStop with `"stop_hook_active": true` | UserPromptSubmit, PostToolUse, PostToolUseFailure |
+|---|---|---|---|
+| `supervisor` cannot be started from `PATH`, exits non-zero, is killed, gives no answer within 20 seconds, or prints anything other than one JSON object, or the script itself fails | Exit 2, stdout empty, stderr `coding-supervisor: <event> refused, the gate fails closed: <reason>.` Claude Code refuses the tool call or keeps the turn going. | Exit 0, stdout `{"systemMessage":"coding-supervisor: WARNING, this <event> went ahead NOT certified: <reason>. …"}`. Claude Code is already continuing from a refused stop, so this stop ends the turn instead of looping. The task has no receipt. | Exit 0, stdout `{"systemMessage":"coding-supervisor: <event> went ahead unjudged: <reason>."}`. The prompt or tool result goes ahead and the user sees the message. |
+
+PreToolUse also sets `"onFailure": "block"` (Claude Code 2.1.295 or later), so a hook that does not start or exceeds its 30-second timeout still refuses the tool call. Claude Code ignores `onFailure` on Stop and SubagentStop, so a Stop hook that exceeds its own timeout records nothing and does not block. The resulting missing record leaves no receipt.
+
+The hook tests need Node.js 18 or later; CI does not run them yet:
+
+```sh
+node --test hooks/supervisor-hook.test.js
+```
+
+One test runs on Windows only (cmd.exe never takes the shim's `node` from the current directory). To run it alone:
+
+```sh
+node --test --test-name-pattern="Windows shim" hooks/supervisor-hook.test.js
+```
+
 ## Ordinary tasks (development candidate)
 
 The autonomous workflow in this checkout is not yet a published npm release.

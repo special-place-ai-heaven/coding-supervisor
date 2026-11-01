@@ -153,6 +153,9 @@ const HOOK_EVENTS: [(&str, Option<&str>); 6] = [
 /// Claude Code permission rule that allows every tool of the MCP server `supervisor`.
 const MCP_ALLOW: &str = "mcp__supervisor";
 
+/// The `enabledPlugins` key of this repository's Claude Code plugin: `<plugin>@<marketplace>`.
+const PLUGIN_KEY: &str = "coding-supervisor@coding-supervisor";
+
 const CREDENTIAL_WORDS: [&str; 4] = ["token", "key", "secret", "password"];
 
 struct Change {
@@ -190,12 +193,13 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
     }
     .replace('\\', "/");
     let dry_run = flags.switch("--dry-run");
+    let plugin = plugin_enabled(&project, &home);
 
     let Plan {
         state,
         changes,
         gitignore,
-    } = plan(harness, &project, &binary)?;
+    } = plan(harness, &project, &binary, plugin)?;
     if let Some(stray) = changes
         .iter()
         .find(|c| !c.path.starts_with(&project) && !c.path.starts_with(&home))
@@ -213,9 +217,14 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         if dry_run { " (dry run)" } else { "" }
     );
     println!("state: {}", state.name());
+    if plugin && harness.id == "claude-code" {
+        println!(
+            "the {PLUGIN_KEY} plugin is enabled and runs the hooks: no hook entry is written, and any written earlier is removed"
+        );
+    }
     if dry_run {
         for h in &HARNESSES {
-            let shown = match plan(h, &project, &binary) {
+            let shown = match plan(h, &project, &binary, plugin) {
                 Ok(p) => p.state.name(),
                 Err(_) => "unreadable",
             };
@@ -266,6 +275,26 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         println!("note: {}", fill(note));
     }
     Ok(())
+}
+
+/// Whether Claude Code enables the gate's plugin for this project. The most specific settings file
+/// that names the plugin decides: the project's local file, then the project's, then the user's.
+/// A file that cannot be read or parsed names nothing.
+fn plugin_enabled(project: &Path, home: &Path) -> bool {
+    [
+        under(project, ".claude/settings.local.json"),
+        under(project, ".claude/settings.json"),
+        under(home, ".claude/settings.json"),
+    ]
+    .iter()
+    .find_map(|path| {
+        let text = fs::read_to_string(path).ok()?;
+        json_object(Some(&text))
+            .ok()?
+            .get("enabledPlugins")?
+            .get(PLUGIN_KEY)
+            .cloned()
+    }) == Some(Value::Bool(true))
 }
 
 /// `base` joined with a `/`-separated relative path, one component at a time.
@@ -319,7 +348,8 @@ struct Plan {
 }
 
 /// Scan one harness's files in `project` and compute what install would write. Reads only.
-fn plan(harness: &Harness, project: &Path, binary: &str) -> Result<Plan, Failure> {
+/// With `plugin` the Claude Code hooks come from the plugin, so none is written.
+fn plan(harness: &Harness, project: &Path, binary: &str, plugin: bool) -> Result<Plan, Failure> {
     let malformed = |path: PathBuf| Plan {
         state: State::Malformed(path),
         changes: Vec::new(),
@@ -349,14 +379,15 @@ fn plan(harness: &Harness, project: &Path, binary: &str) -> Result<Plan, Failure
         .filter(|c| runs_binary(c, binary))
         .unwrap_or_else(|| binary.to_owned());
     let hook = match hooks.first() {
+        _ if plugin => None,
         Some(first)
             if hooks.iter().all(|h| h == first)
                 && gate_hook_program(first).is_some_and(|p| runs_binary(p, binary)) =>
         {
-            first.clone()
+            Some(first.clone())
         }
-        _ if binary.contains(char::is_whitespace) => format!("\"{binary}\" hook"),
-        _ => format!("{binary} hook"),
+        _ if binary.contains(char::is_whitespace) => Some(format!("\"{binary}\" hook")),
+        _ => Some(format!("{binary} hook")),
     };
 
     let mut changes = Vec::new();
@@ -399,7 +430,7 @@ fn plan(harness: &Harness, project: &Path, binary: &str) -> Result<Plan, Failure
     });
     let mut gitignore = None;
     if claude {
-        let Ok(after) = merge_settings(settings_before.as_deref(), &hook) else {
+        let Ok(after) = merge_settings(settings_before.as_deref(), hook.as_deref()) else {
             return Ok(malformed(settings_path));
         };
         changes.push(Change {
@@ -635,21 +666,28 @@ fn gate_hook_program(command: &str) -> Option<&str> {
 }
 
 /// Per event, every gate hook (recognised by its shape, whatever the binary path) is dropped,
-/// together with any group that leaves empty, and one fresh group is appended; other hooks and
-/// groups stay as they are. So a moved binary or an npm upgrade leaves one entry per event.
-/// Also adds `mcp__supervisor` to `permissions.allow` (Claude Code otherwise refuses the gate's
-/// MCP tools under acceptEdits). No other permission key is written.
-fn merge_settings(before: Option<&str>, command: &str) -> Result<String, String> {
+/// together with any group that leaves empty, and one fresh group with `command` is appended;
+/// other hooks and groups stay as they are. So a moved binary or an npm upgrade leaves one entry
+/// per event. Without `command` (the plugin runs the hooks) nothing is appended, and an event
+/// list that removal leaves empty is removed too. Also adds `mcp__supervisor` to
+/// `permissions.allow` (Claude Code otherwise refuses the gate's MCP tools under acceptEdits).
+/// No other permission key is written.
+fn merge_settings(before: Option<&str>, command: Option<&str>) -> Result<String, String> {
     let mut root = json_object(before)?;
+    let had_hooks = root.contains_key("hooks");
     let hooks = root
         .entry("hooks")
         .or_insert_with(|| json!({}))
         .as_object_mut()
         .ok_or("\"hooks\" is not an object")?;
     for (event, matcher) in HOOK_EVENTS {
-        let groups = hooks
-            .entry(event)
-            .or_insert_with(|| json!([]))
+        if command.is_some() {
+            hooks.entry(event).or_insert_with(|| json!([]));
+        }
+        let Some(groups) = hooks.get_mut(event) else {
+            continue;
+        };
+        let groups = groups
             .as_array_mut()
             .ok_or_else(|| format!("hooks.{event} is not an array"))?;
         for group in groups.iter_mut() {
@@ -667,7 +705,14 @@ fn merge_settings(before: Option<&str>, command: &str) -> Result<String, String>
                 *group = Value::Null;
             }
         }
+        let emptied = groups.iter().any(Value::is_null);
         groups.retain(|g| !g.is_null());
+        let Some(command) = command else {
+            if emptied && groups.is_empty() {
+                hooks.remove(event);
+            }
+            continue;
+        };
         let mut group = Map::new();
         if let Some(m) = matcher {
             group.insert("matcher".into(), m.into());
@@ -677,6 +722,9 @@ fn merge_settings(before: Option<&str>, command: &str) -> Result<String, String>
             json!([{ "type": "command", "command": command }]),
         );
         groups.push(Value::Object(group));
+    }
+    if command.is_none() && !had_hooks {
+        root.remove("hooks");
     }
     let allow = root
         .entry("permissions")
