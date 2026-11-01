@@ -572,3 +572,98 @@ fn stop_at_off_writes_no_observed_receipt() {
     let verdict = f.report("verdict");
     assert_eq!(c2(&verdict)["state"], "observed", "{verdict}");
 }
+
+fn journal_lines(task: &std::path::Path) -> usize {
+    fs::read_to_string(task.join("events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+/// Every entry under `dir`, directories included, with the bytes of each file.
+fn tree(dir: &std::path::Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                out.push((p.clone(), None));
+                stack.push(p);
+            } else {
+                out.push((p.clone(), Some(fs::read(&p).unwrap())));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn unresolvable_state_root_refuses_with_no_record() {
+    let f = Fixture::new("unresolvable");
+    let task = f.start_task();
+    let root = f.state_root();
+    let project = f.project.to_str().unwrap();
+    // Control: with a resolvable root the same Stop is refused and journalled, and verdict and
+    // status answer, so the assertions below are not true of a fixture that records nothing.
+    let before = journal_lines(&task);
+    let stop = f.stop();
+    assert_eq!(stop["decision"], "block", "control: {stop}");
+    assert_eq!(journal_lines(&task), before + 1, "control: Stop journals");
+    let verdict = f.supervisor(&["verdict", "--json", "--project", project]);
+    assert!(
+        serde_json::from_str::<Value>(stdout(&verdict)).is_ok(),
+        "control: {verdict:?}"
+    );
+    for args in [
+        &["status", "--project", project][..],
+        &["status", "--json", "--project", project],
+    ] {
+        let status = f.supervisor(args);
+        assert!(status.status.success(), "control: {args:?}: {status:?}");
+    }
+    // The state root now names another worktree, so it cannot be resolved for this project.
+    fs::write(
+        root.join("project.json"),
+        format!(
+            "{}\n",
+            json!({"schema":2,"canonical_worktree":"/elsewhere"})
+        ),
+    )
+    .unwrap();
+    let state = tree(&f.state);
+    let lines = journal_lines(&task);
+    let stop = f.stop();
+    assert_eq!(stop["decision"], "block", "{stop}");
+    assert!(
+        stop["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("state unavailable"),
+        "{stop}"
+    );
+    let verdict = f.supervisor(&["verdict", "--json", "--project", project]);
+    assert_eq!(
+        (verdict.status.code(), stdout(&verdict)),
+        (Some(1), ""),
+        "{verdict:?}"
+    );
+    for args in [
+        &["status", "--project", project][..],
+        &["status", "--json", "--project", project],
+    ] {
+        let status = f.supervisor(args);
+        assert!(!status.status.success(), "{args:?}: {status:?}");
+    }
+    // No record anywhere: no journal line, the state tree byte-identical, no fallback state.
+    assert_eq!(journal_lines(&task), lines, "refusal journalled");
+    assert!(
+        tree(&f.state) == state,
+        "refusal changed the state directory"
+    );
+    assert!(
+        !f.project.join(".supervisor").exists(),
+        "fallback state created"
+    );
+}
