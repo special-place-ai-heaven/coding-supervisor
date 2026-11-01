@@ -768,6 +768,8 @@ fn journal_v1_fields() {
         "prompt_id",
         "task_id",
         "state_location",
+        "effective_level",
+        "level_source",
         "candidate",
         "event",
         "tool_name",

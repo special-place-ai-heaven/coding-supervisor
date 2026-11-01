@@ -439,6 +439,8 @@ fn t01_verdict_json_every_key_present_on_every_path() {
         "reason",
         "exit_code",
         "require",
+        "effective_level",
+        "level_source",
         "task",
         "head",
         "criteria",

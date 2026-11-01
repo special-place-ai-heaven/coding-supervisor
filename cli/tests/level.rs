@@ -99,8 +99,11 @@ impl Fixture {
     }
     /// An explicitly started task whose scope is `src/` and whose one criterion has no receipt.
     fn start_task(&self) -> PathBuf {
+        self.start_scoped(json!(["src/"]))
+    }
+    fn start_scoped(&self, scope: Value) -> PathBuf {
         let contract = self.root.join("contract.json");
-        fs::write(&contract, json!({"id":"level-fixture","goal":"exercise levels","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test"}],"scope":["src/"],"forbidden_effects":[],"max_repair_rounds":2}).to_string()).unwrap();
+        fs::write(&contract, json!({"id":"level-fixture","goal":"exercise levels","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test"}],"scope":scope,"forbidden_effects":[],"max_repair_rounds":2}).to_string()).unwrap();
         let out = self.supervisor(&[
             "task",
             "start",
@@ -147,6 +150,16 @@ impl Fixture {
     fn tool(&self, id: &str, tool: &str, input: Value) -> Value {
         self.hook(json!({"hook_event_name":"PreToolUse","tool_use_id":id,"tool_name":tool,"tool_input":input}))
     }
+    /// `supervisor <command> --json` for the project; its exit code is not asserted.
+    fn report(&self, command: &str) -> Value {
+        let out = self.supervisor(&[
+            command,
+            "--json",
+            "--project",
+            self.project.to_str().unwrap(),
+        ]);
+        serde_json::from_str(stdout(&out)).unwrap_or_else(|e| panic!("{command}: {e}: {out:?}"))
+    }
 }
 
 fn stdout(out: &Output) -> &str {
@@ -154,6 +167,26 @@ fn stdout(out: &Output) -> &str {
 }
 fn denied(decision: &Value) -> bool {
     decision["hookSpecificOutput"]["permissionDecision"] == "deny"
+}
+fn decision_kind(v: &Value) -> &'static str {
+    if denied(v) {
+        "deny"
+    } else if v["decision"] == "block" {
+        "block"
+    } else if v.get("systemMessage").is_some() {
+        "system"
+    } else if v.is_null() {
+        "none"
+    } else {
+        "other"
+    }
+}
+fn events(task: &std::path::Path) -> Vec<Value> {
+    fs::read_to_string(task.join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
 }
 fn continuations(task: &std::path::Path) -> Value {
     let gate: Value =
@@ -344,4 +377,128 @@ fn unreadable_level_file_runs_the_hook_at_full_and_journals_why() {
     assert_eq!(stop["decision"], "block", "{stop}");
     let events = fs::read_to_string(task.join("events.jsonl")).unwrap();
     assert!(events.contains("unknown level \\\"off-ish\\\""), "{events}");
+}
+
+#[test]
+fn agents_cannot_change_the_level_at_lite_or_off() {
+    for word in ["lite", "off"] {
+        let f = Fixture::new(&format!("kguard-{word}"));
+        f.start_task();
+        f.set(&[word]);
+        let attempts = [
+            ("Bash", json!({"command":"supervisor level full"})),
+            (
+                "Write",
+                json!({"file_path":f.config.join("level"),"content":"off"}),
+            ),
+        ];
+        for (i, (tool, input)) in attempts.into_iter().enumerate() {
+            let decision = f.tool(&format!("t{i}"), tool, input.clone());
+            assert!(denied(&decision), "at {word}: {tool} {input}: {decision}");
+        }
+    }
+}
+
+#[test]
+fn showing_the_level_creates_no_state() {
+    let f = Fixture::new("kshow");
+    let out = f.level(&[]);
+    assert_eq!(
+        (out.status.code(), stdout(&out)),
+        (Some(0), "level: full (default)\n")
+    );
+    assert!(!f.state.exists(), "show created {}", f.state.display());
+}
+
+#[test]
+fn lite_reports_a_pretooluse_refusal_instead_of_denying_it() {
+    let f = Fixture::new("klitepre");
+    let _ = f.hook(json!({"hook_event_name":"UserPromptSubmit","prompt":"change the code"}));
+    let write = json!({"file_path":f.project.join("README"),"content":"x"});
+    let full = f.tool("t1", "Write", write.clone());
+    assert!(denied(&full), "control at full: {full}");
+    f.set(&["lite"]);
+    let lite = f.tool("t2", "Write", write);
+    assert_eq!(decision_kind(&lite), "system", "{lite}");
+}
+
+#[test]
+fn lite_reports_every_handback_refusal_without_counting_it() {
+    let f = Fixture::new("klitesub");
+    let task = f.start_task();
+    f.set(&["lite"]);
+    let handback = json!({"hook_event_name":"SubagentStop","agent_id":"w1","agent_type":"worker","last_assistant_message":"done","stop_hook_active":false});
+    for round in 1..=2 {
+        let lite = f.hook(handback.clone());
+        assert_eq!(decision_kind(&lite), "system", "round {round}: {lite}");
+    }
+    let gate: Value =
+        serde_json::from_str(&fs::read_to_string(task.join("gate.json")).unwrap()).unwrap();
+    assert!(gate["handback_refusals"].get("w1").is_none(), "{gate}");
+}
+
+#[test]
+fn ultra_file_scope_is_exact_not_a_prefix() {
+    let f = Fixture::new("kultrafile");
+    f.start_scoped(json!(["src/lib.rs"]));
+    f.set(&["ultra"]);
+    let inside = f.tool(
+        "t1",
+        "Write",
+        json!({"file_path":"src/lib.rs","content":"x"}),
+    );
+    assert!(!denied(&inside), "{inside}");
+    let sibling = f.tool(
+        "t2",
+        "Write",
+        json!({"file_path":"src/lib.rs.bak","content":"x"}),
+    );
+    assert!(denied(&sibling), "{sibling}");
+}
+
+#[test]
+fn every_record_stamps_the_effective_level_and_its_source() {
+    let f = Fixture::new("stamp");
+    let task = f.start_task();
+    let assert_stamped = |level: &str, source: Value| {
+        let before = fs::read_to_string(task.join("events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .count();
+        f.stop();
+        let lines = events(&task);
+        if level == "off" {
+            assert_eq!(lines.len(), before, "off journals nothing");
+        } else {
+            let last = &lines[lines.len() - 1];
+            assert_eq!(
+                (&last["effective_level"], &last["level_source"]),
+                (&json!(level), &source),
+                "{last}"
+            );
+        }
+        let verdict = f.report("verdict");
+        assert_eq!(
+            (&verdict["effective_level"], &verdict["level_source"]),
+            (&json!(level), &source),
+            "{verdict}"
+        );
+        let status = f.report("status");
+        assert_eq!(
+            (&status["effective_level"], &status["source"]),
+            (&json!(level), &source),
+            "{status}"
+        );
+        assert_eq!(status["schema_version"], 1);
+    };
+    assert_stamped("full", json!("default"));
+    fs::create_dir_all(&f.config).unwrap();
+    fs::write(f.config.join("level"), "lite\n").unwrap();
+    assert_stamped("lite", json!("global"));
+    f.set(&["ultra"]);
+    assert_stamped("ultra", json!("project"));
+    f.set(&["off"]);
+    assert_stamped("off", json!("project"));
+    fs::write(f.state_root().join("level"), "nope\n").unwrap();
+    assert_stamped("full", Value::Null);
 }

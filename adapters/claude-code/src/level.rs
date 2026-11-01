@@ -42,6 +42,8 @@ impl Level {
 #[derive(Debug, Default)]
 pub struct Setting {
     pub level: Level,
+    /// `project`, `global` or `default`; `None` when `error` is set.
+    pub source: Option<&'static str>,
     /// Holds the global `level` file; agents may not write it.
     pub config_dir: Option<PathBuf>,
     /// Why a `level` file could not be used; the call then runs at `full`.
@@ -93,4 +95,11 @@ pub fn effective(
         return Ok((level, "global"));
     }
     Ok((Level::Full, "default"))
+}
+
+/// The level a hook runs at and its source, as stamped on records: an unusable `level` file runs
+/// the hook at `full` with no source.
+pub fn in_effect(state_root: &Path, config_dir: Option<&Path>) -> (Level, Option<&'static str>) {
+    effective(state_root, config_dir)
+        .map_or((Level::Full, None), |(level, source)| (level, Some(source)))
 }
