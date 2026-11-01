@@ -3,7 +3,6 @@
 use std::fmt;
 use std::io::ErrorKind;
 use std::path::PathBuf;
-use std::process::Command;
 
 use coding_supervisor::{Candidate, CandidateId};
 
@@ -22,7 +21,7 @@ pub struct GitCandidate {
 pub enum Unobserved {
     /// git could not be started.
     GitUnavailable(String),
-    /// git ran and failed: not a repository, unborn HEAD, ...
+    /// git ran and failed: not a repository, unborn HEAD, no answer within the deadline, ...
     GitFailed(String),
     /// A changed file could not be read for the digest.
     WorktreeUnreadable(String),
@@ -48,7 +47,9 @@ impl GitCandidate {
     /// [`CandidateProvider::observe`], with the failure kept apart by cause.
     pub fn observe_git(&self) -> Result<Candidate, Unobserved> {
         Self {
-            cwd: PathBuf::from(crate::location::canonical_project(&self.cwd)),
+            cwd: PathBuf::from(
+                crate::location::checked_project(&self.cwd).map_err(Unobserved::GitFailed)?,
+            ),
         }
         .observe_worktree()
     }
@@ -114,14 +115,10 @@ impl GitCandidate {
 
 impl GitCandidate {
     fn git(&self, args: &[&str]) -> Result<String, Unobserved> {
-        // Reading the candidate must not take index.lock from a concurrent `git commit`.
-        let out = Command::new("git")
-            .arg("--no-optional-locks")
-            .arg("-C")
-            .arg(&self.cwd)
-            .args(args)
-            .output()
-            .map_err(|e| Unobserved::GitUnavailable(format!("git {}: {e}", args.join(" "))))?;
+        let out = crate::git::run(&self.cwd, args).map_err(|e| match e {
+            crate::git::Failure::Unavailable(why) => Unobserved::GitUnavailable(why),
+            crate::git::Failure::TimedOut(why) => Unobserved::GitFailed(why),
+        })?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {

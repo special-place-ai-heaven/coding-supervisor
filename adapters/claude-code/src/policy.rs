@@ -2,7 +2,6 @@
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 use serde_json::Value;
 
@@ -231,17 +230,15 @@ fn command_reason(
             if !cwd_known && !policy.branches.is_empty() {
                 return Some("protected-branch context unavailable");
             }
-            let mut git = Command::new("git");
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                git.creation_flags(0x08000000);
-            }
-            let current = git
-                .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
-                .current_dir(cwd)
-                .output()
-                .ok();
+            let current =
+                match crate::git::run(cwd, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+                    Ok(current) => Some(current),
+                    Err(crate::git::Failure::Unavailable(_)) => None,
+                    Err(crate::git::Failure::TimedOut(_)) => {
+                        return (!policy.branches.is_empty())
+                            .then_some("protected-branch context unavailable");
+                    }
+                };
             if current
                 .as_ref()
                 .filter(|o| o.status.success())

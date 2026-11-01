@@ -1,8 +1,10 @@
 //! Serialized, recoverable adapter transactions. The core has no filesystem dependency.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -41,8 +43,7 @@ pub fn read_lock(root: &Path) -> Result<Option<File>, String> {
     let lock_path = root.join("state.lock");
     let lock = match File::open(&lock_path) {
         Ok(lock) => {
-            lock.lock_shared()
-                .map_err(|e| format!("{}: {e}", lock_path.display()))?;
+            lock_within(&lock, &lock_path, File::try_lock_shared)?;
             Some(lock)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -53,6 +54,36 @@ pub fn read_lock(root: &Path) -> Result<Option<File>, String> {
         Ok(false) => Ok(lock),
         Ok(true) => Err("pending transaction; run `supervisor status` to recover it".to_owned()),
         Err(e) => Err(format!("{}: {e}", pending.display())),
+    }
+}
+
+const LOCK_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Take `lock` with `try_lock`, retrying until [`LOCK_DEADLINE`]; a holder that never lets
+/// go is an error, never an unbounded wait.
+fn lock_within(
+    lock: &File,
+    path: &Path,
+    try_lock: fn(&File) -> Result<(), TryLockError>,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let mut pause = Duration::from_millis(1);
+    loop {
+        match try_lock(lock) {
+            Ok(()) => return Ok(()),
+            Err(TryLockError::WouldBlock) if started.elapsed() < LOCK_DEADLINE => {
+                thread::sleep(pause);
+                pause = (pause * 2).min(Duration::from_millis(25));
+            }
+            Err(TryLockError::WouldBlock) => {
+                return Err(format!(
+                    "{}: state is busy; lock not acquired within {} s",
+                    path.display(),
+                    LOCK_DEADLINE.as_secs()
+                ));
+            }
+            Err(TryLockError::Error(e)) => return Err(format!("{}: {e}", path.display())),
+        }
     }
 }
 
@@ -79,8 +110,7 @@ impl Transaction {
             .truncate(false)
             .open(&lock_path)
             .map_err(|e| format!("{}: {e}", lock_path.display()))?;
-        lock.lock()
-            .map_err(|e| format!("{}: {e}", lock_path.display()))?;
+        lock_within(&lock, &lock_path, File::try_lock)?;
         let tx = Self {
             root: root.to_path_buf(),
             _lock: lock,
