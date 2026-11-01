@@ -325,12 +325,12 @@ impl Server {
         &self,
         tool: &str,
         args: &Value,
-        (level, level_source): (Level, Option<&'static str>),
+        (level, level_source): (Level, &'static str),
     ) -> Value {
         let mut reasons = Vec::new();
         let mut trace = Trace {
             level: Some(level),
-            level_source,
+            level_source: Some(level_source),
             ..Trace::default()
         };
         let (text, is_error) = match self.run(tool, args, &mut reasons, &mut trace) {

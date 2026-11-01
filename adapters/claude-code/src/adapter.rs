@@ -102,8 +102,8 @@ impl Env {
             .map_err(String::clone)
             .and_then(|(root, _)| level::effective(root, config_dir.as_deref()))
         {
-            Ok((level, source)) => (level, Some(source), None),
-            Err(why) => (Level::Full, None, Some(why)),
+            Ok((level, source)) => (level, source, None),
+            Err(why) => (Level::Full, "unreadable", Some(why)),
         };
         // At `off` nothing is written, so the state root is located without being created.
         let (state_dir, state_location) = match read_only {
@@ -554,7 +554,7 @@ fn handle_inner(payload: &Value, env: &mut Env) -> Decision {
     let mut reasons: Vec<String> = env.level.error.iter().cloned().collect();
     let mut trace = Trace {
         level: Some(env.level.level),
-        level_source: env.level.source,
+        level_source: Some(env.level.source),
         ..Trace::default()
     };
     let decision =

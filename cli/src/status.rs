@@ -321,7 +321,7 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
     })
     .map(|(_, label)| label)
     .collect();
-    let (effective, source) = level::in_effect(
+    let (effective, level_source) = level::in_effect(
         root,
         level::config_dir(&|key| std::env::var(key).ok()).as_deref(),
     );
@@ -331,7 +331,7 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
         "registration":configuration(project,harness),"hooks":hooks,
         "connection":connection(root,harness),
         "action_policy":supervisor_claude_code::policy::configuration_status(root),
-        "task":active,"mode":mode,"effective_level":effective.name(),"source":source,"receipt_provenance":provenance,
+        "task":active,"mode":mode,"effective_level":effective.name(),"level_source":level_source,"receipt_provenance":provenance,
         "coverage":{"completion":completion,"basis":"supported unrestricted project hook configuration; adapter fixtures and recorded Claude 2.1.312 trials; global settings and current model loading unproven","action_policy":"configured simple commands and exact tools only; see COVERAGE.md","same_user_security_boundary":false}
     })
 }
@@ -400,7 +400,7 @@ fn human(report: &Value) -> String {
         s("/task/task_id"),
         s("/mode"),
         s("/effective_level"),
-        s("/source"),
+        s("/level_source"),
         count("/receipt_provenance/observed"),
         count("/receipt_provenance/reconstructed"),
         count("/receipt_provenance/asserted"),

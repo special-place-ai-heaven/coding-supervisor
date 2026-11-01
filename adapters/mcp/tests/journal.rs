@@ -122,7 +122,7 @@ fn every_line_stamps_the_effective_level_and_its_source() {
             (json!("full"), json!("default")),
             (json!("lite"), json!("global")),
             (json!("off"), json!("project")),
-            (json!("full"), Value::Null),
+            (json!("full"), json!("unreadable")),
         ]
     );
 }

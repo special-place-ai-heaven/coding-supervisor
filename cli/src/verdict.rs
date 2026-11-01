@@ -252,7 +252,7 @@ fn report(
     head: &Head,
     require: Require,
     verdicts: &[CriterionVerdict<'_>],
-    (effective, level_source): (Level, Option<&str>),
+    (effective, level_source): (Level, &str),
 ) -> (Value, u8) {
     let mut unmet = Vec::new();
     let mut flags = Vec::new();

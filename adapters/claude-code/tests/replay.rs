@@ -798,6 +798,10 @@ fn journal_v1_fields() {
         assert_eq!(got, want);
         assert_eq!(line["task_id"], "t4-test");
         assert_eq!(
+            (&line["effective_level"], &line["level_source"]),
+            (&json!("full"), &json!("default"))
+        );
+        assert_eq!(
             line["candidate"],
             json!({"base_commit": "base", "dirty_digest": "one"})
         );

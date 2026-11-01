@@ -460,7 +460,7 @@ fn ultra_file_scope_is_exact_not_a_prefix() {
 fn every_record_stamps_the_effective_level_and_its_source() {
     let f = Fixture::new("stamp");
     let task = f.start_task();
-    let assert_stamped = |level: &str, source: Value| {
+    let assert_stamped = |level: &str, source: &str| {
         let before = fs::read_to_string(task.join("events.jsonl"))
             .unwrap_or_default()
             .lines()
@@ -473,32 +473,102 @@ fn every_record_stamps_the_effective_level_and_its_source() {
             let last = &lines[lines.len() - 1];
             assert_eq!(
                 (&last["effective_level"], &last["level_source"]),
-                (&json!(level), &source),
+                (&json!(level), &json!(source)),
                 "{last}"
             );
         }
         let verdict = f.report("verdict");
         assert_eq!(
             (&verdict["effective_level"], &verdict["level_source"]),
-            (&json!(level), &source),
+            (&json!(level), &json!(source)),
             "{verdict}"
         );
         let status = f.report("status");
         assert_eq!(
-            (&status["effective_level"], &status["source"]),
-            (&json!(level), &source),
+            (&status["effective_level"], &status["level_source"]),
+            (&json!(level), &json!(source)),
             "{status}"
         );
         assert_eq!(status["schema_version"], 1);
     };
-    assert_stamped("full", json!("default"));
+    assert_stamped("full", "default");
     fs::create_dir_all(&f.config).unwrap();
     fs::write(f.config.join("level"), "lite\n").unwrap();
-    assert_stamped("lite", json!("global"));
+    assert_stamped("lite", "global");
     f.set(&["ultra"]);
-    assert_stamped("ultra", json!("project"));
+    assert_stamped("ultra", "project");
     f.set(&["off"]);
-    assert_stamped("off", json!("project"));
-    fs::write(f.state_root().join("level"), "nope\n").unwrap();
-    assert_stamped("full", Value::Null);
+    assert_stamped("off", "project");
+    // An unreadable file falls back to `full`, never to `off` or `lite`: not to the project's
+    // previous `off`, not to the global `lite` beneath it, and not from an unreadable global.
+    let project = f.state_root().join("level");
+    fs::write(&project, "nope\n").unwrap();
+    assert_stamped("full", "unreadable");
+    fs::remove_file(&project).unwrap();
+    fs::write(f.config.join("level"), "nope\n").unwrap();
+    assert_stamped("full", "unreadable");
+}
+
+/// Every file under `dir`, with its bytes.
+fn snapshot(dir: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                out.push((p.clone(), fs::read(&p).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn stop_at_off_writes_no_observed_receipt() {
+    let f = Fixture::new("offreceipt");
+    let task = f.start_task();
+    // An agent runs the mandatory check and claims it, then stops.
+    let run_and_claim = |id: &str| {
+        let _ = f.tool(id, "Bash", json!({"command":"cargo test"}));
+        let _ = f.hook(json!({"hook_event_name":"PostToolUse","tool_use_id":id,"tool_name":"Bash",
+            "tool_input":{"command":"cargo test"},"tool_response":{"stdout":"ok","stderr":"","interrupted":false}}));
+        f.hook(json!({"hook_event_name":"Stop","stop_hook_active":false,
+            "last_assistant_message":"VERDICT: PASS\nCHECKS RUN: 1\nCHECK C2 | cargo test | exit 0"}))
+    };
+    let c2 = |verdict: &Value| {
+        verdict["criteria"]
+            .as_array()
+            .and_then(|c| c.iter().find(|c| c["id"] == "C2"))
+            .cloned()
+            .unwrap_or_else(|| panic!("{verdict}"))
+    };
+    f.set(&["off"]);
+    let before = snapshot(&f.state);
+    let stop = run_and_claim("t1");
+    assert_eq!(stop, Value::Null, "off answers nothing: {stop}");
+    // Off writes nothing: no receipt in gate.json, no line in events.jsonl, no run record.
+    assert_eq!(
+        snapshot(&f.state),
+        before,
+        "off changed the state directory"
+    );
+    assert!(!task.join("runs.jsonl").exists(), "off wrote a run record");
+    // The consumer gate sees C2 as missing: neither asserted nor observed.
+    let verdict = f.report("verdict");
+    let off = c2(&verdict);
+    assert!(off["receipt"].is_null(), "{verdict}");
+    assert!(
+        !matches!(off["state"].as_str(), Some("observed" | "asserted")),
+        "{verdict}"
+    );
+    assert_ne!(verdict["verdict"], "pass", "{verdict}");
+    // The same run and claim at full is observed, so the payloads above are ones the hook certifies.
+    f.set(&["full"]);
+    let _ = run_and_claim("t2");
+    let verdict = f.report("verdict");
+    assert_eq!(c2(&verdict)["state"], "observed", "{verdict}");
 }
