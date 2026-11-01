@@ -1,5 +1,6 @@
 //! Candidate identity: HEAD plus the dirty-tree digest of the entire physical worktree.
 
+use std::fmt;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::process::Command;
@@ -17,17 +18,42 @@ pub struct GitCandidate {
     pub cwd: PathBuf,
 }
 
+/// Why git could not name the candidate; displays as the underlying message.
+pub enum Unobserved {
+    /// git could not be started.
+    GitUnavailable(String),
+    /// git ran and failed: not a repository, unborn HEAD, ...
+    GitFailed(String),
+    /// A changed file could not be read for the digest.
+    WorktreeUnreadable(String),
+}
+
+impl fmt::Display for Unobserved {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::GitUnavailable(why) | Self::GitFailed(why) | Self::WorktreeUnreadable(why) => {
+                f.write_str(why)
+            }
+        }
+    }
+}
+
 impl CandidateProvider for GitCandidate {
     fn observe(&self) -> Result<Candidate, String> {
+        self.observe_git().map_err(|e| e.to_string())
+    }
+}
+
+impl GitCandidate {
+    /// [`CandidateProvider::observe`], with the failure kept apart by cause.
+    pub fn observe_git(&self) -> Result<Candidate, Unobserved> {
         Self {
             cwd: PathBuf::from(crate::location::canonical_project(&self.cwd)),
         }
         .observe_worktree()
     }
-}
 
-impl GitCandidate {
-    fn observe_worktree(&self) -> Result<Candidate, String> {
+    fn observe_worktree(&self) -> Result<Candidate, Unobserved> {
         let base_commit = self.git(&["rev-parse", "HEAD"])?.trim().to_owned();
         // Scope and exclusions are worktree-relative for hooks and MCP, even from a subdirectory.
         let prefix = self.git(&["rev-parse", "--show-prefix"])?.trim().to_owned();
@@ -64,7 +90,11 @@ impl GitCandidate {
             let hash = match std::fs::read(self.cwd.join(path)) {
                 Ok(bytes) => sha256::hex(&bytes),
                 Err(e) if e.kind() == ErrorKind::NotFound => "deleted".to_owned(),
-                Err(e) => return Err(format!("cannot read {path}: {e}")),
+                Err(e) => {
+                    return Err(Unobserved::WorktreeUnreadable(format!(
+                        "cannot read {path}: {e}"
+                    )));
+                }
             };
             listing.push_str(path);
             listing.push('\n');
@@ -83,21 +113,23 @@ impl GitCandidate {
 }
 
 impl GitCandidate {
-    fn git(&self, args: &[&str]) -> Result<String, String> {
+    fn git(&self, args: &[&str]) -> Result<String, Unobserved> {
+        // Reading the candidate must not take index.lock from a concurrent `git commit`.
         let out = Command::new("git")
+            .arg("--no-optional-locks")
             .arg("-C")
             .arg(&self.cwd)
             .args(args)
             .output()
-            .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+            .map_err(|e| Unobserved::GitUnavailable(format!("git {}: {e}", args.join(" "))))?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {
-            Err(format!(
+            Err(Unobserved::GitFailed(format!(
                 "git {} failed: {}",
                 args.join(" "),
                 String::from_utf8_lossy(&out.stderr).trim()
-            ))
+            )))
         }
     }
 }

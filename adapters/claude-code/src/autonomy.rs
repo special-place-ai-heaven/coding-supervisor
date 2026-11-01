@@ -646,8 +646,13 @@ pub(crate) fn recovers_session(
 
 /// A revision preserves pending job records for recovery but requires fresh dispatches.
 pub fn dispatch_is_current(dir: &Path, dispatch: &str) -> Result<bool, String> {
+    Ok(!invalidated_dispatches(dir)?.iter().any(|id| id == dispatch))
+}
+
+/// The dispatches a revision invalidated; none for a task that is not autonomous.
+pub(crate) fn invalidated_dispatches(dir: &Path) -> Result<Vec<String>, String> {
     let Some(metadata) = read(&dir.join("autonomy.json"))? else {
-        return Ok(true);
+        return Ok(Vec::new());
     };
     if metadata.get("schema").and_then(Value::as_u64) != Some(1)
         || !metadata["revisions"].is_array()
@@ -655,15 +660,18 @@ pub fn dispatch_is_current(dir: &Path, dispatch: &str) -> Result<bool, String> {
         return Err("invalid autonomous task metadata".into());
     }
     let Some(invalidated) = metadata.get("invalidated_dispatches") else {
-        return Ok(true);
+        return Ok(Vec::new());
     };
-    let invalidated = invalidated
+    invalidated
         .as_array()
-        .ok_or("invalid dispatch invalidation history")?;
-    if invalidated.iter().any(|id| !id.is_string()) {
-        return Err("invalid dispatch invalidation identity".into());
-    }
-    Ok(!invalidated.iter().any(|id| id.as_str() == Some(dispatch)))
+        .ok_or("invalid dispatch invalidation history")?
+        .iter()
+        .map(|id| {
+            id.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "invalid dispatch invalidation identity".into())
+        })
+        .collect()
 }
 
 fn normalized_scope(v: &Value) -> Result<Vec<String>, String> {

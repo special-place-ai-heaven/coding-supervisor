@@ -20,34 +20,63 @@ use crate::{claim, guard, lifecycle, location, observation};
 /// observed by a hook, so the enforcing paths here do not count it.
 pub const MCP_ASSERTED: &str = "mcp-asserted:";
 
-/// True only when a hook completion journal backs every material receipt field.
+/// True only when a hook completion journal backs every material receipt field. An unreadable
+/// runs.jsonl or autonomy.json reads as "not observed".
 pub fn receipt_is_observed(dir: &Path, task_id: &str, receipt: &VerificationReceipt) -> bool {
     receipt.claim_supported
         && current_dispatch_reference(dir, task_id, &receipt.output_ref).unwrap_or(false)
-        && observation::read_runs(dir, task_id).is_ok_and(|runs| {
-            runs.iter().any(|run| {
-                run.cwd == run.execution_root
-                    && run.reference == receipt.output_ref
-                    && run.command == receipt.command
-                    && run.cwd == receipt.cwd
-                    && run.candidate == receipt.candidate
-                    && run.exit_code == receipt.exit_code
-                    && run.t == receipt.started_at
-                    && run.finished == receipt.finished_at
-            })
+        && observation::read_runs(dir, task_id).is_ok_and(|runs| journaled(receipt, &runs))
+}
+
+/// [`receipt_is_observed`] for each of `receipts`, reading runs.jsonl and autonomy.json once;
+/// either one unreadable is an error rather than "not observed".
+pub fn receipts_observed(
+    dir: &Path,
+    task_id: &str,
+    receipts: &[VerificationReceipt],
+) -> Result<Vec<bool>, String> {
+    let runs = observation::read_runs(dir, task_id)?;
+    let invalidated = crate::autonomy::invalidated_dispatches(dir)?;
+    Ok(receipts
+        .iter()
+        .map(|receipt| {
+            receipt.claim_supported
+                && cited_dispatch(task_id, &receipt.output_ref)
+                    .is_some_and(|dispatch| !invalidated.iter().any(|id| id == dispatch))
+                && journaled(receipt, &runs)
         })
+        .collect())
+}
+
+/// A hook completion in `runs` matches every material field of `receipt`.
+fn journaled(receipt: &VerificationReceipt, runs: &[observation::Run]) -> bool {
+    runs.iter().any(|run| {
+        run.cwd == run.execution_root
+            && run.reference == receipt.output_ref
+            && run.command == receipt.command
+            && run.cwd == receipt.cwd
+            && run.candidate == receipt.candidate
+            && run.exit_code == receipt.exit_code
+            && run.t == receipt.started_at
+            && run.finished == receipt.finished_at
+    })
 }
 /// Preserve dispatch IDs verbatim; they may themselves contain colons.
 fn current_dispatch_reference(dir: &Path, task: &str, reference: &str) -> Result<bool, String> {
-    for prefix in [
+    match cited_dispatch(task, reference) {
+        Some(dispatch) => crate::autonomy::dispatch_is_current(dir, dispatch),
+        None => Ok(false),
+    }
+}
+
+/// The dispatch an `observed:` or `tc-reconstructed:` reference of `task` cites.
+fn cited_dispatch<'r>(task: &str, reference: &'r str) -> Option<&'r str> {
+    [
         format!("observed:{task}:"),
         format!("tc-reconstructed:{task}:"),
-    ] {
-        if let Some(dispatch) = reference.strip_prefix(&prefix) {
-            return crate::autonomy::dispatch_is_current(dir, dispatch);
-        }
-    }
-    Ok(false)
+    ]
+    .iter()
+    .find_map(|prefix| reference.strip_prefix(prefix.as_str()))
 }
 
 /// Everything a hook call needs besides its payload.
