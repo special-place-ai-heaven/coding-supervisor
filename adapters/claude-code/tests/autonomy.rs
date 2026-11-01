@@ -492,6 +492,7 @@ fn root_success_then_nested_success_allows_observed_completion_and_rollover() {
         state_location: "test",
         candidate: Box::new(Fixed),
         clock: || 100,
+        level: Default::default(),
     };
     for (id, cwd) in [
         ("linked", &linked),
@@ -714,6 +715,7 @@ fn legacy_nested_pass_receipt_and_failing_root_check_cannot_complete_or_roll_ove
         state_location: "test",
         candidate: Box::new(Fixed),
         clock: || 100,
+        level: Default::default(),
     };
     let mut event = json!({"hook_event_name":"PreToolUse","cwd":f.project,"session_id":"session","agent_id":"main","tool_use_id":"root-failure","tool_name":"mcp__terminal_commander__run_and_watch","tool_input":{"argv":["python","root_check.py"],"cwd":f.project}});
     assert_eq!(handle(&event, &mut env), Decision::None);
@@ -1180,6 +1182,7 @@ fn resumed_owner_can_edit_while_original_owner_retains_only_read_access() {
         state_location: "test",
         candidate: Box::new(Fixed),
         clock: || 100,
+        level: Default::default(),
     };
     let old_write = json!({"hook_event_name":"PreToolUse","cwd":f.project,"session_id":"session","tool_use_id":"old-write","tool_name":"Write","tool_input":{"file_path":f.project.join("src/lib.rs"),"content":"changed"}});
     assert!(matches!(handle(&old_write, &mut env), Decision::Deny(_)));
@@ -1248,6 +1251,7 @@ fn npm_entrypoints_are_frozen_while_unrelated_manifest_fields_remain_editable() 
         state_location: "test",
         candidate: Box::new(Current),
         clock: || 100,
+        level: Default::default(),
     };
     let stopped = supervisor_claude_code::adapter::handle(
         &json!({"hook_event_name":"Stop","cwd":f.project,"session_id":"session","last_assistant_message":"Done"}),
@@ -1363,6 +1367,7 @@ fn ownership_transfer_between_fast_check_and_locked_hook_cannot_mutate_task() {
             state_dir: f.root.clone(),
             state_location: "test",
             clock: || 100,
+            level: Default::default(),
             candidate: Box::new(Transfer {
                 root: f.root.clone(),
                 project: f.project.clone(),
@@ -1458,6 +1463,7 @@ fn newer_prompt_race_blocks_old_mutations_and_stop_without_advancing_gate() {
                     state_dir: f.root.clone(),
                     state_location: "test",
                     clock: || 100,
+                    level: Default::default(),
                     candidate: Box::new(Transfer {
                         root: f.root.clone(),
                         project: f.project.clone(),
@@ -1552,6 +1558,7 @@ fn pending_prompt_keeps_inflight_tc_job_and_accepts_its_later_observation() {
         state_dir: f.root.clone(),
         state_location: "test",
         clock: || 100,
+        level: Default::default(),
         candidate: Box::new(Fixed),
     };
     let mut dispatch = json!({"hook_event_name":"PreToolUse","cwd":f.project,"session_id":"session","agent_id":"main","tool_use_id":"inflight","tool_name":"mcp__terminal_commander__run_and_watch","tool_input":{"argv":["cargo","test","-p","fixture"],"cwd":f.project}});

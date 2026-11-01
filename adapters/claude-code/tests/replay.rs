@@ -90,6 +90,7 @@ fn env_at(d: &Dir, candidate: Box<dyn CandidateProvider>) -> Env {
         state_location: "test",
         candidate,
         clock: || 1_000,
+        level: Default::default(),
     }
 }
 fn env(d: &Dir, contract: Option<Value>, candidate: Box<dyn CandidateProvider>) -> Env {

@@ -429,6 +429,7 @@ fn hook_denies_invalid_policy_while_inactive_without_echoing_it() {
         state_location: "test",
         candidate: Box::new(supervisor_claude_code::candidate::GitCandidate { cwd: f.0.clone() }),
         clock: || 1,
+        level: Default::default(),
     };
     let decision = supervisor_claude_code::adapter::handle(
         &json!({"hook_event_name":"PreToolUse","cwd":f.0,"tool_name":"Bash","tool_input":{"command":"cargo test"}}),
@@ -463,6 +464,7 @@ fn nonheader_completion_refuses_until_adapter_cap_without_marking_completed() {
         state_location: "test",
         candidate: Box::new(FixedCandidate),
         clock: || 1,
+        level: Default::default(),
     };
     let payload = json!({"hook_event_name":"Stop","cwd":f.0,"task_id":started["task_id"],"last_assistant_message":"Done, the task is complete.","stop_hook_active":true});
     for _ in 0..3 {

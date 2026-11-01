@@ -13,6 +13,7 @@ use serde_json::Value;
 use crate::candidate::{CandidateProvider, GitCandidate};
 use crate::header::{self, Header, Verdict};
 use crate::journal::{self, Trace};
+use crate::level::{self, Level};
 use crate::state::{self, Gate, Stored, obj, state_name};
 use crate::{claim, guard, lifecycle, location, observation};
 
@@ -88,12 +89,27 @@ pub struct Env {
     pub candidate: Box<dyn CandidateProvider>,
     /// Seconds since the Unix epoch.
     pub clock: fn() -> u64,
+    pub level: level::Setting,
 }
 
 impl Env {
     pub fn real(cwd: &Path) -> Self {
-        let (state_dir, state_location) =
-            location::resolve_state_dir(cwd, &|name| std::env::var(name).ok());
+        let lookup = |name: &str| std::env::var(name).ok();
+        let config_dir = level::config_dir(&lookup);
+        let read_only = location::resolve_state_dir_read_only(cwd, &lookup);
+        let (level, error) = match read_only
+            .as_ref()
+            .map_err(String::clone)
+            .and_then(|(root, _)| level::effective(root, config_dir.as_deref()))
+        {
+            Ok((level, _)) => (level, None),
+            Err(why) => (Level::Full, Some(why)),
+        };
+        // At `off` nothing is written, so the state root is located without being created.
+        let (state_dir, state_location) = match read_only {
+            Ok(selected) if level == Level::Off => selected,
+            _ => location::resolve_state_dir(cwd, &lookup),
+        };
         Self {
             state_dir,
             state_location,
@@ -101,6 +117,11 @@ impl Env {
                 cwd: cwd.to_path_buf(),
             }),
             clock: now,
+            level: level::Setting {
+                level,
+                config_dir,
+                error,
+            },
         }
     }
 }
@@ -227,6 +248,36 @@ fn read_only_tool(payload: &Value) -> bool {
 }
 
 pub fn handle(payload: &Value, env: &mut Env) -> Decision {
+    match env.level.level {
+        Level::Off => protection(payload, env).unwrap_or(Decision::None),
+        Level::Lite => protection(payload, env).unwrap_or_else(|| match judge(payload, env) {
+            Decision::Block(text) | Decision::Deny(text) => Decision::System(text),
+            other => other,
+        }),
+        Level::Full | Level::Ultra => judge(payload, env),
+    }
+}
+
+/// The PreToolUse refusals that hold at every level: the gate's own state and the configured
+/// action policy. Reads the state root, writes nothing.
+fn protection(payload: &Value, env: &Env) -> Option<Decision> {
+    if text(payload, "hook_event_name") != Some("PreToolUse") {
+        return None;
+    }
+    let root = &env.state_dir;
+    if let Some(denial) = guard::gate_write_denial(payload, root, env.level.config_dir.as_deref()) {
+        return Some(denial);
+    }
+    let project = Path::new(text(payload, "cwd").unwrap_or("."));
+    match crate::policy::action_policy_denial(payload, project, root) {
+        Ok(denial) => denial,
+        Err(_) => Some(Decision::Deny(
+            "GATE: invalid configured action policy".to_owned(),
+        )),
+    }
+}
+
+fn judge(payload: &Value, env: &mut Env) -> Decision {
     let root = env.state_dir.clone();
     let event = text(payload, "hook_event_name").unwrap_or_default();
     if env.state_location != "test"
@@ -303,7 +354,9 @@ pub fn handle(payload: &Value, env: &mut Env) -> Decision {
                 }
             }
         }
-        if let Some(denial) = guard::state_write_denial(payload, &root) {
+        if let Some(denial) =
+            guard::gate_write_denial(payload, &root, env.level.config_dir.as_deref())
+        {
             return denial;
         }
         let project = Path::new(text(payload, "cwd").unwrap_or("."));
@@ -497,7 +550,7 @@ fn decision_from_json(v: &Value) -> Decision {
 fn handle_inner(payload: &Value, env: &mut Env) -> Decision {
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let agent = text(payload, "agent_id").unwrap_or("main");
-    let mut reasons = Vec::new();
+    let mut reasons: Vec<String> = env.level.error.iter().cloned().collect();
     let mut trace = Trace::default();
     let decision =
         process(payload, env, event, agent, &mut reasons, &mut trace).unwrap_or_else(|what| {
@@ -557,6 +610,13 @@ fn process(
         reasons.push("no contract: advisory only".to_owned());
         return Ok(no_contract(payload, event));
     };
+    if event == "PreToolUse"
+        && env.level.level == Level::Ultra
+        && let Some(denial) = out_of_scope(payload, &contract.scope)
+    {
+        reasons.push("level ultra: write outside the contract scope".to_owned());
+        return Ok(denial);
+    }
     trace.state_before = stored.as_ref().map(|g| g.checkpoint.state);
     let observed = env.candidate.observe();
     trace.candidate = observed.as_ref().ok().map(|c| c.id.clone());
@@ -586,6 +646,10 @@ fn process(
     if matches!(event, "Stop" | "SubagentStop") {
         session.sync_observed_receipts(&env.state_dir, agent, reasons)?;
     }
+    let refusals = (
+        session.gate.continuations,
+        session.gate.handback_refusals.clone(),
+    );
     let decision = match event {
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
         "Stop" => session.stop(payload, &env.state_dir, agent, now, reasons)?,
@@ -600,10 +664,67 @@ fn process(
         }
         _ => Decision::None,
     };
+    if env.level.level == Level::Lite && matches!(decision, Decision::Block(_) | Decision::Deny(_))
+    {
+        // Lite never blocks, so a stop refusal it only reports must not count toward the caps.
+        if matches!(decision, Decision::Block(_)) {
+            (session.gate.continuations, session.gate.handback_refusals) = refusals;
+        }
+        reasons.push("level lite: reported, not blocked".to_owned());
+    }
     session.gate.checkpoint = session.task.checkpoint();
     trace.state_after = Some(session.task.state());
     state::save_gate(&env.state_dir, &session.gate, &contract_sha256)?;
     Ok(decision)
+}
+
+/// Ultra: a Write, Edit, MultiEdit or NotebookEdit outside `scope` is refused before it
+/// happens, under the rule completion applies to changed paths (`scope_contains`).
+fn out_of_scope(payload: &Value, scope: &[String]) -> Option<Decision> {
+    let tool = text(payload, "tool_name")?;
+    if !matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit") {
+        return None;
+    }
+    let input = payload.get("tool_input")?;
+    let path = text(input, "file_path").or_else(|| text(input, "notebook_path"))?;
+    let cwd = Path::new(text(payload, "cwd").unwrap_or("."));
+    let inside = project_relative(&location::canonical_project(cwd), &cwd.join(path)).is_some_and(
+        |relative| {
+            scope
+                .iter()
+                .any(|s| coding_supervisor::scope_contains(s, &relative))
+        },
+    );
+    (!inside).then(|| {
+        Decision::Deny(format!(
+            "GATE: {tool} refused: {path} is outside the task's contract scope (level ultra)"
+        ))
+    })
+}
+
+/// `path` relative to the canonical `project` (see `location::canonical_project`), in git's
+/// `/`-separated form; `None` outside the project. The deepest existing ancestor is resolved,
+/// so a new file under a symlinked or short-name spelling of the project still matches.
+fn project_relative(project: &str, path: &Path) -> Option<String> {
+    let mut existing = path;
+    let mut missing = Vec::new();
+    let resolved = loop {
+        if let Ok(dir) = std::fs::canonicalize(existing) {
+            break missing.iter().rev().fold(dir, |dir, name| dir.join(name));
+        }
+        missing.push(existing.file_name()?);
+        existing = existing.parent()?;
+    };
+    let text = resolved.to_string_lossy().replace('\\', "/");
+    let text = text.strip_prefix("//?/").unwrap_or(&text);
+    let head = text.get(..project.len())?;
+    let same = if cfg!(windows) {
+        head.to_lowercase() == project
+    } else {
+        head == project
+    };
+    let relative = text[project.len()..].strip_prefix('/')?;
+    same.then(|| relative.to_owned())
 }
 
 /// Refuse everywhere a refusal is possible; gate.json is left exactly as found.
