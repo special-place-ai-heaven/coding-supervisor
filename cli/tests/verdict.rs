@@ -1591,3 +1591,19 @@ fn kx05_verdict_tc_reconstructed_provenance() {
         "unverified"
     );
 }
+
+/// KX06 [r3.1 N1]: a state directory whose project.json names another worktree, or is not a
+/// project identity at all, is exit 1 with empty stdout; the verdict answers before either.
+#[test]
+fn kx06_verdict_foreign_or_invalid_project_json_is_exit_one() {
+    let f = Fixture::git("kx06");
+    f.observed_pass();
+    assert_eq!(f.verdict_json(&[]).0, 0, "control: answers before");
+    let project = f.state_root().join("project.json");
+    let mut identity: Value = serde_json::from_str(&fs::read_to_string(&project).unwrap()).unwrap();
+    identity["canonical_worktree"] = "/another/worktree".into();
+    fs::write(&project, identity.to_string()).unwrap();
+    assert_exit1_empty(&f.verdict(&["--json"]), "foreign worktree");
+    fs::write(&project, "not json").unwrap();
+    assert_exit1_empty(&f.verdict(&["--json"]), "invalid project.json");
+}
