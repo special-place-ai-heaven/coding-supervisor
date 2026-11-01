@@ -15,6 +15,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_call:
 
 # A new push cancels the superseded run of the same branch.
 concurrency:
