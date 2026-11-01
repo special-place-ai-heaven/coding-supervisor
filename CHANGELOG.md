@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.5.0...v0.5.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* bound git and state.lock waits on the hook path ([43782b8](https://github.com/special-place-ai-heaven/coding-supervisor/commit/43782b8d776d7c67bb38208d32e68e7dc867bcf0))
+
 ## [0.5.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.4.1...v0.5.0) (2026-11-01)
 
 
