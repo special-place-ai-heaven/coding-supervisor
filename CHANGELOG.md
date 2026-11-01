@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.4.0...v0.4.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **level:** stamp effective level, document precedence, close KENT test gaps ([155b6b0](https://github.com/special-place-ai-heaven/coding-supervisor/commit/155b6b02fe51ec3efad0ce8da33d8777e1766619))
+* **level:** stamp effective level, document precedence, close KENT test gaps ([7380255](https://github.com/special-place-ai-heaven/coding-supervisor/commit/738025597b7e36caf19b3c67cf23a9866ef7dbfa))
+* **level:** unreadable level source, status level_source, prove off certifies nothing ([eaf58e3](https://github.com/special-place-ai-heaven/coding-supervisor/commit/eaf58e3eea79e42a9a89a2b647c8d35db40dbaac))
+
 ## [0.4.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.3.0...v0.4.0) (2026-11-01)
 
 
