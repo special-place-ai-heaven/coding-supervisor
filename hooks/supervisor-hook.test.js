@@ -13,6 +13,8 @@ const test = require("node:test");
 const ROOT = path.join(__dirname, "..");
 const HOOK = path.join(__dirname, "supervisor-hook.js");
 const EVENTS = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "SubagentStop", "Stop"];
+// The hook gives up on supervisor after 20 s; it must have answered and exited by this bound.
+const ANSWER_MS = 25000;
 
 const dirs = [];
 test.after(() => dirs.forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })));
@@ -32,18 +34,36 @@ function bin(body) {
   return dir;
 }
 
-// Runs the hook with `searchPath` as PATH, from `cwd`, with extra node `flags`.
-function run(searchPath, input, { cwd = ROOT, flags = [] } = {}) {
+// Runs the hook with `searchPath` as PATH, from `cwd`, with extra node `flags`. With `limit`, a
+// hook still running after `limit` ms is killed and reported `late`; `ms` is spawn to exit.
+function run(searchPath, input, { cwd = ROOT, flags = [], limit } = {}) {
   return new Promise((resolve) => {
+    const start = Date.now();
+    let late = false;
+    let timer;
     const child = childProcess.execFile(
       process.execPath,
       [...flags, HOOK],
       { cwd, env: { ...process.env, PATH: searchPath }, encoding: "buffer" },
-      (_err, stdout, stderr) => resolve({ code: child.exitCode, stdout, stderr: stderr.toString() }),
+      (_err, stdout, stderr) => {
+        clearTimeout(timer);
+        resolve({ code: child.exitCode, stdout, stderr: stderr.toString(), ms: Date.now() - start, late });
+      },
     );
+    if (limit) timer = setTimeout(() => { late = true; child.kill("SIGKILL"); }, limit);
     child.stdin.end(input);
   });
 }
+
+// Kills the processes whose pids a stub appended to `file`, so none outlives its test.
+function killPids(file) {
+  if (!fs.existsSync(file)) return;
+  for (const pid of fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map(Number)) {
+    try { process.kill(pid, "SIGKILL"); } catch (_err) { /* already gone */ }
+  }
+}
+
+const alive = (pid) => { try { return process.kill(pid, 0); } catch (_err) { return false; } };
 
 const payload = (event, fields) => JSON.stringify({ hook_event_name: event, cwd: ROOT, ...fields });
 
@@ -55,6 +75,10 @@ async function assertFailure(dir, reason, options) {
     Promise.all(EVENTS.map((event) => run(dir, payload(event), options))),
     Promise.all(["Stop", "SubagentStop"].map((event) => run(dir, payload(event, { stop_hook_active: true }), options))),
   ]);
+  if (options && options.limit) {
+    [...results, ...again].forEach(({ ms, late }, i) =>
+      assert.ok(!late && ms < options.limit, `run ${i}: the hook did not answer within ${options.limit} ms (took ${ms} ms${late ? ", killed" : ""})`));
+  }
   ["Stop", "SubagentStop"].forEach((event, i) => {
     const { code, stdout, stderr } = again[i];
     assert.equal(code, 0, `${event} with stop_hook_active: ${stderr}`);
@@ -98,10 +122,38 @@ test("a supervisor that does not answer in 20 s", { timeout: 60000 }, async () =
     const { spawnSync } = require("child_process");
     spawnSync(process.execPath, ["-e", 'require("fs").appendFileSync(process.argv[1], process.pid + "\\\\n"); setTimeout(() => {}, 120000);', require("path").join(__dirname, "pids")], { stdio: "inherit" });
   `);
-  await assertFailure(dir, "supervisor gave no answer within 20 s");
-  const pids = fs.readFileSync(path.join(dir, "pids"), "utf8").trim().split("\n").map(Number);
-  assert.equal(pids.length, 8);
-  assert.deepEqual(pids.filter((pid) => { try { return process.kill(pid, 0); } catch (_err) { return false; } }), []);
+  try {
+    await assertFailure(dir, "supervisor gave no answer within 20 s", { limit: ANSWER_MS });
+    const pids = fs.readFileSync(path.join(dir, "pids"), "utf8").trim().split("\n").map(Number);
+    assert.equal(pids.length, 8);
+    assert.deepEqual(pids.filter(alive), []);
+  } finally {
+    killPids(path.join(dir, "pids"));
+  }
+});
+
+// As npm's launcher can on Windows, the stub leaves an orphan outside its process tree that keeps
+// the stub's stdout open, then never answers. The tree kill cannot reach the orphan, so the hook
+// must let go of the pipe itself and still answer in time. The test kills the orphans afterwards.
+test("a supervisor whose orphaned child keeps its stdout open does not hold up the answer", { timeout: 60000 }, async () => {
+  const options = '{ detached: true, stdio: ["ignore", "inherit", "ignore"], windowsHide: true }';
+  const orphan = 'require("fs").appendFileSync(process.argv[1], process.pid + "\\n"); setTimeout(() => {}, 120000);';
+  // Started by a parent that exits at once, so the orphan is in neither the stub's process group
+  // nor its Windows process tree.
+  const parent = `require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(orphan)}, process.argv[1]], ${options}).unref();`;
+  const dir = bin(`
+    require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(parent)}, require("path").join(__dirname, "pids")], ${options}).unref();
+    setInterval(() => {}, 1000);
+  `);
+  try {
+    await assertFailure(dir, "supervisor gave no answer within 20 s", { limit: ANSWER_MS });
+    // The orphans are still running, so the hook answered with their pipe still open.
+    const pids = fs.readFileSync(path.join(dir, "pids"), "utf8").trim().split("\n").map(Number);
+    assert.equal(pids.length, 8);
+    assert.deepEqual(pids.filter((pid) => !alive(pid)), []);
+  } finally {
+    killPids(path.join(dir, "pids"));
+  }
 });
 
 test("a crash inside the hook", () => {
