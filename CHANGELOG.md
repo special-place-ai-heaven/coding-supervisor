@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.3.0...v0.4.0) (2026-11-01)
+
+
+### Features
+
+* **level:** add supervisor level off|lite|full|ultra ([2f3777a](https://github.com/special-place-ai-heaven/coding-supervisor/commit/2f3777a3518b0c641ca1895eacc651f0fd9ef882))
+* **level:** add supervisor level off|lite|full|ultra ([8c3177b](https://github.com/special-place-ai-heaven/coding-supervisor/commit/8c3177b3130591a4771d8291533b025d4a90259f))
+
+
+### Bug Fixes
+
+* **level:** resolve the deepest existing ancestor before the ultra scope check ([a75212b](https://github.com/special-place-ai-heaven/coding-supervisor/commit/a75212bfc74da34b34be20a5ca0606674590191b))
+
 ## [0.3.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.2.1...v0.3.0) (2026-11-01)
 
 
