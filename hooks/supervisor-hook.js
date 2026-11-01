@@ -76,21 +76,61 @@ function resolve(name) {
   return null;
 }
 
-function hook(input, payload) {
-  const file = resolve("supervisor");
-  if (!file) return failure(payload, UNSTARTABLE);
+// Starts `supervisor hook` and collects its stdout. On timeout the whole process tree is killed
+// and its pipes are let go, because npm's launcher runs the binary as a child that shares them.
+function spawn(file, input) {
   // npm installs `supervisor` as a .cmd shim on Windows, which only cmd.exe can start; Node runs
   // it as `cmd.exe /d /s /c "<command>"`, here with the absolute path quoted.
   const shim = /\.(cmd|bat)$/i.test(file);
-  const run = childProcess.spawnSync(shim ? `"${file}" hook` : file, shim ? [] : ["hook"], {
-    input,
-    timeout: TIMEOUT_MS,
-    shell: shim,
-    windowsHide: true,
-    // Keeps cmd.exe, including the shim's own bare `node`, from running programs in the cwd.
-    env: { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" },
+  return new Promise((resolve) => {
+    const child = childProcess.spawn(shim ? `"${file}" hook` : file, shim ? [] : ["hook"], {
+      stdio: ["pipe", "pipe", "ignore"],
+      shell: shim,
+      windowsHide: true,
+      // Its own process group, so a timeout can kill the launcher and the binary together.
+      detached: process.platform !== "win32",
+      // Keeps cmd.exe, including the shim's own bare `node`, from running programs in the cwd.
+      env: { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" },
+    });
+    const stdout = [];
+    const timer = setTimeout(() => {
+      killTree(child.pid);
+      child.stdout.destroy();
+      child.unref();
+      resolve({ timedOut: true });
+    }, TIMEOUT_MS);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({ error });
+    });
+    child.on("close", (status, signal) => {
+      clearTimeout(timer);
+      resolve({ status, signal, stdout: Buffer.concat(stdout) });
+    });
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stdin.on("error", () => {});
+    child.stdin.end(input);
   });
-  if (run.error && run.error.code === "ETIMEDOUT") return failure(payload, `supervisor gave no answer within ${TIMEOUT_MS / 1000} s`);
+}
+
+function killTree(pid) {
+  try {
+    if (process.platform === "win32") {
+      const taskkill = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe");
+      childProcess.spawnSync(taskkill, ["/pid", String(pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+    } else {
+      process.kill(-pid, "SIGKILL");
+    }
+  } catch (_err) {
+    // The tree has already exited.
+  }
+}
+
+async function hook(input, payload) {
+  const file = resolve("supervisor");
+  if (!file) return failure(payload, UNSTARTABLE);
+  const run = await spawn(file, input);
+  if (run.timedOut) return failure(payload, `supervisor gave no answer within ${TIMEOUT_MS / 1000} s`);
   if (run.error) return failure(payload, UNSTARTABLE);
   if (run.signal) return failure(payload, `supervisor was killed by ${run.signal}`);
   if (run.status !== 0) return failure(payload, `supervisor exited with ${run.status}`);
@@ -99,15 +139,19 @@ function hook(input, payload) {
   return { code: 0, stdout: run.stdout, stderr: "" };
 }
 
-let payload = null;
-let result;
-try {
-  const input = fs.readFileSync(0);
-  payload = parse(input.toString("utf8"));
-  result = payload ? hook(input, payload) : failure(null, "stdin is not a hook payload with a hook_event_name");
-} catch (_err) {
-  result = failure(payload, "the plugin hook itself failed");
+async function main() {
+  let payload = null;
+  try {
+    const input = fs.readFileSync(0);
+    payload = parse(input.toString("utf8"));
+    return payload ? await hook(input, payload) : failure(null, "stdin is not a hook payload with a hook_event_name");
+  } catch (_err) {
+    return failure(payload, "the plugin hook itself failed");
+  }
 }
-process.stdout.write(result.stdout);
-process.stderr.write(result.stderr);
-process.exitCode = result.code;
+
+main().then((result) => {
+  process.stdout.write(result.stdout);
+  process.stderr.write(result.stderr);
+  process.exitCode = result.code;
+});

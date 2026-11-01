@@ -91,12 +91,22 @@ test("a supervisor that prints something other than one JSON object", async () =
   await assertFailure(bin('process.stdout.write("[{}]\\n");'), "supervisor printed output that is not one JSON object");
 });
 
-test("a supervisor that does not answer in 20 s", { timeout: 60000 }, () =>
-  assertFailure(bin("setTimeout(() => {}, 60000);"), "supervisor gave no answer within 20 s"));
+// Like npm's launcher, the stub runs the program that hangs as a child sharing its stdout; the
+// hook still answers in time, and kills both.
+test("a supervisor that does not answer in 20 s", { timeout: 60000 }, async () => {
+  const dir = bin(`
+    const { spawnSync } = require("child_process");
+    spawnSync(process.execPath, ["-e", 'require("fs").appendFileSync(process.argv[1], process.pid + "\\\\n"); setTimeout(() => {}, 120000);', require("path").join(__dirname, "pids")], { stdio: "inherit" });
+  `);
+  await assertFailure(dir, "supervisor gave no answer within 20 s");
+  const pids = fs.readFileSync(path.join(dir, "pids"), "utf8").trim().split("\n").map(Number);
+  assert.equal(pids.length, 8);
+  assert.deepEqual(pids.filter((pid) => { try { return process.kill(pid, 0); } catch (_err) { return false; } }), []);
+});
 
 test("a crash inside the hook", () => {
   const crash = path.join(bin(null), "crash.js");
-  fs.writeFileSync(crash, 'require("child_process").spawnSync = () => { throw new Error("crash"); };');
+  fs.writeFileSync(crash, 'require("child_process").spawn = () => { throw new Error("crash"); };');
   return assertFailure(bin(""), "the plugin hook itself failed", { flags: ["--require", crash] });
 });
 
