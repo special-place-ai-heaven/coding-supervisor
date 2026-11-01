@@ -14,9 +14,13 @@ const ROOT = path.join(__dirname, "..");
 const HOOK = path.join(__dirname, "supervisor-hook.js");
 const EVENTS = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "SubagentStop", "Stop"];
 
+const dirs = [];
+test.after(() => dirs.forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })));
+
 // A PATH directory holding a `supervisor` that runs `body` as a node script; no stub when body is null.
 function bin(body) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sup-plugin-"));
+  dirs.push(dir);
   if (body !== null) {
     fs.writeFileSync(path.join(dir, "stub.js"), body);
     if (process.platform === "win32") {
