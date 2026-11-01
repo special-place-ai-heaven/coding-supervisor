@@ -63,6 +63,18 @@ pub fn resolve_state_dir(
     cwd: &Path,
     env_lookup: &dyn Fn(&str) -> Option<String>,
 ) -> (PathBuf, &'static str) {
+    let selected = select_state_dir(cwd, env_lookup);
+    // Compatibility discovery API: creation errors are checked by prepare_state, never a reason
+    // to select a different namespace and silently leave an active gate behind.
+    let _ = fs::create_dir_all(&selected.0);
+    selected
+}
+
+/// The state directory [`resolve_state_dir`] picks, without creating it.
+fn select_state_dir(
+    cwd: &Path,
+    env_lookup: &dyn Fn(&str) -> Option<String>,
+) -> (PathBuf, &'static str) {
     let var = |name: &str| env_lookup(name).filter(|v| !v.is_empty());
     let key = project_key(cwd);
     let chosen = match var("SUPERVISOR_STATE_DIR") {
@@ -86,16 +98,12 @@ pub fn resolve_state_dir(
                 })
         }
     };
-    let selected = chosen.unwrap_or_else(|| {
+    chosen.unwrap_or_else(|| {
         (
             PathBuf::from(canonical_project(cwd)).join(".supervisor"),
             "cwd-fallback",
         )
-    });
-    // Compatibility discovery API: creation errors are checked by prepare_state, never a reason
-    // to select a different namespace and silently leave an active gate behind.
-    let _ = fs::create_dir_all(&selected.0);
-    selected
+    })
 }
 
 /// Checked initialization for production callers. No configured namespace silently falls back.
@@ -108,21 +116,40 @@ pub fn resolve_state_dir_checked(
     Ok(selected)
 }
 
+/// [`resolve_state_dir_checked`] for a reader that writes nothing: the worktree identity is
+/// checked when recorded, and no state is created, migrated or recovered.
+pub fn resolve_state_dir_read_only(
+    cwd: &Path,
+    env_lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<(PathBuf, &'static str), String> {
+    let selected = select_state_dir(cwd, env_lookup);
+    match fs::read_to_string(selected.0.join("project.json")) {
+        Ok(text) => same_worktree(&text, &canonical_project(cwd))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    Ok(selected)
+}
+
+/// project.json `text` names the worktree `identity`.
+fn same_worktree(text: &str, identity: &str) -> Result<(), String> {
+    let v: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| "invalid project identity".to_owned())?;
+    if v.get("canonical_worktree")
+        .and_then(serde_json::Value::as_str)
+        != Some(identity)
+    {
+        return Err("state directory belongs to a different worktree".to_owned());
+    }
+    Ok(())
+}
+
 pub fn prepare_state(root: &Path, cwd: &Path) -> Result<(), String> {
     let tx = crate::transaction::Transaction::open(root)?;
     let identity = canonical_project(cwd);
     let project = root.join("project.json");
     match fs::read_to_string(&project) {
-        Ok(text) => {
-            let v: serde_json::Value =
-                serde_json::from_str(&text).map_err(|_| "invalid project identity".to_owned())?;
-            if v.get("canonical_worktree")
-                .and_then(serde_json::Value::as_str)
-                != Some(identity.as_str())
-            {
-                return Err("state directory belongs to a different worktree".to_owned());
-            }
-        }
+        Ok(text) => same_worktree(&text, &identity)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             crate::transaction::atomic_write(
                 &project,

@@ -21,7 +21,7 @@ const USAGE: &str = "usage: supervisor mcp [--project <dir>]  (serve the gate as
        supervisor task rebind --task <active-id> --session <session-id> [--project <dir>]
        supervisor task migrate --legacy <directory> [--project <dir>]
        supervisor status [--project <dir>] [--harness <claude-code|codex>] [--json]
-       supervisor verdict [--project <dir>] [--task <active-id>] [--require <observed|asserted>] [--json]  (exit 0 pass, 3 requirements unmet, 1 error, 2 usage)
+       supervisor verdict [--project <dir>] [--task <active-id>] [--require <observed|asserted>] [--json]  (exit 0 pass, 3 fail, 1 could not answer, 2 usage; stdout empty on 1 and 2)
        supervisor install --harness <claude-code|codex|cursor|omp|grok> [--project <dir>] [--home <dir>] [--binary <path>] [--dry-run]";
 
 fn main() -> ExitCode {

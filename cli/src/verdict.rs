@@ -1,16 +1,20 @@
-//! `supervisor verdict`: recompute, read-only, whether every mandatory criterion of the active
-//! task has a current receipt that satisfies the required provenance. The stored gate state is
-//! never consulted; only receipts, the hook run journal and the live git candidate are.
+//! `supervisor verdict`: recompute whether every mandatory criterion of the active task has a
+//! current receipt that satisfies the required provenance. It writes nothing: it takes a shared
+//! hold on an existing state lock, recovers no transaction, and runs git without optional locks.
+//! The stored gate state is never consulted; only receipts, the hook run journal and the live git
+//! candidate are.
 
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use coding_supervisor::{CandidateId, Criterion, VerificationReceipt};
 use serde_json::{Value, json};
-use supervisor_claude_code::adapter::{MCP_ASSERTED, receipt_is_observed};
-use supervisor_claude_code::candidate::{CandidateProvider, GitCandidate};
+use supervisor_claude_code::adapter::{MCP_ASSERTED, receipts_observed};
+use supervisor_claude_code::candidate::{GitCandidate, Unobserved};
 use supervisor_claude_code::lifecycle;
-use supervisor_claude_code::location::{canonical_project, resolve_state_dir_checked};
+use supervisor_claude_code::location::{canonical_project, resolve_state_dir_read_only};
 use supervisor_claude_code::state::{Stored, load_gate, read_contract};
+use supervisor_claude_code::transaction::read_lock;
 
 use crate::{Failure, Flags};
 
@@ -39,10 +43,11 @@ enum Provenance {
 }
 
 impl Provenance {
-    fn of(dir: &Path, task_id: &str, receipt: &VerificationReceipt) -> Self {
+    /// `observed`: a hook completion journal backs the receipt.
+    fn of(receipt: &VerificationReceipt, observed: bool) -> Self {
         if receipt.output_ref.starts_with(MCP_ASSERTED) {
             Self::AssertedMcp
-        } else if receipt_is_observed(dir, task_id, receipt) {
+        } else if observed {
             Self::Observed(if receipt.output_ref.starts_with(TC_RECONSTRUCTED) {
                 Observer::Tc
             } else {
@@ -65,7 +70,28 @@ impl Provenance {
 /// The candidate the verdict is evaluated against.
 enum Head {
     Known(CandidateId),
-    Unknown(String),
+    Unknown(HeadReason),
+}
+
+/// Why HEAD is unknown. The free-text cause goes to stderr only.
+#[derive(Clone, Copy)]
+enum HeadReason {
+    GitUnavailable,
+    GitFailed,
+    WorktreeUnreadable,
+    /// git answered, but not with a 40-hex sha and a 64-hex digest.
+    HeadUnparseable,
+}
+
+impl HeadReason {
+    fn code(self) -> &'static str {
+        match self {
+            Self::GitUnavailable => "git_unavailable",
+            Self::GitFailed => "git_failed",
+            Self::WorktreeUnreadable => "worktree_unreadable",
+            Self::HeadUnparseable => "head_unparseable",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -77,7 +103,7 @@ enum StaleReason {
 
 #[derive(Clone, Copy, PartialEq)]
 enum FailReason {
-    NonZeroExit(i32),
+    ExitNonZero,
     NoExitCode,
     ClaimUnsupported,
 }
@@ -105,7 +131,7 @@ impl State {
     }
     fn reason(self) -> Option<&'static str> {
         match self {
-            Self::Failed(FailReason::NonZeroExit(_)) => Some("exit_nonzero"),
+            Self::Failed(FailReason::ExitNonZero) => Some("exit_nonzero"),
             Self::Failed(FailReason::NoExitCode) => Some("no_exit_code"),
             Self::Failed(FailReason::ClaimUnsupported) => Some("claim_unsupported"),
             Self::Stale(StaleReason::ReceiptAtOtherHead) => Some("receipt_at_other_head"),
@@ -122,7 +148,7 @@ impl State {
 enum Require {
     /// Strict: only hook- or TC-observed receipts satisfy.
     Observed,
-    /// Lenient (D2, through M3): an MCP-asserted receipt also satisfies, and is flagged.
+    /// Lenient (D2, before M6): an MCP-asserted receipt also satisfies, and is flagged.
     Asserted,
 }
 
@@ -181,7 +207,7 @@ fn judge<'a>(
         }
         match r.exit_code {
             Some(0) => pass,
-            Some(code) => State::Failed(FailReason::NonZeroExit(code)),
+            Some(_) => State::Failed(FailReason::ExitNonZero),
             None => State::Failed(FailReason::NoExitCode),
         }
     };
@@ -210,9 +236,18 @@ fn judge<'a>(
     }
 }
 
-/// The whole verdict as JSON, plus its exit code (0 pass, [`EXIT_UNMET`] fail).
+/// The active task the verdict is about.
+struct TaskRef<'a> {
+    task_id: &'a str,
+    contract_id: &'a str,
+    /// SHA-256 of contract.json's bytes.
+    contract_digest: &'a str,
+}
+
+/// The whole verdict as JSON, plus its exit code (0 pass, [`EXIT_UNMET`] fail). Every key is
+/// always present; absent values are `null`.
 fn report(
-    task: Option<(&str, &str)>,
+    task: Option<&TaskRef<'_>>,
     head: &Head,
     require: Require,
     verdicts: &[CriterionVerdict<'_>],
@@ -228,7 +263,11 @@ fn report(
                 unmet.push(json!(id));
             }
             if v.state == State::AssertedNotObserved {
-                flags.push(json!(format!("{id}: asserted, not observed")));
+                flags.push(json!({
+                    "criterion": id,
+                    "code": "asserted_not_observed",
+                    "mandatory": v.criterion.mandatory,
+                }));
             }
             json!({
                 "id": id,
@@ -241,40 +280,97 @@ fn report(
                     "dirty_digest": r.candidate.dirty_digest,
                     "command": r.command,
                     "exit_code": r.exit_code,
-                    "recorded_at": r.finished_at,
+                    "recorded_at": rfc3339_millis(r.finished_at),
+                    "output_ref": r.output_ref,
                 })),
                 "satisfies": satisfies,
             })
         })
         .collect();
-    let head_unknown = matches!(head, Head::Unknown(_));
-    let pass = task.is_some() && !head_unknown && unmet.is_empty();
-    let exit_code = if pass { 0 } else { EXIT_UNMET };
     let reason = if task.is_none() {
         Some("no_active_task")
-    } else if head_unknown {
+    } else if matches!(head, Head::Unknown(_)) {
         Some("head_unknown")
+    } else if !verdicts.iter().any(|v| v.criterion.mandatory) {
+        Some("no_mandatory_criteria")
     } else if !unmet.is_empty() {
         Some("mandatory_unmet")
     } else {
         None
     };
+    let pass = reason.is_none();
+    let exit_code = if pass { 0 } else { EXIT_UNMET };
     let value = json!({
-        "schema": "supervisor.verdict/1",
+        "schema_version": 1,
         "verdict": if pass { "pass" } else { "fail" },
         "reason": reason,
         "exit_code": exit_code,
         "require": require.code(),
-        "task": task.map(|(task_id, contract_id)| json!({"task_id": task_id, "contract_id": contract_id})),
+        "task": task.map(|t| json!({
+            "task_id": t.task_id,
+            "contract_id": t.contract_id,
+            "contract_digest": t.contract_digest,
+        })),
         "head": match head {
             Head::Known(c) => json!({"sha": c.base_commit, "dirty_digest": c.dirty_digest, "reason": null}),
-            Head::Unknown(why) => json!({"sha": null, "dirty_digest": null, "reason": why}),
+            Head::Unknown(why) => json!({"sha": null, "dirty_digest": null, "reason": why.code()}),
         },
         "criteria": criteria,
         "unmet": unmet,
         "flags": flags,
     });
     (value, exit_code)
+}
+
+/// Unix seconds as RFC 3339 UTC with milliseconds, e.g. `2000-02-29T00:00:02.000Z`.
+fn rfc3339_millis(secs: u64) -> String {
+    let (days, time) = (secs / 86_400, secs % 86_400);
+    // Howard Hinnant's civil_from_days, for days since 1970-01-01.
+    let z = days + 719_468;
+    let (era, doe) = (z / 146_097, z % 146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = era * 400 + yoe + u64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.000Z",
+        time / 3_600,
+        time % 3_600 / 60,
+        time % 60
+    )
+}
+
+fn is_lower_hex(s: &str, len: usize) -> bool {
+    s.len() == len && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The live candidate, or why it is unknown; the free-text cause goes to stderr.
+fn observe_head(project: &Path) -> Head {
+    let (reason, why) = match (GitCandidate {
+        cwd: project.to_path_buf(),
+    })
+    .observe_git()
+    {
+        Ok(c) if is_lower_hex(&c.id.base_commit, 40) && is_lower_hex(&c.id.dirty_digest, 64) => {
+            return Head::Known(c.id);
+        }
+        Ok(c) => (
+            HeadReason::HeadUnparseable,
+            format!(
+                "git gave HEAD {:?} with digest {:?}",
+                c.id.base_commit, c.id.dirty_digest
+            ),
+        ),
+        Err(e @ Unobserved::GitUnavailable(_)) => (HeadReason::GitUnavailable, e.to_string()),
+        Err(e @ Unobserved::GitFailed(_)) => (HeadReason::GitFailed, e.to_string()),
+        Err(e @ Unobserved::WorktreeUnreadable(_)) => {
+            (HeadReason::WorktreeUnreadable, e.to_string())
+        }
+    };
+    let _ = writeln!(io::stderr(), "verdict: head unknown: {why}");
+    Head::Unknown(reason)
 }
 
 fn short(sha: &str) -> &str {
@@ -329,20 +425,12 @@ fn human(report: &Value) -> String {
 pub fn run(flags: &Flags) -> Result<(), Failure> {
     let require = Require::parse(flags.value("--require"))?;
     let project = PathBuf::from(canonical_project(&flags.project()?));
-    let (root, _) = resolve_state_dir_checked(&project, &|key| std::env::var(key).ok())
-        .map_err(|_| Failure::Error("verdict could not resolve project state safely".to_owned()))?;
-    let _transaction =
-        supervisor_claude_code::transaction::Transaction::open(&root).map_err(|_| {
-            Failure::Error("verdict could not read a consistent project snapshot".to_owned())
-        })?;
-    let head = match (GitCandidate {
-        cwd: project.clone(),
-    })
-    .observe()
-    {
-        Ok(candidate) => Head::Known(candidate.id),
-        Err(why) => Head::Unknown(why),
-    };
+    let (root, _) = resolve_state_dir_read_only(&project, &|key| std::env::var(key).ok())
+        .map_err(|e| Failure::Error(format!("verdict: project state unusable: {e}")))?;
+    let _lock = read_lock(&root)
+        .map_err(|e| Failure::Error(format!("verdict: project state not readable: {e}")))?;
+    // One HEAD snapshot, taken before any receipt is read, is what every receipt is judged by.
+    let head = observe_head(&project);
     let task = lifecycle::active_task(&root)
         .map_err(|e| Failure::Error(format!("verdict: active task pointer invalid: {e}")))?;
     if let Some(wanted) = flags.value("--task")
@@ -374,21 +462,24 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
                     )));
                 }
             };
+            let observed = receipts_observed(&task.dir, &task.task_id, &receipts)
+                .map_err(|e| Failure::Error(format!("verdict: run journal unreadable: {e}")))?;
             let judged: Vec<(&VerificationReceipt, Provenance)> = receipts
                 .iter()
-                .map(|r| (r, Provenance::of(&task.dir, &task.task_id, r)))
+                .zip(observed)
+                .map(|(r, observed)| (r, Provenance::of(r, observed)))
                 .collect();
             let verdicts: Vec<CriterionVerdict<'_>> = contract
                 .criteria
                 .iter()
                 .map(|c| judge(c, &judged, &head))
                 .collect();
-            report(
-                Some((&task.task_id, &contract.id.0)),
-                &head,
-                require,
-                &verdicts,
-            )
+            let task_ref = TaskRef {
+                task_id: &task.task_id,
+                contract_id: &contract.id.0,
+                contract_digest: &digest,
+            };
+            report(Some(&task_ref), &head, require, &verdicts)
         }
     };
     if flags.switch("--json") {

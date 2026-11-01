@@ -34,6 +34,28 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// A shared hold on an existing state lock, for a reader that writes nothing: no state
+/// directory, lock file or recovery is created, and with no lock file there is nothing to hold.
+/// A pending transaction is an error, left for a writer to recover.
+pub fn read_lock(root: &Path) -> Result<Option<File>, String> {
+    let lock_path = root.join("state.lock");
+    let lock = match File::open(&lock_path) {
+        Ok(lock) => {
+            lock.lock_shared()
+                .map_err(|e| format!("{}: {e}", lock_path.display()))?;
+            Some(lock)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("{}: {e}", lock_path.display())),
+    };
+    let pending = root.join("transaction.json");
+    match pending.try_exists() {
+        Ok(false) => Ok(lock),
+        Ok(true) => Err("pending transaction; run `supervisor status` to recover it".to_owned()),
+        Err(e) => Err(format!("{}: {e}", pending.display())),
+    }
+}
+
 fn relative(path: &str) -> Result<&Path, String> {
     let path = Path::new(path);
     if path.as_os_str().is_empty()

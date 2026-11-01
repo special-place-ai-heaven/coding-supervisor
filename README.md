@@ -103,19 +103,80 @@ The MCP server adds `intent_record` and `intent_apply` to the existing eight too
 `repair_request`, `accept_try`, `task_complete` and `task_state`. MCP receipts and
 intent registration remain caller-asserted; MCP responses do not block the harness.
 
+For Terminal Commander jobs, use an explicit absolute working directory, preserve argument boundaries and retrieve the final status of the same job. Dispatch binds task, candidate and cwd; changes during execution can make evidence stale. After a daemon restart, reconstructed status can support recovery only with persisted matching dispatch and durable process-completion evidence. It is labeled `tc-reconstructed`, separately from live observations. Missing linkage, masked pipelines and old records without current provenance require investigation or a fresh check. See [recovery details](docs/research/2026-10-30-dogfood-rollout/OPERATIONS.md#durable-jobs-and-crash-recovery) and [repair evidence](docs/research/2026-10-30-dogfood-rollout/REPAIR-RESULTS.md).
+
+### Verdict
+
 `supervisor verdict [--project <dir>] [--task <active-id>] [--require observed|asserted] [--json]`
 recomputes the active task's result from its receipts, the hook run journal and the
-live git HEAD; it never reads the stored gate state. Each criterion is reported as
-`observed`, `asserted_not_observed`, `unverified`, `failed`, `stale` or `missing`.
-Only a receipt backed by a hook-observed run counts as observed; an MCP receipt is
-`asserted_not_observed`, and a receipt with neither is `unverified`. A receipt recorded
-at another HEAD or before a worktree edit is `stale`. `--require observed` (the default)
-passes only when every mandatory criterion is observed; `--require asserted` also
-accepts asserted receipts and lists them under `flags`. An undeterminable HEAD is
-reported as `null` with a reason and fails. Exit codes: 0 pass, 3 requirements unmet,
-1 error, 2 usage.
+live git candidate; it never reads the stored gate state. `--task` must name the active task.
 
-For Terminal Commander jobs, use an explicit absolute working directory, preserve argument boundaries and retrieve the final status of the same job. Dispatch binds task, candidate and cwd; changes during execution can make evidence stale. After a daemon restart, reconstructed status can support recovery only with persisted matching dispatch and durable process-completion evidence. It is labeled `tc-reconstructed`, separately from live observations. Missing linkage, masked pipelines and old records without current provenance require investigation or a fresh check. See [recovery details](docs/research/2026-10-30-dogfood-rollout/OPERATIONS.md#durable-jobs-and-crash-recovery) and [repair evidence](docs/research/2026-10-30-dogfood-rollout/REPAIR-RESULTS.md).
+- **Provenance.** A receipt is `hook` or `tc` when its `observed:` or
+  `tc-reconstructed:` reference names a current dispatch and a run in the hook journal
+  matches its command, cwd, candidate, exit code and times; `mcp` when MCP
+  `receipt_record` wrote it; otherwise `unverified`.
+- **Current.** HEAD is read once, before any receipt. A receipt is current only when its
+  sha and dirty digest byte-equal that snapshot. If HEAD or the worktree moves after the
+  snapshot, the verdict is still a correct statement about the reported `head.sha` and
+  `head.dirty_digest`; it is not an error and is not retried. If it moved before the
+  snapshot, older receipts read as `stale`. Callers must compare `head.sha` with the HEAD
+  they act on and must not apply a verdict to any other sha.
+- **State.** Among a criterion's current receipts the latest in the first matching tier
+  decides: `hook`/`tc` gives `observed` (exit 0) or `failed`; else `mcp` gives
+  `asserted_not_observed` or `failed`; else `unverified`. With receipts but none current
+  it is `stale`; with none, `missing`.
+- **Require.** `observed` (the default) passes only when every mandatory criterion is
+  `observed`. `asserted` also accepts `asserted_not_observed`; it relaxes nothing else.
+  Missing or asserted-only receipts are flagged before M6 and hard-blocked at the gate
+  from M6; the verdict encodes no milestone, and from M6 gates use `observed`.
+  Non-mandatory criteria are listed but never affect the result, and a task with no
+  mandatory criterion fails.
+
+`--json` prints one object on one line. Every key is always present, with `null` for
+none:
+
+```json
+{"schema_version":1,"verdict":"fail","reason":"mandatory_unmet","exit_code":3,"require":"observed",
+ "task":{"task_id":"task-…","contract_id":"probe","contract_digest":"<64 hex>"},
+ "head":{"sha":"<40 hex>","dirty_digest":"<64 hex>","reason":null},
+ "criteria":[{"id":"C1","mandatory":true,"state":"asserted_not_observed","reason":null,"provenance":"mcp",
+   "receipt":{"head_sha":"<40 hex>","dirty_digest":"<64 hex>","command":"false","exit_code":0,
+              "recorded_at":"2026-11-01T08:55:42.000Z","output_ref":"mcp-asserted:…"},
+   "satisfies":false}],
+ "unmet":["C1"],
+ "flags":[{"criterion":"C1","code":"asserted_not_observed","mandatory":true}]}
+```
+
+| field | values |
+|---|---|
+| `reason` | `null` on pass; else the first of `no_active_task`, `head_unknown`, `no_mandatory_criteria`, `mandatory_unmet` |
+| `task` | `null` with no active task; `contract_digest` is the sha256 of contract.json |
+| `head.sha`, `head.dirty_digest` | 40 and 64 lower-case hex, or both `null` with `head.reason` one of `git_unavailable`, `git_failed`, `worktree_unreadable`, `head_unparseable` (the cause goes to stderr) |
+| `criteria[]` | contract order; `state` as above, `provenance` `hook`, `tc`, `mcp`, `unverified` or `null` when missing |
+| `criteria[].reason` | `failed`: `exit_nonzero`, `no_exit_code` or `claim_unsupported`; `unverified`: `no_observation_record`; `stale`: `receipt_at_other_head`, `worktree_changed` or `head_unknown`; otherwise `null` |
+| `criteria[].receipt` | the deciding receipt, `null` when missing; `recorded_at` is RFC 3339 UTC with milliseconds |
+| `unmet`, `flags` | mandatory criteria not satisfied, and every `asserted_not_observed` criterion, in contract order |
+
+Without `--json` the same result is printed as one `<id>: ` line per criterion and a
+final `verdict: pass (` or `verdict: fail (` line; only those prefixes are stable.
+
+| exit | meaning | stdout |
+|---|---|---|
+| 0 | pass | the verdict |
+| 3 | answered fail | the verdict |
+| 1 | could not answer: unreadable, corrupt or tampered state (including runs.jsonl and autonomy.json), a pending transaction, or a `--task` mismatch | empty; the error on stderr |
+| 2 | usage | empty; usage on stderr |
+
+The verdict writes nothing: it takes a shared hold on an existing state lock, creates no
+state directory or lock, leaves a pending transaction for `supervisor status` to
+recover, and runs git without optional locks.
+
+`observed` proves consistency, not authenticity: it means a matching hook-format row
+exists in runs.jsonl for a current dispatch. Any process running as the same user can
+append a perfectly matching row and so forge `observed`; the same holds for a
+caller-supplied MCP candidate. This is an accepted risk under the same-user limitation
+(tamper detected, not prevented), not something the verdict defends against. Do not
+describe `observed` as tamper-proof.
 
 ## Harness support
 
