@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.4.1...v0.5.0) (2026-11-01)
+
+
+### Features
+
+* **plugin:** add Claude Code plugin with fail-closed supervisor hook ([21bf34f](https://github.com/special-place-ai-heaven/coding-supervisor/commit/21bf34fc20cfbc7668dcb9bbec5402614dcb52cc))
+
 ## [0.4.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.4.0...v0.4.1) (2026-11-01)
 
 
