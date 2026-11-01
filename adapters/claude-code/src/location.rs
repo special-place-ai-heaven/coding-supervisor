@@ -4,23 +4,28 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Resolve filesystem aliases and nested directories to the physical worktree, not its common git directory.
+/// A git that does not answer in time is treated as no repository; see [`checked_project`].
 pub fn canonical_project(cwd: &Path) -> String {
-    let mut command = std::process::Command::new("git");
-    command
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(cwd);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
+    normalize(git_root(cwd).ok().flatten().as_deref().unwrap_or(cwd))
+}
+
+/// [`canonical_project`], or an error when git does not answer in time, for callers whose
+/// state namespace or gate decision must not silently follow a different identity.
+pub(crate) fn checked_project(cwd: &Path) -> Result<String, String> {
+    Ok(normalize(git_root(cwd)?.as_deref().unwrap_or(cwd)))
+}
+
+fn git_root(cwd: &Path) -> Result<Option<PathBuf>, String> {
+    match crate::git::run(cwd, &["rev-parse", "--show-toplevel"]) {
+        Ok(out) if out.status.success() => Ok(String::from_utf8(out.stdout)
+            .ok()
+            .map(|s| PathBuf::from(s.trim()))),
+        Ok(_) | Err(crate::git::Failure::Unavailable(_)) => Ok(None),
+        Err(crate::git::Failure::TimedOut(why)) => Err(why),
     }
-    let git_root = command
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| PathBuf::from(s.trim()));
-    let path = git_root.as_deref().unwrap_or(cwd);
+}
+
+fn normalize(path: &Path) -> String {
     let absolute = fs::canonicalize(path)
         .or_else(|_| std::path::absolute(path))
         .unwrap_or_else(|_| path.to_path_buf());
@@ -124,7 +129,7 @@ pub fn resolve_state_dir_read_only(
 ) -> Result<(PathBuf, &'static str), String> {
     let selected = select_state_dir(cwd, env_lookup);
     match fs::read_to_string(selected.0.join("project.json")) {
-        Ok(text) => same_worktree(&text, &canonical_project(cwd))?,
+        Ok(text) => same_worktree(&text, &checked_project(cwd)?)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.to_string()),
     }
@@ -145,8 +150,8 @@ fn same_worktree(text: &str, identity: &str) -> Result<(), String> {
 }
 
 pub fn prepare_state(root: &Path, cwd: &Path) -> Result<(), String> {
+    let identity = checked_project(cwd)?;
     let tx = crate::transaction::Transaction::open(root)?;
-    let identity = canonical_project(cwd);
     let project = root.join("project.json");
     match fs::read_to_string(&project) {
         Ok(text) => same_worktree(&text, &identity)?,

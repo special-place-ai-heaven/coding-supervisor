@@ -431,9 +431,10 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
             )
         })
     });
-    let candidate = env
-        .candidate
-        .observe()
+    // Observed once, before with_task takes state.lock: the candidate's git never runs under it.
+    let observed = env.candidate.observe();
+    let candidate = observed
+        .as_ref()
         .map(|c| format!("{}:{}", c.id.base_commit, c.id.dirty_digest))
         .unwrap_or_else(|e| format!("unobserved:{e}"));
     let digest = crate::sha256::hex(format!("{payload}:{candidate}").as_bytes());
@@ -506,7 +507,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                 }
             }
             env.state_dir = dir.to_path_buf();
-            let decision = handle_inner(payload, env);
+            let decision = handle_inner(payload, env, observed);
             env.state_dir = root.clone();
             Ok(decision.to_json().unwrap_or(Value::Null))
         },
@@ -547,21 +548,29 @@ fn decision_from_json(v: &Value) -> Decision {
     fail_open("invalid cached hook response")
 }
 
-fn handle_inner(payload: &Value, env: &mut Env) -> Decision {
+fn handle_inner(payload: &Value, env: &mut Env, observed: Result<Candidate, String>) -> Decision {
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let agent = text(payload, "agent_id").unwrap_or("main");
     let mut reasons: Vec<String> = env.level.error.iter().cloned().collect();
     let mut trace = Trace::default();
-    let decision =
-        process(payload, env, event, agent, &mut reasons, &mut trace).unwrap_or_else(|what| {
-            reasons.push(format!("adapter error: {what}"));
-            match event {
-                "Stop" | "SubagentStop" => {
-                    Decision::Block(format!("GATE: evidence unavailable: {what}"))
-                }
-                _ => fail_open(&what),
+    let decision = process(
+        payload,
+        env,
+        observed,
+        event,
+        agent,
+        &mut reasons,
+        &mut trace,
+    )
+    .unwrap_or_else(|what| {
+        reasons.push(format!("adapter error: {what}"));
+        match event {
+            "Stop" | "SubagentStop" => {
+                Decision::Block(format!("GATE: evidence unavailable: {what}"))
             }
-        });
+            _ => fail_open(&what),
+        }
+    });
     let line = journal::line(
         payload,
         env.state_location,
@@ -579,6 +588,7 @@ fn handle_inner(payload: &Value, env: &mut Env) -> Decision {
 fn process(
     payload: &Value,
     env: &mut Env,
+    observed: Result<Candidate, String>,
     event: &str,
     agent: &str,
     reasons: &mut Vec<String>,
@@ -618,7 +628,6 @@ fn process(
         return Ok(denial);
     }
     trace.state_before = stored.as_ref().map(|g| g.checkpoint.state);
-    let observed = env.candidate.observe();
     trace.candidate = observed.as_ref().ok().map(|c| c.id.clone());
     if let Err(why) = &observed {
         reasons.push(format!("candidate not observed: {why}"));

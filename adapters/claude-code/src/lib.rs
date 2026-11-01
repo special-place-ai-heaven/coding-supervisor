@@ -8,6 +8,7 @@ pub mod autonomy;
 pub mod candidate;
 mod chain;
 pub mod claim;
+mod git;
 pub mod guard;
 pub mod header;
 pub mod journal;
