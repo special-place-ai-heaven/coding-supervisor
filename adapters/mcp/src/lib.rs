@@ -24,6 +24,7 @@ use serde_json::{Map, Value};
 use supervisor_claude_code::adapter::{MCP_ASSERTED, Session, now, render};
 use supervisor_claude_code::candidate::{CandidateProvider, GitCandidate};
 use supervisor_claude_code::journal::{self, Trace};
+use supervisor_claude_code::level::{self, Level};
 use supervisor_claude_code::lifecycle;
 use supervisor_claude_code::location::resolve_state_dir;
 use supervisor_claude_code::state::{
@@ -89,6 +90,8 @@ pub struct Server {
     state_dir: PathBuf,
     state_location: &'static str,
     state_error: Option<String>,
+    /// Holds the global `level` file, read for the level stamped on every journal line.
+    config_dir: Option<PathBuf>,
 }
 
 /// A validated tool input.
@@ -126,6 +129,7 @@ impl Server {
             state_dir,
             state_location,
             state_error,
+            config_dir: level::config_dir(env_lookup),
         }
     }
 
@@ -264,6 +268,7 @@ impl Server {
             .get("event_id")
             .and_then(Value::as_str)
             .map(|id| format!("mcp:{tool}:{id}"));
+        let level = level::in_effect(&self.state_dir, self.config_dir.as_deref());
         let candidate = GitCandidate {
             cwd: self.project.clone(),
         }
@@ -282,6 +287,7 @@ impl Server {
                     state_dir: dir.to_path_buf(),
                     state_location: self.state_location,
                     state_error: None,
+                    config_dir: self.config_dir.clone(),
                 };
                 let mut response = local.call_inner(
                     if started.is_some() {
@@ -290,6 +296,7 @@ impl Server {
                         tool
                     },
                     args,
+                    level,
                 );
                 if let Some(content) = response
                     .get_mut("content")
@@ -314,9 +321,18 @@ impl Server {
         }
     }
 
-    fn call_inner(&self, tool: &str, args: &Value) -> Value {
+    fn call_inner(
+        &self,
+        tool: &str,
+        args: &Value,
+        (level, level_source): (Level, &'static str),
+    ) -> Value {
         let mut reasons = Vec::new();
-        let mut trace = Trace::default();
+        let mut trace = Trace {
+            level: Some(level),
+            level_source: Some(level_source),
+            ..Trace::default()
+        };
         let (text, is_error) = match self.run(tool, args, &mut reasons, &mut trace) {
             Ok(text) => (text, false),
             Err(why) => (format!("GATE (advisory): {tool} refused: {why}"), true),

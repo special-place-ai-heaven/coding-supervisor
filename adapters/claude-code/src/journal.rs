@@ -5,6 +5,7 @@ use coding_supervisor::{CandidateId, TaskState};
 use serde_json::Value;
 
 use crate::header::{self, Verdict};
+use crate::level::Level;
 use crate::state::{candidate_json, obj, state_name};
 
 /// Facts from the gate that the payload does not carry.
@@ -15,6 +16,9 @@ pub struct Trace {
     pub state_before: Option<TaskState>,
     pub state_after: Option<TaskState>,
     pub tampered: bool,
+    /// The level the call ran at and its source (see `level::Setting`).
+    pub level: Option<Level>,
+    pub level_source: Option<&'static str>,
 }
 
 fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -166,6 +170,8 @@ pub fn line(
         ("prompt_id", text(payload, "prompt_id").into()),
         ("task_id", trace.task_id.clone().into()),
         ("state_location", state_location.into()),
+        ("effective_level", trace.level.map(Level::name).into()),
+        ("level_source", trace.level_source.into()),
         (
             "candidate",
             trace.candidate.as_ref().map(candidate_json).into(),

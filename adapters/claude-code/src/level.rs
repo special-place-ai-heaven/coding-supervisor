@@ -39,13 +39,26 @@ impl Level {
 }
 
 /// The level a hook call runs at.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Setting {
     pub level: Level,
+    /// `project`, `global`, `default`, or `unreadable` when `error` is set.
+    pub source: &'static str,
     /// Holds the global `level` file; agents may not write it.
     pub config_dir: Option<PathBuf>,
     /// Why a `level` file could not be used; the call then runs at `full`.
     pub error: Option<String>,
+}
+
+impl Default for Setting {
+    fn default() -> Self {
+        Self {
+            level: Level::Full,
+            source: "default",
+            config_dir: None,
+            error: None,
+        }
+    }
 }
 
 /// `SUPERVISOR_CONFIG_DIR`, else `%APPDATA%\coding-supervisor` on Windows, else
@@ -93,4 +106,10 @@ pub fn effective(
         return Ok((level, "global"));
     }
     Ok((Level::Full, "default"))
+}
+
+/// The level a hook runs at and its source, as stamped on records: an unusable `level` file runs
+/// the hook at `full` from source `unreadable`.
+pub fn in_effect(state_root: &Path, config_dir: Option<&Path>) -> (Level, &'static str) {
+    effective(state_root, config_dir).unwrap_or((Level::Full, "unreadable"))
 }

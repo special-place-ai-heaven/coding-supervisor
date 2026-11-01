@@ -52,11 +52,12 @@ impl Fixture {
         f.commit("one");
         f
     }
-    /// A child process that sees no user, system or inherited repository git configuration and
-    /// discovers no repository above the fixture root.
+    /// A child process that sees no user, system or inherited repository git configuration or
+    /// global `level` file, and discovers no repository above the fixture root.
     fn command(&self, program: &str) -> Command {
         let mut cmd = Command::new(program);
         cmd.env("HOME", &self.root)
+            .env("SUPERVISOR_CONFIG_DIR", self.root.join("config"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", self.root.join("gitconfig"))
             .env("GIT_CEILING_DIRECTORIES", &self.root)
@@ -439,6 +440,8 @@ fn t01_verdict_json_every_key_present_on_every_path() {
         "reason",
         "exit_code",
         "require",
+        "effective_level",
+        "level_source",
         "task",
         "head",
         "criteria",
@@ -470,6 +473,10 @@ fn t01_verdict_json_every_key_present_on_every_path() {
     assert_eq!(keys(&r), top);
     assert_eq!(r["schema_version"], json!(1));
     assert_eq!(r["reason"], Value::Null);
+    assert_eq!(
+        (&r["effective_level"], &r["level_source"]),
+        (&json!("full"), &json!("default"))
+    );
     assert_eq!(
         keys(&r["task"]),
         set(&["task_id", "contract_id", "contract_digest"])

@@ -768,6 +768,8 @@ fn journal_v1_fields() {
         "prompt_id",
         "task_id",
         "state_location",
+        "effective_level",
+        "level_source",
         "candidate",
         "event",
         "tool_name",
@@ -795,6 +797,10 @@ fn journal_v1_fields() {
         want.sort();
         assert_eq!(got, want);
         assert_eq!(line["task_id"], "t4-test");
+        assert_eq!(
+            (&line["effective_level"], &line["level_source"]),
+            (&json!("full"), &json!("default"))
+        );
         assert_eq!(
             line["candidate"],
             json!({"base_commit": "base", "dirty_digest": "one"})
