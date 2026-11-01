@@ -438,80 +438,79 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
         .map(|c| format!("{}:{}", c.id.base_commit, c.id.dirty_digest))
         .unwrap_or_else(|e| format!("unobserved:{e}"));
     let digest = crate::sha256::hex(format!("{payload}:{candidate}").as_bytes());
-    if let Err(what) = crate::lifecycle::observe_connection(&root, "claude-hook") {
-        return fail_open(&what);
-    }
-    let result = crate::lifecycle::with_task(
-        &root,
-        text(payload, "task_id"),
-        text(payload, "session_id"),
-        event_id.as_deref().map(|id| (id, digest.as_str())),
-        |dir| {
-            // The fast ownership check above can race an explicit resume. Recheck the
-            // staged task while with_task holds its OS lock, before Session can mutate it.
-            if !crate::autonomy::owns_session(dir, text(payload, "session_id").unwrap_or_default())?
-            {
-                return Ok(if event == "PreToolUse" && !read_only_tool(payload) {
-                    Decision::Deny("GATE: task ownership changed; explicit user resume is required before mutation".to_owned()).to_json().unwrap_or(Value::Null)
-                } else {
-                    Value::Null
-                });
-            }
-            if let Some((_, fingerprint)) = &intent_snapshot {
-                use crate::autonomy::IntentAuthority;
-                let (authority, current_fingerprint) = crate::autonomy::locked_intent_authority(
-                    &root,
-                    text(payload, "session_id").unwrap_or_default(),
-                )?;
-                let refusal = match authority {
-                    IntentAuthority::Pending => {
-                        Some(if event == "PreToolUse" {
-                            Decision::Deny("GATE: propose the current prompt intent before mutation or delegation".to_owned())
-                        } else {
-                            Decision::Block(
-                                "GATE: classify the current prompt before stopping".to_owned(),
-                            )
-                        })
-                    }
-                    IntentAuthority::Discussion => {
-                        Some(if event == "PreToolUse" {
-                            Decision::Deny("GATE: this prompt is discussion only; a new work prompt is required".to_owned())
-                        } else {
-                            Decision::None
-                        })
-                    }
-                    IntentAuthority::Actionable if &current_fingerprint != fingerprint => {
-                        Some(if event == "PreToolUse" {
-                            Decision::Deny("GATE: current prompt intent changed; retry under its approved scope".to_owned())
-                        } else {
-                            Decision::Block(
-                                "GATE: current prompt intent changed; retry before stopping"
-                                    .to_owned(),
-                            )
-                        })
-                    }
-                    IntentAuthority::Actionable => None,
-                };
-                if let Some(refusal) = refusal {
-                    return Ok(refusal.to_json().unwrap_or(Value::Null));
-                }
-                if event == "PreToolUse"
-                    && root.join("intents.json").exists()
-                    && lifecycle::active_task(&root)?.is_none()
+    let result = crate::lifecycle::observe_connection(&root, "claude-hook").and_then(|()| {
+        crate::lifecycle::with_task(
+            &root,
+            text(payload, "task_id"),
+            text(payload, "session_id"),
+            event_id.as_deref().map(|id| (id, digest.as_str())),
+            |dir| {
+                // The fast ownership check above can race an explicit resume. Recheck the
+                // staged task while with_task holds its OS lock, before Session can mutate it.
+                if !crate::autonomy::owns_session(dir, text(payload, "session_id").unwrap_or_default())?
                 {
-                    return Ok(Decision::Deny(
-                        "GATE: source mutation requires an active scoped task".to_owned(),
-                    )
-                    .to_json()
-                    .unwrap_or(Value::Null));
+                    return Ok(if event == "PreToolUse" && !read_only_tool(payload) {
+                        Decision::Deny("GATE: task ownership changed; explicit user resume is required before mutation".to_owned()).to_json().unwrap_or(Value::Null)
+                    } else {
+                        Value::Null
+                    });
                 }
-            }
-            env.state_dir = dir.to_path_buf();
-            let decision = handle_inner(payload, env, observed);
-            env.state_dir = root.clone();
-            Ok(decision.to_json().unwrap_or(Value::Null))
-        },
-    );
+                if let Some((_, fingerprint)) = &intent_snapshot {
+                    use crate::autonomy::IntentAuthority;
+                    let (authority, current_fingerprint) = crate::autonomy::locked_intent_authority(
+                        &root,
+                        text(payload, "session_id").unwrap_or_default(),
+                    )?;
+                    let refusal = match authority {
+                        IntentAuthority::Pending => {
+                            Some(if event == "PreToolUse" {
+                                Decision::Deny("GATE: propose the current prompt intent before mutation or delegation".to_owned())
+                            } else {
+                                Decision::Block(
+                                    "GATE: classify the current prompt before stopping".to_owned(),
+                                )
+                            })
+                        }
+                        IntentAuthority::Discussion => {
+                            Some(if event == "PreToolUse" {
+                                Decision::Deny("GATE: this prompt is discussion only; a new work prompt is required".to_owned())
+                            } else {
+                                Decision::None
+                            })
+                        }
+                        IntentAuthority::Actionable if &current_fingerprint != fingerprint => {
+                            Some(if event == "PreToolUse" {
+                                Decision::Deny("GATE: current prompt intent changed; retry under its approved scope".to_owned())
+                            } else {
+                                Decision::Block(
+                                    "GATE: current prompt intent changed; retry before stopping"
+                                        .to_owned(),
+                                )
+                            })
+                        }
+                        IntentAuthority::Actionable => None,
+                    };
+                    if let Some(refusal) = refusal {
+                        return Ok(refusal.to_json().unwrap_or(Value::Null));
+                    }
+                    if event == "PreToolUse"
+                        && root.join("intents.json").exists()
+                        && lifecycle::active_task(&root)?.is_none()
+                    {
+                        return Ok(Decision::Deny(
+                            "GATE: source mutation requires an active scoped task".to_owned(),
+                        )
+                        .to_json()
+                        .unwrap_or(Value::Null));
+                    }
+                }
+                env.state_dir = dir.to_path_buf();
+                let decision = handle_inner(payload, env, observed);
+                env.state_dir = root.clone();
+                Ok(decision.to_json().unwrap_or(Value::Null))
+            },
+        )
+    });
     match result {
         Ok(Value::Null) => Decision::None,
         Ok(v) => decision_from_json(&v),

@@ -1,6 +1,7 @@
 //! The hook answers within a bound when git hangs or another process holds the state lock,
 //! and git never runs while the hook holds state.lock.
 
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -9,17 +10,43 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use supervisor_claude_code::location;
+use supervisor_claude_code::{location, sha256};
 
 const BIN: &str = env!("CARGO_BIN_EXE_supervisor");
 /// Past this a hook counts as hung; it is killed so the test itself never hangs.
 const HUNG: Duration = Duration::from_secs(60);
 
 /// A `git` that records whether `STUB_GIT_PROBE` is exclusively locked, sleeps
-/// `STUB_GIT_SLEEP_MS` and then fails as outside a repository. Compiled, so Windows finds it.
+/// `STUB_GIT_SLEEP_MS` and then fails as outside a repository. On `rev-parse HEAD`, with
+/// `STUB_GIT_HOLD_AT_HEAD` set, it first starts a copy of itself that holds that lock for 30 s
+/// and touches `STUB_GIT_HELD` once it has it. Compiled, so Windows finds it.
 const STUB: &str = r#"
 use std::io::Write;
+use std::process::{Command, Stdio};
 fn main() {
+    if let Ok(lock) = std::env::var("STUB_GIT_HOLDER") {
+        let file = std::fs::OpenOptions::new().read(true).write(true).open(lock).unwrap();
+        file.lock().unwrap();
+        std::fs::write(std::env::var("STUB_GIT_HELD").unwrap(), "").unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        return;
+    }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Ok(lock) = std::env::var("STUB_GIT_HOLD_AT_HEAD")
+        && args.ends_with(&["rev-parse".to_owned(), "HEAD".to_owned()])
+    {
+        Command::new(std::env::current_exe().unwrap())
+            .env("STUB_GIT_HOLDER", lock)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let held = std::env::var("STUB_GIT_HELD").unwrap();
+        while !std::path::Path::new(&held).exists() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
     if let (Ok(probe), Ok(log)) = (std::env::var("STUB_GIT_PROBE"), std::env::var("STUB_GIT_LOG")) {
         let held = std::fs::File::open(&probe)
             .is_ok_and(|f| matches!(f.try_lock_shared(), Err(std::fs::TryLockError::WouldBlock)));
@@ -142,6 +169,27 @@ impl Fixture {
     }
 }
 
+/// Every file under `dir` but `state.lock`: relative path to size and SHA-256.
+fn snapshot(dir: &Path) -> BTreeMap<PathBuf, (u64, String)> {
+    let mut files = BTreeMap::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in fs::read_dir(&next).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path != dir.join("state.lock") {
+                let bytes = fs::read(&path).unwrap();
+                files.insert(
+                    path.strip_prefix(dir).unwrap().to_path_buf(),
+                    (bytes.len() as u64, sha256::hex(&bytes)),
+                );
+            }
+        }
+    }
+    files
+}
+
 fn denied(decision: &Value) -> &str {
     assert_eq!(
         decision["hookSpecificOutput"]["permissionDecision"], "deny",
@@ -241,4 +289,51 @@ fn hook_never_runs_git_under_the_state_lock_and_parallel_hooks_do_not_queue_on_i
     });
     let elapsed = started.elapsed();
     assert!(elapsed < Duration::from_secs(15), "{elapsed:?}");
+}
+
+#[test]
+fn lock_taken_after_state_preparation_denies_and_blocks_and_records_nothing() {
+    let (write, stop) = (
+        Fixture::new("connection-write"),
+        Fixture::new("connection-stop"),
+    );
+    thread::scope(|s| {
+        for (f, payload, refused) in [
+            (&write, write.write(), denied as fn(&Value) -> &str),
+            (&stop, stop.stop(), blocked),
+        ] {
+            s.spawn(move || {
+                f.task_start();
+                let path = f.stub_path();
+                let root = f.state_root();
+                let lock = root.join("state.lock");
+                let held = f.root.join("held");
+                let before = snapshot(&root);
+                assert!(!before.is_empty());
+                // The hook's last git before observe_connection is the candidate's
+                // `rev-parse HEAD`, after prepare_state and the ownership checks released the
+                // lock; it returns only once another process holds the lock.
+                let (decision, elapsed) = f.hook(
+                    payload,
+                    &[
+                        ("PATH", path.as_os_str()),
+                        ("STUB_GIT_HOLD_AT_HEAD", lock.as_os_str()),
+                        ("STUB_GIT_HELD", held.as_os_str()),
+                    ],
+                );
+                assert!(held.exists(), "{decision}");
+                assert!(refused(&decision).contains("state is busy"), "{decision}");
+                assert!(elapsed < Duration::from_secs(25), "{elapsed:?}");
+                // Wait out the holder, then nothing may have been written.
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&lock)
+                    .unwrap();
+                file.lock().unwrap();
+                drop(file);
+                assert_eq!(snapshot(&root), before);
+            });
+        }
+    });
 }
