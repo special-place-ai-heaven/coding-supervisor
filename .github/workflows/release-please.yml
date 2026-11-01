@@ -2,8 +2,10 @@
 # checks the commit subjects since the last successful run, then release-please opens or
 # updates the release PR (version bumps in the four Cargo.toml files, Cargo.lock and the three
 # npm package.json files, plus CHANGELOG.md) and this job merges it at once. On the push of
-# that merge, release-please tags the merge commit and creates the GitHub release; the tag runs
-# release.yml, which builds the binaries and publishes the archives and the npm packages.
+# that merge, release-please tags the merge commit and creates the GitHub release as a draft
+# ("draft" and "force-tag-creation" in release-please-config.json); the tag runs release.yml,
+# which runs CI, builds the binaries, attaches the archives and only then publishes the release,
+# then the npm packages. If CI or a build fails, the release stays a draft.
 #
 # Differences from symforge: the published release-please action is used, pinned to the commit
 # whose bundle symforge's vendored runner pins, instead of that runner; and release-please
@@ -169,4 +171,4 @@ jobs:
           echo "Auto-merging release PR #$PR"
           gh pr merge "$PR" --merge --delete-branch
           # The token-powered merge pushes to main, and that run's release-please step
-          # tags the merge commit and creates the GitHub release.
+          # tags the merge commit and creates the GitHub release as a draft.

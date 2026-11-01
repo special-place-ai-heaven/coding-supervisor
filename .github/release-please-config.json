@@ -7,6 +7,8 @@
       "release-type": "rust",
       "package-name": "coding-supervisor",
       "include-v-in-tag": true,
+      "draft": true,
+      "force-tag-creation": true,
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         { "type": "toml", "path": "Cargo.toml", "jsonpath": "$.package.version" },
