@@ -1,5 +1,6 @@
 //! The plugin hook's node suite, `node --test hooks/supervisor-hook.test.js`, run by `cargo test`.
 
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 use std::process::Command;
 
@@ -14,8 +15,23 @@ fn the_plugin_hook_node_suite_passes() {
         .args(["--test", "--test-reporter=tap"])
         .arg(&suite)
         .current_dir(root)
-        .output()
-        .unwrap_or_else(|e| panic!("node could not be started: {e}"));
+        .output();
+    let out = match out {
+        Ok(out) => out,
+        Err(e)
+            if e.kind() == ErrorKind::NotFound
+                && skip_without_node(std::env::var("RUNNER_ENVIRONMENT").ok().as_deref()) =>
+        {
+            // Written past the test harness's output capture, so the CI log always shows it.
+            writeln!(
+                std::io::stderr(),
+                "NODE HOOK SUITE NOT RUN: node could not be started on this self-hosted runner: {e}"
+            )
+            .unwrap();
+            return;
+        }
+        Err(e) => panic!("node could not be started: {e}"),
+    };
     let stdout = String::from_utf8_lossy(&out.stdout);
     let log = format!(
         "node exited with {}\n--- stdout\n{stdout}\n--- stderr\n{}",
@@ -24,6 +40,19 @@ fn the_plugin_hook_node_suite_passes() {
     );
     assert!(out.status.success(), "{log}");
     check(&stdout, &log, cfg!(windows));
+}
+
+/// Only a self-hosted CI runner may lack node; anywhere else a missing node fails the test.
+fn skip_without_node(runner_environment: Option<&str>) -> bool {
+    runner_environment == Some("self-hosted")
+}
+
+#[test]
+fn only_a_self_hosted_runner_may_skip_the_suite_without_node() {
+    assert!(skip_without_node(Some("self-hosted")));
+    assert!(!skip_without_node(Some("github-hosted")));
+    assert!(!skip_without_node(None));
+    assert!(!skip_without_node(Some("Self-Hosted")));
 }
 
 /// The TAP summary has no failure, and the Windows-only shim test ran and passed on Windows.
