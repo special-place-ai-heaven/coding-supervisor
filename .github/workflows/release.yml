@@ -5,6 +5,8 @@
 # Tags come from release-please (release-please.yml), created with RELEASE_PLEASE_TOKEN after
 # its release PR merges; nobody tags by hand. The repository's tag ruleset limits who may
 # create a v* tag, so that token's identity must be allowed to.
+# release-please creates the GitHub release as a draft and forces the tag (release-please-config.json);
+# the release job below publishes it only after CI and both builds succeed, so a red run leaves a draft.
 #
 # Targets (owner's decision, 2026-10-29): Windows and Linux x86_64 only.
 name: Release
@@ -133,6 +135,8 @@ jobs:
           cat ./*.sha256 > SHA256SUMS
           cat SHA256SUMS
 
+      # Finds release-please's draft for this tag, uploads the assets, then publishes it
+      # (`draft` is left unset; setting it to true would keep the release a draft).
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
