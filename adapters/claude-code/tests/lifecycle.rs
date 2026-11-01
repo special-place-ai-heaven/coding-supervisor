@@ -124,6 +124,7 @@ fn cwd_fallback_legacy_state_requires_explicit_migration_before_hook_use() {
             state_location: location_name,
             candidate: Box::new(FixedCandidate),
             clock: || 2,
+            level: Default::default(),
         },
     );
 
@@ -487,6 +488,7 @@ fn migrated_legacy_success_is_preserved_but_cannot_authorize_hook_completion() {
         state_location: "test",
         candidate: Box::new(FixedCandidate),
         clock: || 2,
+        level: Default::default(),
     };
     let result = handle(
         &json!({"cwd":d.0,"session_id":"new-session","hook_event_name":"Stop","last_assistant_message":"Done.","stop_hook_active":false}),

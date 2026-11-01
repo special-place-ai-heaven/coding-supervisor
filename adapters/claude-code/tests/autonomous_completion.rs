@@ -52,6 +52,7 @@ fn setup() -> (Fixture, Env) {
         state_location: "test",
         candidate: Box::new(Fixed("a")),
         clock: || 100,
+        level: Default::default(),
     };
     (d, env)
 }

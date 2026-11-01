@@ -190,6 +190,17 @@ describe `observed` as tamper-proof.
 
 Harness hook capabilities and a supervisor adapter are separate questions. A configured hook only enforces when the harness loads and executes it. Hook failures and timeouts may yield no denial; same-user access to hooks and state is not an unbypassable security boundary. See the [coverage matrix](docs/research/2026-10-30-dogfood-rollout/COVERAGE.md).
 
+## Levels
+
+`supervisor level [off|lite|full|ultra] [--project <dir>] [--global]` shows the effective level (`level: <name> (project|global|default)`) or writes one (`level <name> written (project|global): <path>`). Exit 0 done, 1 error (for example an unreadable `level` file), 2 usage. A `level` file in the project's state directory beats the global one in `SUPERVISOR_CONFIG_DIR`, else `%APPDATA%\coding-supervisor` on Windows, else `$XDG_CONFIG_HOME/coding-supervisor`, else `~/.config/coding-supervisor`; the default is `full`. The Claude Code hook reads it on every call:
+
+- `off`: nothing is judged or written; PreToolUse still denies writes to the gate's state and configured action-policy violations.
+- `lite`: judged as `full`, but every refusal is reported as a system message instead of blocking, and stop refusals do not count toward the refusal caps.
+- `full`: the gate as described above.
+- `ultra`: `full`, plus PreToolUse denies a `Write`, `Edit`, `MultiEdit` or `NotebookEdit` outside the active task's contract scope, under the same rule completion applies to changed paths.
+
+An unreadable `level` file runs the hook at `full` and journals why. The hook denies agent tool calls that write either `level` file or run `supervisor level <level>`; this is the same text-matching guard as for the gate's state, with the same same-user limits. `off` and `lite` are user-chosen bypasses of enforcement.
+
 ## Optional action policy
 
 An optional project-wide `policy.json` in the resolved state directory can configure protected paths and branches, synthetic markers, exact denied tools and argv prefixes. No policy adds no such denials; malformed configured policy denies Claude `PreToolUse` until repaired. This is separate from the contract's `forbidden_effects`, which the core does not enforce.

@@ -70,6 +70,7 @@ fn setup(required: &str) -> (Fixture, Env) {
         state_location: "test",
         candidate: Box::new(Fixed),
         clock: || 100,
+        level: Default::default(),
     };
     (fixture, env)
 }
@@ -305,6 +306,7 @@ fn cargo_target_dispatch_child() {
         state_location: "test",
         candidate: Box::new(Fixed),
         clock: || 100,
+        level: Default::default(),
     };
     let mut event = payload(&env, "run_and_watch", "trusted-target");
     event["tool_input"]["env"] = json!([{"key":"CARGO_TARGET_DIR",

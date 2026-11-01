@@ -44,7 +44,7 @@ pub struct TaskContract {
 
 /// File scopes are exact; directory scopes end with `/`. Git paths must be normalized
 /// relative paths so a matching prefix cannot hide traversal or platform roots.
-fn scope_contains(scope: &str, path: &str) -> bool {
+pub fn scope_contains(scope: &str, path: &str) -> bool {
     let normalized = |value: &str| {
         !value.is_empty()
             && !value.contains(['\\', ':'])

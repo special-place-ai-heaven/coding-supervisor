@@ -11,6 +11,7 @@ pub mod claim;
 pub mod guard;
 pub mod header;
 pub mod journal;
+pub mod level;
 pub mod lifecycle;
 pub mod location;
 pub mod measure;
