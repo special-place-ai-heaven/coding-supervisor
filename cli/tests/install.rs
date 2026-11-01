@@ -647,3 +647,94 @@ fn a_config_held_open_fails_with_advice_and_stays_intact() {
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
+
+/// The gate hook commands in a Claude Code settings file, over every event.
+fn gate_hooks(settings: &Value) -> Vec<String> {
+    settings["hooks"]
+        .as_object()
+        .into_iter()
+        .flat_map(|events| events.values())
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(|g| g["hooks"].as_array())
+        .flatten()
+        .filter_map(|h| h["command"].as_str())
+        .filter(|c| c.ends_with(" hook"))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn enable_plugin(settings: &Path, enabled: bool) {
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(
+        settings,
+        json!({ "enabledPlugins": { "coding-supervisor@coding-supervisor": enabled } }).to_string(),
+    )
+    .unwrap();
+}
+
+/// The plugin runs the hooks, so install must not add a second set; it still registers the MCP
+/// server and its allow rule, which the plugin does not declare.
+#[test]
+fn with_the_plugin_enabled_install_removes_its_hooks_and_keeps_the_mcp_server() {
+    let (project, home) = dirs("plugin");
+    let settings = project.join(".claude").join("settings.json");
+    fs::create_dir_all(project.join(".claude")).unwrap();
+    fs::write(
+        &settings,
+        r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"foreign-guard"}]}]}}"#,
+    )
+    .unwrap();
+    install(&project, &home, "claude-code", &[]);
+    assert_eq!(gate_hooks(&read_json(&settings)), [OUR_HOOK; 6]);
+
+    enable_plugin(&home.join(".claude").join("settings.json"), true);
+    let out = install(&project, &home, "claude-code", &[]);
+    assert!(out.contains("state: present-stale"), "{out}");
+    assert!(
+        out.contains("the coding-supervisor@coding-supervisor plugin is enabled and runs the hooks: no hook entry is written, and any written earlier is removed"),
+        "{out}"
+    );
+    let v = read_json(&settings);
+    assert_eq!(
+        v["hooks"],
+        json!({ "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "foreign-guard" }] }] })
+    );
+    assert_eq!(v["permissions"], json!({ "allow": ["mcp__supervisor"] }));
+    let mcp = read_json(&project.join(".mcp.json"));
+    assert_eq!(mcp["mcpServers"]["supervisor"]["command"], FAKE_BINARY);
+
+    let before = snapshot(&project);
+    let out = install(&project, &home, "claude-code", &[]);
+    assert!(out.contains("unchanged"), "{out}");
+    assert_eq!(snapshot(&project), before);
+
+    // A fresh project with the plugin gets no hooks key at all.
+    let (fresh, _) = dirs("plugin-fresh");
+    install(&fresh, &home, "claude-code", &[]);
+    let v = read_json(&fresh.join(".claude").join("settings.json"));
+    assert_eq!(
+        v,
+        json!({ "permissions": { "allow": ["mcp__supervisor"] } })
+    );
+}
+
+/// Claude Code takes the most specific settings file that names the plugin: a project's local
+/// `false` overrides the user's `true`, so install must write the hooks there.
+#[test]
+fn the_most_specific_settings_file_decides_whether_the_plugin_runs_the_hooks() {
+    let (project, home) = dirs("plugin-precedence");
+    enable_plugin(&home.join(".claude").join("settings.json"), true);
+    enable_plugin(&project.join(".claude").join("settings.local.json"), false);
+    let out = install(&project, &home, "claude-code", &[]);
+    assert!(!out.contains("plugin is enabled"), "{out}");
+    let settings = project.join(".claude").join("settings.json");
+    assert_eq!(gate_hooks(&read_json(&settings)), [OUR_HOOK; 6]);
+
+    let (project, home) = dirs("plugin-project");
+    enable_plugin(&project.join(".claude").join("settings.json"), true);
+    let out = install(&project, &home, "claude-code", &[]);
+    assert!(out.contains("plugin is enabled"), "{out}");
+    let settings = project.join(".claude").join("settings.json");
+    assert_eq!(gate_hooks(&read_json(&settings)), Vec::<String>::new());
+}
