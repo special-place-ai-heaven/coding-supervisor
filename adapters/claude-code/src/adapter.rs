@@ -703,13 +703,18 @@ fn out_of_scope(payload: &Value, scope: &[String]) -> Option<Decision> {
 }
 
 /// `path` relative to the canonical `project` (see `location::canonical_project`), in git's
-/// `/`-separated form; `None` outside the project.
+/// `/`-separated form; `None` outside the project. The deepest existing ancestor is resolved,
+/// so a new file under a symlinked or short-name spelling of the project still matches.
 fn project_relative(project: &str, path: &Path) -> Option<String> {
-    let resolved = path
-        .parent()
-        .and_then(|dir| std::fs::canonicalize(dir).ok())
-        .zip(path.file_name())
-        .map_or_else(|| path.to_path_buf(), |(dir, name)| dir.join(name));
+    let mut existing = path;
+    let mut missing = Vec::new();
+    let resolved = loop {
+        if let Ok(dir) = std::fs::canonicalize(existing) {
+            break missing.iter().rev().fold(dir, |dir, name| dir.join(name));
+        }
+        missing.push(existing.file_name()?);
+        existing = existing.parent()?;
+    };
     let text = resolved.to_string_lossy().replace('\\', "/");
     let text = text.strip_prefix("//?/").unwrap_or(&text);
     let head = text.get(..project.len())?;

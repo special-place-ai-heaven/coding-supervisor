@@ -277,6 +277,16 @@ fn hook_at_ultra_denies_writes_outside_the_contract_scope() {
         let inside = f.tool(id, "Write", json!({"file_path":path,"content":"x"}));
         assert!(!denied(&inside), "{path:?}: {inside}");
     }
+    // A new directory under another spelling of the project (a symlink here; an 8.3 short
+    // name on Windows runners) is still inside.
+    #[cfg(unix)]
+    {
+        let link = f.root.join("link");
+        std::os::unix::fs::symlink(&f.project, &link).unwrap();
+        let path = link.join("src/deep/new.rs");
+        let inside = f.tool("t6", "Write", json!({"file_path":path,"content":"x"}));
+        assert!(!denied(&inside), "{path:?}: {inside}");
+    }
     let edit = f.tool(
         "t5",
         "MultiEdit",
