@@ -128,7 +128,7 @@ supervisor task reset-rounds --project <project> --task <active-id> --reason <wh
 supervisor task amend-floor --project <project> --criterion <id> --command <command> --reason <why>
 ```
 
-`reset-rounds` moves a `budget_exhausted` task back to `repairing` with no rounds spent and journals the reason. `amend-floor` replaces one command of the stored requirement floor (kept when a prompt-managed task is cancelled in a repository whose files yield no checks) while no task is active, and records the old and new command with the reason. A Stop refusal spends a repair round only when a required check was observed failing, a finding is open, or the diff leaves the scope; a check that never ran refuses without spending one. A required check started in the background is refused: run it in the foreground.
+`reset-rounds` moves a `budget_exhausted` task back to `repairing` with no rounds spent and journals the reason. `amend-floor` replaces one command of the stored requirement floor (kept when a prompt-managed task is cancelled in a repository whose files yield no checks) while no task is active, and records the old and new command with the reason. A Stop refusal spends a repair round only when a required check was observed failing, a check's npm entrypoint was redefined, a finding is open, or the diff leaves the scope, and at most once per version of the code; a check that never ran, or another refusal before the code changes, spends nothing. A required check started in the background is refused: run it in the foreground.
 
 Legacy state requires explicit selection after checking its ownership:
 

@@ -72,6 +72,10 @@ pub struct Gate {
     pub continuations: u32,
     /// SubagentStop refusals per worker agent id.
     pub handback_refusals: BTreeMap<String, u32>,
+    /// The candidate the last repair round was charged on; a round is charged once per
+    /// version of the code. Written only when set, so older gate files read unchanged.
+    /// Boxed so `Stored::Valid` stays close in size to the other variants.
+    pub repair_charged: Option<Box<CandidateId>>,
 }
 
 impl Gate {
@@ -83,10 +87,19 @@ impl Gate {
             receipts: Vec::new(),
             continuations: 0,
             handback_refusals: BTreeMap::new(),
+            repair_charged: None,
         }
     }
 
     fn to_json(&self) -> Value {
+        let mut v = self.base_json();
+        if let (Some(c), Some(o)) = (&self.repair_charged, v.as_object_mut()) {
+            o.insert("repair_charged".to_owned(), candidate_json(c));
+        }
+        v
+    }
+
+    fn base_json(&self) -> Value {
         let cp = &self.checkpoint;
         obj([
             ("contract_id", self.contract_id.clone().into()),
@@ -145,6 +158,10 @@ impl Gate {
                 .map(receipt_from)
                 .collect::<Result<_, _>>()?,
             continuations: small(v, "continuations")?,
+            repair_charged: match v.get("repair_charged") {
+                None | Some(Value::Null) => None,
+                Some(c) => Some(Box::new(candidate_from(c)?)),
+            },
             handback_refusals: refusals
                 .iter()
                 .map(|(k, n)| {

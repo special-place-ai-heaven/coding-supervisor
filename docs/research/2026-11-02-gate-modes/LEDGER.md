@@ -35,6 +35,12 @@ Status: `todo`, `doing`, `done (<commit>)`, `dropped (<why>)`.
 | F17b | `supervisor task amend-floor --criterion <id> --command <new> --reason <text>`: a person's command, recorded in the stored floor's `amendments` with old and new command, guard-denied to agents like F12d. Works only while no task is active and only on the stored floor (a repository whose files yield checks has none to amend). Chosen over a list of flags that cannot weaken a run, which would be per-runner and fragile. Field case: adding `--workerIdleMemoryLimit=1536M` to a jest command was refused at `start` after a cancel. | P1 | F12d (same guard and journal) | done (wave 2 commit) |
 | F16 | Refusal counter never shows `n of 3` above 3; the cap is per turn and the message says so; no hardcoded "harness cap 8". The fourth stop in a turn is released whether or not the harness is already continuing. | P2 | F12a (same Stop code) | done (wave 2 commit) |
 
+## Wave 2b: patch 0.5.4, one repair round per version of the code
+
+| ID | Item | Crit | Depends on | Status |
+|---|---|---|---|---|
+| F12e | A repair round is charged at most once per candidate: after a round is charged on a version of the code, further refusals on that same version spend nothing until the code changes. Owner, 2026-11-02: "we cant have normal work hitting budgets like this". Field case: a TestPilot run on 0.5.1 hit its budget before recording its last two checks. | P0 | F12a | done (wave 2b commit) |
+
 **Gate R1 (owner):** after 0.5.2 and 0.5.3 publish, JEZ installs them and reruns the faces fix and Part 1 of
 TestPilot on fresh tasks with no workarounds in the prompts. Before the rerun, `supervisor status --json`
 must show the new version in `reporting_binary.version` and in the configured hook path (the report says
