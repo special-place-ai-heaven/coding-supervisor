@@ -2,12 +2,15 @@
 # The Rust toolchain is installed with rustup straight from rust-toolchain.toml,
 # so that file is the only place the version is written.
 #
-# Runner policy (owner, 2026-11-02): temporarily GitHub-hosted runners only,
-# while the owner's five self-hosted "fresh" runners (on the owner's home PC)
-# are offline. Revert this commit to return pushes and Linux release jobs to
-# the fresh pool. ubuntu-latest and windows-latest both run for pushes and
-# pull requests; Windows because the first user and the adapter's path
-# handling are Windows.
+# Runner policy (owner, 2026-11-02): Linux jobs use the owner's self-hosted
+# "fresh" runners when one is online and idle, and GitHub-hosted ubuntu-latest
+# otherwise (the fresh runners live on the owner's home PC, which is not always
+# on). The runner job below decides; it needs the RUNNER_STATUS_TOKEN secret
+# (read access to the organisation's self-hosted runners) and picks hosted
+# when that secret is absent or the lookup fails. Pull requests always run
+# hosted, so a fork's code never executes on a self-hosted machine. A hosted
+# windows-latest job runs for both, because the first user and the adapter's
+# path handling are Windows.
 name: CI
 
 on:
@@ -25,20 +28,37 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # No compiler wrapper; an empty value keeps any inherited one off.
+  # The fresh runners export RUSTC_WRAPPER=sccache without sccache installed;
+  # an empty value turns the wrapper off.
   RUSTC_WRAPPER: ""
 
 jobs:
-  linux-hosted:
-    name: "Linux (hosted): format, lint, test, core dependency check"
-    runs-on: ubuntu-latest
+  runner:
+    name: Pick the Linux runner
+    uses: ./.github/workflows/pick-runner.yml
+    secrets: inherit
+
+  linux:
+    name: "Linux: format, lint, test, core dependency check"
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.linux) }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install the pinned Rust toolchain
-        run: rustup toolchain install
+      # A fresh runner may have no rustup at all; install it with no default
+      # toolchain, then let rustup read rust-toolchain.toml (1.99.1, rustfmt,
+      # clippy). dtolnay/rust-toolchain cannot read that file.
+      - name: Install rustup if missing, then the pinned Rust toolchain
+        run: |
+          if ! command -v rustup > /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
 
       # The autonomy fixtures spawn a real interpreter; Ubuntu images ship
       # python3 but usually no `python` launcher (Windows images have one).

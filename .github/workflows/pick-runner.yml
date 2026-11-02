@@ -1,0 +1,46 @@
+# Picks where Linux jobs run: one of the owner's self-hosted "fresh" runners
+# when one is online and idle, otherwise GitHub-hosted ubuntu-latest.
+# Pull requests always get ubuntu-latest so a fork's code never runs on a
+# self-hosted machine. Without the RUNNER_STATUS_TOKEN secret (read access to
+# the organisation's self-hosted runners), or when the lookup fails, the
+# answer is ubuntu-latest.
+# shortcut: idle is checked once at pick time; if another job takes the runner
+# first, this job waits in the fresh queue until one frees up.
+name: Pick runner
+
+on:
+  workflow_call:
+    outputs:
+      linux:
+        description: JSON runs-on value for Linux jobs
+        value: ${{ jobs.pick.outputs.linux }}
+
+permissions:
+  contents: read
+
+jobs:
+  pick:
+    name: Pick the Linux runner
+    runs-on: ubuntu-latest
+    outputs:
+      linux: ${{ steps.pick.outputs.linux }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          hosted='"ubuntu-latest"'
+          fresh='["self-hosted","Linux","X64","fresh"]'
+          choice="$hosted"
+          if [ "$EVENT" != "pull_request" ] && [ -n "$GH_TOKEN" ]; then
+            filter='[.runners[] | select(.status == "online" and .busy == false and any(.labels[]; .name == "fresh"))] | length'
+            idle=$(gh api "orgs/$ORG/actions/runners" --paginate --jq "$filter" 2>/dev/null | awk '{s += $1} END {print s + 0}') || idle=0
+            if [ "${idle:-0}" -gt 0 ]; then
+              choice="$fresh"
+            fi
+            echo "idle fresh runners: ${idle:-0}"
+          fi
+          echo "linux=$choice" >> "$GITHUB_OUTPUT"
+          echo "Linux jobs run on: $choice"

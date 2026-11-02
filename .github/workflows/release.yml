@@ -21,33 +21,43 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # No compiler wrapper; an empty value keeps any inherited one off.
+  # The fresh runners export RUSTC_WRAPPER=sccache without sccache installed;
+  # an empty value turns the wrapper off.
   RUSTC_WRAPPER: ""
 
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  runner:
+    uses: ./.github/workflows/pick-runner.yml
+    secrets: inherit
 
   build:
     name: Build ${{ matrix.target }}
-    needs: ci
-    runs-on: ${{ matrix.os }}
+    needs: [ci, runner]
+    runs-on: ${{ fromJSON(matrix.os) }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Owner's rule (2026-11-02): GitHub-hosted runners only.
+          # Owner's rule (2026-11-02): Linux on an idle self-hosted fresh runner
+          # when one is online, else GitHub-hosted (pick-runner.yml); Windows
+          # on a GitHub-hosted runner.
+          # os holds JSON for runs-on: a quoted label or a label list.
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
+            os: '"windows-latest"'
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ${{ needs.runner.outputs.linux }}
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v7
 
-      # Hosted runners ship rustup; the install step stays as a guard.
+      # A fresh Linux runner may have no rustup; the Windows runner is expected
+      # to have it (and the MSVC build tools) already.
       - name: Install rustup if missing, then the pinned Rust toolchain
         run: |
           if ! command -v rustup > /dev/null; then
