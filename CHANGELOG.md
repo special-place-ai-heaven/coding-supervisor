@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.3](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.5.2...v0.5.3) (2026-11-02)
+
+
+### Bug Fixes
+
+* **claude-code:** spend repair rounds only on a failing candidate, add operator escapes ([76eac21](https://github.com/special-place-ai-heaven/coding-supervisor/commit/76eac219d53c1a2ae44f9ab5af6dc55134c9744a))
+* **claude-code:** spend repair rounds only on a failing candidate, add operator escapes ([70226b9](https://github.com/special-place-ai-heaven/coding-supervisor/commit/70226b9c0d9787e86fa4c9fe322551751d93a5cb))
+
 ## [0.5.2](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.5.1...v0.5.2) (2026-11-02)
 
 
