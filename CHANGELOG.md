@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.2](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.5.1...v0.5.2) (2026-11-02)
+
+
+### Bug Fixes
+
+* **claude-code:** let an agent classify its prompt without being trapped ([5d1cfeb](https://github.com/special-place-ai-heaven/coding-supervisor/commit/5d1cfeba98eaac8f1d1627de653e6a970d3bdfa6))
+* **claude-code:** let an agent classify its prompt without being trapped ([e8132b3](https://github.com/special-place-ai-heaven/coding-supervisor/commit/e8132b38cc2ab83ec941ce2fac37895964c0f984))
+
 ## [0.5.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.5.0...v0.5.1) (2026-11-01)
 
 
