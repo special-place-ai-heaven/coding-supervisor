@@ -23,6 +23,7 @@ const USAGE: &str = "usage: supervisor mcp [--project <dir>]  (serve the gate as
        supervisor task migrate --legacy <directory> [--project <dir>]
        supervisor task reset-rounds --task <active-id> --reason <text> [--project <dir>]  (a person's command: budget_exhausted back to repairing with no rounds spent)
        supervisor task amend-floor --criterion <id> --command <command> --reason <text> [--project <dir>]  (a person's command: replace one stored floor command while no task is active)
+       supervisor intent apply --proposal <json> [--project <dir>]  (the intent_apply call from a shell, for a session without the supervisor MCP server)
        supervisor level [off|lite|full|ultra] [--project <dir>] [--global]  (no level: show the effective one; a level: write it for the project, or with --global for the user; exit 0 done, 1 error, 2 usage)
        supervisor status [--project <dir>] [--harness <claude-code|codex>] [--json]
        supervisor verdict [--project <dir>] [--task <active-id>] [--require <observed|asserted>] [--json]  (exit 0 pass, 3 fail, 1 could not answer, 2 usage; stdout empty on 1 and 2)
@@ -60,6 +61,12 @@ fn main() -> ExitCode {
             .and_then(|f| task::run(action, &f)),
             None => Err(Failure::Usage("task requires a command".to_owned())),
         },
+        Some((command, rest)) if command == "intent" => match rest.split_first() {
+            Some((action, rest)) if action == "apply" => {
+                parse_flags(rest, &["--project", "--proposal"], &[]).and_then(|f| intent(&f))
+            }
+            _ => Err(Failure::Usage("intent requires apply".to_owned())),
+        },
         Some((command, rest)) if command == "level" => level::run(rest),
         Some((command, rest)) if command == "status" => {
             parse_flags(rest, &["--project", "--harness"], &["--json"])
@@ -92,6 +99,27 @@ fn main() -> ExitCode {
         }
         Err(Failure::Unmet) => ExitCode::from(verdict::EXIT_UNMET),
     }
+}
+
+/// `intent_apply` without MCP: same validation, same caller-asserted answer.
+fn intent(flags: &Flags) -> Result<(), Failure> {
+    let project = flags.project()?;
+    let (root, _) = supervisor_claude_code::location::resolve_state_dir_checked(&project, &|name| {
+        std::env::var(name).ok()
+    })
+    .map_err(Failure::Error)?;
+    let text = flags
+        .value("--proposal")
+        .ok_or_else(|| Failure::Usage("intent apply requires --proposal".to_owned()))?;
+    let proposal: serde_json::Value = serde_json::from_str(text)
+        .map_err(|e| Failure::Error(format!("proposal is not valid JSON: {e}")))?;
+    let mut answer = supervisor_claude_code::autonomy::propose(&root, &project, &proposal)
+        .map_err(|why| Failure::Error(format!("intent_apply refused: {why}")))?;
+    if let Some(fields) = answer.as_object_mut() {
+        fields.insert("source".to_owned(), "caller-asserted".into());
+    }
+    println!("{answer}");
+    Ok(())
 }
 
 /// Same behaviour as `supervisor-claude-code hook`.

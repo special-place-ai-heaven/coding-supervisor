@@ -275,9 +275,37 @@ fn read_only_command(payload: &Value) -> bool {
     )
 }
 
+/// `supervisor intent apply ...` run alone from Bash: the MCP proposal for a session that has no
+/// supervisor MCP server (F19). Shell syntax is allowed only inside single quotes, where Bash
+/// expands nothing; double quotes and backslashes outside them are refused.
+fn proposal_command(payload: &Value) -> bool {
+    if text(payload, "tool_name") != Some("Bash") {
+        return false;
+    }
+    let command = payload["tool_input"]["command"]
+        .as_str()
+        .unwrap_or_default()
+        .trim();
+    let Some(rest) = command.strip_prefix("supervisor intent apply ") else {
+        return false;
+    };
+    let mut quoted = false;
+    for c in rest.chars() {
+        match c {
+            '\'' => quoted = !quoted,
+            _ if quoted => {}
+            ';' | '&' | '|' | '<' | '>' | '$' | '`' | '(' | ')' | '"' | '\\' | '\n' | '\r' => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    !quoted
+}
+
 /// What the pre-intent gate lets through while the current prompt is unclassified.
 fn inspection(payload: &Value) -> bool {
-    read_only_tool(payload) || read_only_command(payload)
+    read_only_tool(payload) || read_only_command(payload) || proposal_command(payload)
 }
 
 /// A pending prompt blocks a stop once; while the harness is already continuing, release it
@@ -364,7 +392,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                 Decision::Context {
                     event: "UserPromptSubmit",
                     text: format!(
-                        "SUPERVISOR: current prompt requires an intent proposal before mutations. Read-only investigation is available. Call intent_apply with the event identity and a scoped contract or discussion/follow-up intent. Valid actions: discussion|start|continue|revise|pause|resume|cancel. {next} {intent}"
+                        "SUPERVISOR: current prompt requires an intent proposal before mutations. Read-only investigation is available. Call intent_apply with the event identity and a scoped contract or discussion/follow-up intent. Valid actions: discussion|start|continue|revise|pause|resume|cancel. {next} Without the supervisor MCP tools, run the same call from the Bash tool, alone: supervisor intent apply --proposal '<the call as JSON>' (a contract may also be named as \"contract_file\": a JSON file in the project). {intent}"
                     ),
                 }
             }
@@ -431,6 +459,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
         // Inspection and proposal routes do not need to open or advance the task gate.
         if root.join("intents.json").exists()
             && (read_only_tool(payload)
+                || proposal_command(payload)
                 || (read_only_command(payload)
                     && matches!(lifecycle::active_task(&root), Ok(None))))
         {

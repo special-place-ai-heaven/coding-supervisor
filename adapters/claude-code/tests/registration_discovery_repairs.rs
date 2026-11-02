@@ -750,3 +750,22 @@ fn floor_refusal_names_a_differing_check_label() {
         "{refusal}"
     );
 }
+
+/// K14: a proposal may name a contract file in the project instead of carrying the contract.
+#[test]
+fn a_proposal_can_name_a_contract_file() {
+    let f = Fixture::new();
+    let root = f.0.join("state");
+    let project = f.0.join("project");
+    let event = prompt(&root, &project, "file");
+    let mut start = proposal(&event, "start");
+    let contract = start.as_object_mut().unwrap().remove("contract").unwrap();
+    fs::write(project.join("task.json"), contract.to_string()).unwrap();
+    let mut missing = start.clone();
+    missing["contract_file"] = "absent.json".into();
+    let refusal = autonomy::propose(&root, &project, &missing).unwrap_err();
+    assert!(refusal.contains("absent.json"), "{refusal}");
+    start["contract_file"] = "task.json".into();
+    let started = autonomy::propose(&root, &project, &start).unwrap();
+    assert!(started["task_id"].is_string(), "{started}");
+}
