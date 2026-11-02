@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.4](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.5.3...v0.5.4) (2026-11-02)
+
+
+### Bug Fixes
+
+* **claude-code:** charge at most one repair round per version of the code ([be04527](https://github.com/special-place-ai-heaven/coding-supervisor/commit/be04527188f5d1e1554eed442c6e7a41fcd9385e))
+* **claude-code:** charge at most one repair round per version of the code ([06d6b4a](https://github.com/special-place-ai-heaven/coding-supervisor/commit/06d6b4a55a89ae87588c4b13130232b4beca7766))
+
 ## [0.5.3](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.5.2...v0.5.3) (2026-11-02)
 
 
