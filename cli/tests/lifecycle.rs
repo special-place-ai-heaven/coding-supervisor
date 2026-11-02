@@ -189,3 +189,16 @@ fn concurrent_hook_and_mcp_processes_preserve_all_findings_and_journals() {
             .all(|line| serde_json::from_str::<Value>(line).unwrap()["tampered"] == false)
     );
 }
+
+#[test]
+fn reset_rounds_needs_a_reason_and_an_exhausted_task() {
+    let f = Fixture::new("reset-rounds");
+    let started = value(f.task("start", &["--contract", f.contract.to_str().unwrap()]));
+    let id = started["task_id"].as_str().unwrap();
+    let missing = f.task("reset-rounds", &["--task", id]);
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("--reason"));
+    let early = f.task("reset-rounds", &["--task", id, "--reason", "flaky check"]);
+    assert_eq!(early.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&early.stderr).contains("budget_exhausted"));
+}

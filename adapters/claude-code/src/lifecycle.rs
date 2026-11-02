@@ -265,6 +265,56 @@ pub fn resume(root: &Path, expected: &str) -> Result<Value, String> {
     Ok(json!({"task_id":active.task_id,"state":state_of(&active.dir)?,"resumed":true}))
 }
 
+/// A person's escape from `budget_exhausted`: back to `repairing` with no rounds spent,
+/// journaled with the reason. The PreToolUse guard refuses this command to agents.
+pub fn reset_rounds(root: &Path, expected: &str, reason: &str) -> Result<Value, String> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err("reset-rounds needs a nonempty --reason".to_owned());
+    }
+    let tx = Transaction::open(root)?;
+    let active = active_task(root)?.ok_or("no active task")?;
+    if active.task_id != expected {
+        return Err("active task changed".to_owned());
+    }
+    let (_, digest) = state::read_contract(&active.dir)?;
+    let mut gate = match state::load_gate(&active.dir, &digest)? {
+        Stored::Valid(gate) => gate,
+        Stored::Absent => {
+            return Err(
+                "task is queued; only a budget_exhausted task can have its rounds reset".to_owned(),
+            );
+        }
+        Stored::Tampered(what) => return Err(format!("gate state tampered ({what})")),
+    };
+    let before = state::state_name(gate.checkpoint.state);
+    if before != "budget_exhausted" {
+        return Err(format!(
+            "task is {before}; only a budget_exhausted task can have its rounds reset"
+        ));
+    }
+    let rounds_before = gate.checkpoint.consumed_repair_rounds;
+    gate.checkpoint.state = coding_supervisor::TaskState::Repairing;
+    gate.checkpoint.consumed_repair_rounds = 0;
+    gate.continuations = 0;
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let line = json!({"t":t,"event":"reset_rounds","task_id":active.task_id,"reason":reason,"rounds_before":rounds_before,"state_before":before,"state":"repairing"});
+    let prefix = PathBuf::from("tasks").join(&active.task_id);
+    let mut journal = match fs::read_to_string(active.dir.join("events.jsonl")) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.to_string()),
+    };
+    journal.push_str(&format!("{line}\n"));
+    tx.commit(vec![
+        (prefix.join("gate.json"), state::gate_text(&gate, &digest)),
+        (prefix.join("events.jsonl"), journal),
+    ])?;
+    Ok(json!({"task_id":active.task_id,"state":"repairing","rounds_before":rounds_before}))
+}
+
 pub fn rebind(root: &Path, expected: &str, session: &str) -> Result<Value, String> {
     if session.is_empty() {
         return Err("session ID is empty".to_owned());

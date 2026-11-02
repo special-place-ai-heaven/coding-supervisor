@@ -138,6 +138,10 @@ fn autonomous() -> (Fixture, Env, String) {
 }
 
 fn run_autonomous_checks(env: &mut Env, prefix: &str) {
+    run_autonomous_checks_with(env, prefix, 0);
+}
+
+fn run_autonomous_checks_with(env: &mut Env, prefix: &str, exit: i32) {
     let active = supervisor_claude_code::lifecycle::active_task(&env.state_dir)
         .unwrap()
         .unwrap();
@@ -153,8 +157,13 @@ fn run_autonomous_checks(env: &mut Env, prefix: &str) {
             "session_id":"session","agent_id":"main","tool_use_id":format!("{prefix}-{index}"),
             "tool_name":"Bash","tool_input":{"command":criterion.command[0]}});
         assert_eq!(handle(&payload, env), Decision::None);
-        payload["hook_event_name"] = "PostToolUse".into();
-        payload["tool_response"] = json!({"interrupted":false});
+        if exit == 0 {
+            payload["hook_event_name"] = "PostToolUse".into();
+            payload["tool_response"] = json!({"interrupted":false});
+        } else {
+            payload["hook_event_name"] = "PostToolUseFailure".into();
+            payload["error"] = format!("Exit code {exit}\nfailed").into();
+        }
         assert_eq!(handle(&payload, env), Decision::None);
     }
 }
@@ -245,6 +254,40 @@ fn candidate_change_invalidates_headerless_evidence() {
 }
 
 #[test]
+fn a_required_check_started_in_the_background_is_refused() {
+    let (_d, mut env) = setup();
+    let mut payload = json!({"hook_event_name":"PreToolUse", "cwd":env.state_dir.parent().unwrap(),
+        "session_id":"session","agent_id":"main","tool_use_id":"bg",
+        "tool_name":"Bash","tool_input":{"command":"cargo test","run_in_background":true}});
+    let Decision::Deny(reason) = handle(&payload, &mut env) else {
+        panic!("a background run of a required check must be refused");
+    };
+    assert!(reason.contains("foreground"), "{reason}");
+    payload["tool_use_id"] = "bg-other".into();
+    payload["tool_input"] = json!({"command":"npm run dev","run_in_background":true});
+    assert_eq!(handle(&payload, &mut env), Decision::None);
+}
+
+#[test]
+fn refusal_count_stops_at_three_per_turn() {
+    let (_d, mut env) = setup();
+    for n in 1..=3 {
+        let Decision::Block(reason) = stop(&mut env, "Stop", "main") else {
+            panic!("refusal {n} must block");
+        };
+        assert!(
+            reason.contains(&format!("refusal {n} of 3 this turn")),
+            "{reason}"
+        );
+        assert!(!reason.contains("harness cap"), "{reason}");
+    }
+    assert!(matches!(
+        stop(&mut env, "Stop", "main"),
+        Decision::System(_)
+    ));
+}
+
+#[test]
 fn a_claim_without_observed_execution_cannot_complete() {
     let (_d, mut env) = setup();
     assert!(matches!(stop(&mut env, "Stop", "main"), Decision::Block(_)));
@@ -322,6 +365,7 @@ fn autonomous_stop_evaluates_evidence_without_completion_wording() {
 fn autonomous_refusals_exhaust_repair_budget_across_followup_prompts() {
     let (_d, mut env, task) = autonomous();
     for index in 0..3 {
+        run_autonomous_checks_with(&mut env, &format!("failing-{index}"), 1);
         assert!(matches!(stop(&mut env, "Stop", "main"), Decision::Block(_)));
         if index < 2 {
             let event = prompt(
@@ -334,6 +378,28 @@ fn autonomous_refusals_exhaust_repair_budget_across_followup_prompts() {
     }
     assert_eq!(gate(&env)["state"], "budget_exhausted");
     assert_eq!(gate(&env)["consumed_repair_rounds"], 2);
+}
+
+#[test]
+fn refusal_without_any_observed_check_spends_no_repair_round() {
+    let (_d, mut env, task) = autonomous();
+    for index in 0..3 {
+        let Decision::Block(reason) = stop(&mut env, "Stop", "main") else {
+            panic!("stop without evidence must refuse");
+        };
+        assert!(reason.contains("no repair round spent"), "{reason}");
+        let event = prompt(
+            &mut env,
+            &format!("followup-{index}"),
+            "Continue the same work",
+        );
+        propose(&env, &event, "continue", Some(&task), None);
+    }
+    assert_eq!(gate(&env)["consumed_repair_rounds"], 0);
+    assert_ne!(gate(&env)["state"], "budget_exhausted");
+    run_autonomous_checks(&mut env, "finally");
+    assert_eq!(stop(&mut env, "Stop", "main"), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
 }
 
 #[test]

@@ -121,6 +121,15 @@ supervisor task deactivate --project <project> --task <active-id>
 
 For unfinished work, `next` or `deactivate` requires `--disposition cancelled`, `failed`, `blocked`, or `budget_exhausted`. The old task is archived; its evidence is retained. Prefer a fresh harness session for a successor; use `rebind` only to deliberately reuse an existing session. Rebinding does not transfer pending checks.
 
+Two commands are for a person only; the gate refuses them from an agent's shell, as it refuses `supervisor level`:
+
+```sh
+supervisor task reset-rounds --project <project> --task <active-id> --reason <why>
+supervisor task amend-floor --project <project> --criterion <id> --command <command> --reason <why>
+```
+
+`reset-rounds` moves a `budget_exhausted` task back to `repairing` with no rounds spent and journals the reason. `amend-floor` replaces one command of the stored requirement floor (kept when a prompt-managed task is cancelled in a repository whose files yield no checks) while no task is active, and records the old and new command with the reason. A Stop refusal spends a repair round only when a required check was observed failing, a finding is open, or the diff leaves the scope; a check that never ran refuses without spending one. A required check started in the background is refused: run it in the foreground.
+
 Legacy state requires explicit selection after checking its ownership:
 
 ```sh

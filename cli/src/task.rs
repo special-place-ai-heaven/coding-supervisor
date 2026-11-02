@@ -38,6 +38,14 @@ pub fn run(command: &str, flags: &Flags) -> Result<(), Failure> {
         }
         "rebind" => lifecycle::rebind(&root, needed("--task")?, needed("--session")?),
         "migrate" => lifecycle::migrate(&root, Path::new(needed("--legacy")?)),
+        "reset-rounds" => lifecycle::reset_rounds(&root, needed("--task")?, needed("--reason")?),
+        "amend-floor" => supervisor_claude_code::autonomy::amend_floor(
+            &root,
+            &project,
+            needed("--criterion")?,
+            needed("--command")?,
+            needed("--reason")?,
+        ),
         _ => return Err(Failure::Usage(format!("unknown task command: {command}"))),
     }
     .map_err(Failure::Error)?;

@@ -66,8 +66,9 @@ fn deny(payload: &Value, matched: String) -> Option<Decision> {
     )))
 }
 
-/// `supervisor level <off|lite|full|ultra>` in a Bash, PowerShell or Terminal Commander
-/// command, whatever the binary's path, extension or quoting; returns the matched words.
+/// `supervisor level <off|lite|full|ultra>`, `supervisor task reset-rounds` or
+/// `supervisor task amend-floor` in a Bash, PowerShell or Terminal Commander command,
+/// whatever the binary's path, extension or quoting; returns the matched words.
 fn level_command(payload: &Value) -> Option<String> {
     let tool = payload.get("tool_name").and_then(Value::as_str)?;
     let text = command_text(tool, payload.get("tool_input")?)?.to_lowercase();
@@ -78,8 +79,11 @@ fn level_command(payload: &Value) -> Option<String> {
     words.windows(3).find_map(|w| {
         let program = w[0].rsplit(['/', '\\']).next().unwrap_or_default();
         let program = program.strip_suffix(".exe").unwrap_or(program);
-        (program.ends_with("supervisor") && w[1] == "level" && Level::parse(w[2]).is_some())
-            .then(|| format!("supervisor level {}", w[2]))
+        let sets_level = w[1] == "level" && Level::parse(w[2]).is_some();
+        // A person's escapes from a stuck task; an agent could reset its own budget.
+        let operator = w[1] == "task" && matches!(w[2], "reset-rounds" | "amend-floor");
+        (program.ends_with("supervisor") && (sets_level || operator))
+            .then(|| format!("supervisor {} {}", w[1], w[2]))
     })
 }
 

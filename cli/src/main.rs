@@ -21,6 +21,8 @@ const USAGE: &str = "usage: supervisor mcp [--project <dir>]  (serve the gate as
        supervisor task <resume|deactivate> --task <active-id> [--project <dir>] [--disposition <outcome>]
        supervisor task rebind --task <active-id> --session <session-id> [--project <dir>]
        supervisor task migrate --legacy <directory> [--project <dir>]
+       supervisor task reset-rounds --task <active-id> --reason <text> [--project <dir>]  (a person's command: budget_exhausted back to repairing with no rounds spent)
+       supervisor task amend-floor --criterion <id> --command <command> --reason <text> [--project <dir>]  (a person's command: replace one stored floor command while no task is active)
        supervisor level [off|lite|full|ultra] [--project <dir>] [--global]  (no level: show the effective one; a level: write it for the project, or with --global for the user; exit 0 done, 1 error, 2 usage)
        supervisor status [--project <dir>] [--harness <claude-code|codex>] [--json]
        supervisor verdict [--project <dir>] [--task <active-id>] [--require <observed|asserted>] [--json]  (exit 0 pass, 3 fail, 1 could not answer, 2 usage; stdout empty on 1 and 2)
@@ -49,6 +51,9 @@ fn main() -> ExitCode {
                     "--disposition",
                     "--session",
                     "--legacy",
+                    "--reason",
+                    "--criterion",
+                    "--command",
                 ],
                 &[],
             )

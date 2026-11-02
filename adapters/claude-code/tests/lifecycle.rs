@@ -500,3 +500,32 @@ fn migrated_legacy_success_is_preserved_but_cannot_authorize_hook_completion() {
     );
     assert_eq!(fs::read(legacy.join("gate.json")).unwrap(), original);
 }
+
+#[test]
+fn reset_rounds_reopens_only_an_exhausted_task_and_journals_the_reason() {
+    let d = dir();
+    let id = start(&d.0);
+    set_state(&d.0, &id, TaskState::Verifying, 1);
+    let early = lifecycle::reset_rounds(&d.0, &id, "flaky check").unwrap_err();
+    assert!(early.contains("budget_exhausted"), "{early}");
+    set_state(&d.0, &id, TaskState::BudgetExhausted, 2);
+    assert!(lifecycle::reset_rounds(&d.0, &id, "  ").is_err());
+    assert!(lifecycle::reset_rounds(&d.0, "task-other", "flaky check").is_err());
+
+    let out = lifecycle::reset_rounds(&d.0, &id, "agent looped on a flaky check").unwrap();
+
+    assert_eq!(out["state"], "repairing");
+    assert_eq!(out["rounds_before"], 2);
+    let task = lifecycle::active_task(&d.0).unwrap().unwrap().dir;
+    let (_, digest) = state::read_contract(&task).unwrap();
+    let state::Stored::Valid(gate) = state::load_gate(&task, &digest).unwrap() else {
+        panic!("reset must leave an authentic gate");
+    };
+    assert_eq!(gate.checkpoint.state, TaskState::Repairing);
+    assert_eq!(gate.checkpoint.consumed_repair_rounds, 0);
+    let journal = fs::read_to_string(task.join("events.jsonl")).unwrap();
+    let last: Value = serde_json::from_str(journal.lines().last().unwrap()).unwrap();
+    assert_eq!(last["event"], "reset_rounds");
+    assert_eq!(last["reason"], "agent looped on a flaky check");
+    assert_eq!(last["rounds_before"], 2);
+}

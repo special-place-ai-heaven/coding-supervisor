@@ -531,3 +531,90 @@ fn completed_legacy_nested_task_can_be_explicitly_archived_without_rewriting_his
         assert_eq!(snapshot(&active.dir), before);
     }
 }
+
+fn floor_only_project(f: &Fixture) -> (PathBuf, PathBuf) {
+    let root = f.0.join("state");
+    let project = f.0.join("project");
+    fs::remove_file(project.join("Cargo.toml")).unwrap();
+    fs::remove_file(project.join("package.json")).unwrap();
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("intents.json"), json!({"schema":1,"events":{},"latest":{},"project_floor":{"project":project.canonicalize().unwrap(),"required_criteria":[{"id":"ROOT","check":"root_validation","mandatory":true,"command":"python root_check.py"}]}}).to_string()).unwrap();
+    (root, project)
+}
+
+fn stricter(event: &Value) -> Value {
+    let mut start = proposal(event, "start");
+    start["contract"]["criteria"] = json!([{"id":"ROOT","check":"root_validation","mandatory":true,"command":"python root_check.py --strict"}]);
+    start
+}
+
+#[test]
+fn floor_refusal_names_the_criterion_and_both_commands() {
+    let f = Fixture::new();
+    let (root, project) = floor_only_project(&f);
+    let event = prompt(&root, &project, "stricter");
+    let refusal = autonomy::propose(&root, &project, &stricter(&event)).unwrap_err();
+    for part in [
+        "ROOT",
+        "python root_check.py",
+        "python root_check.py --strict",
+        "amend-floor",
+    ] {
+        assert!(refusal.contains(part), "{part} missing from: {refusal}");
+    }
+}
+
+#[test]
+fn amend_floor_lets_a_person_replace_one_floor_command_with_a_reason() {
+    let f = Fixture::new();
+    let (root, project) = floor_only_project(&f);
+    assert!(autonomy::amend_floor(&root, &project, "NOPE", "x", "reason").is_err());
+    assert!(autonomy::amend_floor(&root, &project, "ROOT", "x", " ").is_err());
+
+    let out = autonomy::amend_floor(
+        &root,
+        &project,
+        "ROOT",
+        "python root_check.py --strict",
+        "worker memory limit",
+    )
+    .unwrap();
+
+    assert_eq!(out["old_command"], json!(["python root_check.py"]));
+    let registry: Value =
+        serde_json::from_slice(&fs::read(root.join("intents.json")).unwrap()).unwrap();
+    let amendment = &registry["project_floor"]["amendments"][0];
+    assert_eq!(amendment["criterion"], "ROOT");
+    assert_eq!(amendment["new_command"], "python root_check.py --strict");
+    assert_eq!(amendment["reason"], "worker memory limit");
+    let event = prompt(&root, &project, "after-amend");
+    autonomy::propose(&root, &project, &stricter(&event)).unwrap();
+    assert!(
+        autonomy::amend_floor(&root, &project, "ROOT", "python root_check.py", "back").is_err(),
+        "an active task owns its floor"
+    );
+}
+
+#[test]
+fn continue_on_an_operator_task_says_it_converted_the_task() {
+    let f = Fixture::new();
+    let root = f.0.join("state");
+    let project = f.0.join("project");
+    let started = lifecycle::start(&root, &json!({"id":"operator","goal":"fixture","criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}],"scope":["src/"],"forbidden_effects":[],"max_repair_rounds":2}), false, None, None).unwrap();
+    let task = started["task_id"].as_str().unwrap();
+    for (id, converted) in [("first", true), ("second", false)] {
+        let event = prompt(&root, &project, id);
+        let mut call = proposal(&event, "continue");
+        call["task_id"] = task.into();
+        call.as_object_mut().unwrap().remove("contract");
+        let response = autonomy::propose(&root, &project, &call).unwrap();
+        assert_eq!(
+            response
+                .get("converted_to_autonomous")
+                .and_then(Value::as_bool)
+                == Some(true),
+            converted,
+            "{id}: {response}"
+        );
+    }
+}
