@@ -6,7 +6,7 @@
 # "fresh" runners when one is online and idle, and GitHub-hosted ubuntu-latest
 # otherwise (the fresh runners live on the owner's home PC, which is not always
 # on). The runner job below decides; it needs the RUNNER_STATUS_TOKEN secret
-# (read access to the organisation's self-hosted runners) and picks hosted
+# (or RELEASE_PLEASE_TOKEN; read access to the organisation's self-hosted runners) and picks hosted
 # when that secret is absent or the lookup fails. Pull requests always run
 # hosted, so a fork's code never executes on a self-hosted machine. A hosted
 # windows-latest job runs for both, because the first user and the adapter's
