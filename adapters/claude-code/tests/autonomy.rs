@@ -1602,3 +1602,193 @@ fn pending_prompt_keeps_inflight_tc_job_and_accepts_its_later_observation() {
     assert_eq!(completed[0]["completion_trust"], "observed");
     assert!(autonomy::pending(&f.root, "session").unwrap().is_some());
 }
+
+/// A hook env whose candidate never changes, for tests that only drive the pre-intent gate.
+fn hook_env(f: &Fixture) -> supervisor_claude_code::adapter::Env {
+    use supervisor_claude_code::candidate::CandidateProvider;
+    struct Fixed;
+    impl CandidateProvider for Fixed {
+        fn observe(&self) -> Result<coding_supervisor::Candidate, String> {
+            Ok(coding_supervisor::Candidate {
+                id: coding_supervisor::CandidateId {
+                    base_commit: "base".into(),
+                    dirty_digest: "candidate".into(),
+                },
+                provenance: "pre-intent fixture".into(),
+                changed_paths: vec![],
+            })
+        }
+    }
+    supervisor_claude_code::adapter::Env {
+        state_dir: f.root.clone(),
+        state_location: "test",
+        candidate: Box::new(Fixed),
+        clock: || 100,
+        level: Default::default(),
+    }
+}
+
+fn pre_tool(f: &Fixture, id: &str, tool: &str, input: Value) -> Value {
+    json!({"hook_event_name":"PreToolUse","cwd":f.project,"session_id":"session","agent_id":"main",
+        "tool_use_id":id,"tool_name":tool,"tool_input":input})
+}
+
+#[test]
+fn pending_prompt_allows_tool_search_and_single_read_only_commands() {
+    use supervisor_claude_code::adapter::{Decision, handle};
+    let f = Fixture::new();
+    let task = f.start();
+    f.prompt("second", "Continue the change");
+    let mut env = hook_env(&f);
+    let bash = |id: &str, command: &str| pre_tool(&f, id, "Bash", json!({ "command": command }));
+    assert_eq!(
+        handle(
+            &pre_tool(
+                &f,
+                "ts",
+                "ToolSearch",
+                json!({"query":"select:mcp__supervisor__intent_apply"})
+            ),
+            &mut env
+        ),
+        Decision::None
+    );
+    for (id, command) in [
+        ("s", "git status --short"),
+        ("l", "git log -1 --format=%H"),
+        ("b", "git branch --show-current"),
+        ("p", "pwd"),
+    ] {
+        assert_eq!(
+            handle(&bash(id, command), &mut env),
+            Decision::None,
+            "{command}"
+        );
+    }
+    for (id, command) in [
+        ("chain", "git status; rm -rf x"),
+        ("pipe", "git status -sb | head -3"),
+        ("and", "git status && touch x"),
+        ("redirect", "git log > out.txt"),
+        ("subst", "git show $(touch x)"),
+        ("delete", "git branch -D main"),
+        ("output", "git diff --output=out.txt"),
+        ("write", "touch x"),
+    ] {
+        assert!(
+            matches!(handle(&bash(id, command), &mut env), Decision::Deny(_)),
+            "{command} must stay denied"
+        );
+    }
+    assert!(matches!(
+        handle(
+            &pre_tool(
+                &f,
+                "w",
+                "Write",
+                json!({"file_path":"src/x.rs","content":""})
+            ),
+            &mut env
+        ),
+        Decision::Deny(_)
+    ));
+    assert!(autonomy::pending(&f.root, "session").unwrap().is_some());
+    assert_eq!(
+        lifecycle::active_task(&f.root).unwrap().unwrap().task_id,
+        task
+    );
+}
+
+#[test]
+fn pending_prompt_without_a_task_allows_read_only_commands() {
+    use supervisor_claude_code::adapter::{Decision, handle};
+    let f = Fixture::new();
+    f.prompt("first", "Implement a small change");
+    let mut env = hook_env(&f);
+    assert_eq!(
+        handle(
+            &pre_tool(&f, "s", "Bash", json!({"command":"git status"})),
+            &mut env
+        ),
+        Decision::None
+    );
+    assert!(lifecycle::active_task(&f.root).unwrap().is_none());
+}
+
+#[test]
+fn unknown_intent_action_is_refused_with_the_valid_actions() {
+    let f = Fixture::new();
+    let event = f.prompt("first", "Implement a small change");
+    let error = f.apply(&event, "propose_task", None, None).unwrap_err();
+    assert!(error.contains("unknown action"), "{error}");
+    assert!(
+        error.contains("discussion|start|continue|revise|pause|resume|cancel"),
+        "{error}"
+    );
+    assert!(autonomy::pending(&f.root, "session").unwrap().is_some());
+}
+
+#[test]
+fn pending_prompt_stop_releases_once_the_harness_is_already_continuing() {
+    use supervisor_claude_code::adapter::{Decision, handle};
+    let f = Fixture::new();
+    f.prompt("first", "Implement a small change");
+    let mut env = hook_env(&f);
+    let stop = |event: &str, continuing: bool| {
+        json!({"hook_event_name":event,"cwd":f.project,"session_id":"session","agent_id":"main",
+            "stop_hook_active":continuing,"last_assistant_message":"Done."})
+    };
+    assert!(matches!(
+        handle(&stop("Stop", false), &mut env),
+        Decision::Block(_)
+    ));
+    assert!(
+        matches!(handle(&stop("Stop", true), &mut env), Decision::System(m) if m.contains("unclassified"))
+    );
+    let g = Fixture::new();
+    g.start();
+    g.prompt("second", "Continue the change");
+    let mut env = hook_env(&g);
+    let stop = |event: &str, continuing: bool| {
+        json!({"hook_event_name":event,"cwd":g.project,"session_id":"session","agent_id":"main",
+            "stop_hook_active":continuing,"last_assistant_message":"Done."})
+    };
+    for event in ["Stop", "SubagentStop"] {
+        assert!(
+            matches!(handle(&stop(event, false), &mut env), Decision::Block(_)),
+            "{event}"
+        );
+        assert!(
+            matches!(handle(&stop(event, true), &mut env), Decision::System(m) if m.contains("unclassified")),
+            "{event}"
+        );
+    }
+    assert!(autonomy::pending(&g.root, "session").unwrap().is_some());
+}
+
+#[test]
+fn prompt_context_names_the_actions_and_the_next_call() {
+    use supervisor_claude_code::adapter::{Decision, handle};
+    let submit = |f: &Fixture, id: &str| {
+        json!({"hook_event_name":"UserPromptSubmit","cwd":f.project,"session_id":"session",
+            "prompt_id":id,"prompt":"Continue the change"})
+    };
+    let f = Fixture::new();
+    let mut env = hook_env(&f);
+    let Decision::Context { text, .. } = handle(&submit(&f, "first"), &mut env) else {
+        panic!("expected context");
+    };
+    assert!(
+        text.contains("discussion|start|continue|revise|pause|resume|cancel"),
+        "{text}"
+    );
+    assert!(text.contains(r#""action":"start""#), "{text}");
+    let g = Fixture::new();
+    let task = g.start();
+    let mut env = hook_env(&g);
+    let Decision::Context { text, .. } = handle(&submit(&g, "second"), &mut env) else {
+        panic!("expected context");
+    };
+    assert!(text.contains(r#""action":"continue""#), "{text}");
+    assert!(text.contains(&format!(r#""task_id":"{task}""#)), "{text}");
+}
