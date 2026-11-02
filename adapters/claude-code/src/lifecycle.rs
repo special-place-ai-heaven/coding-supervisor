@@ -121,10 +121,9 @@ pub fn start(
     requested: Option<&str>,
     expected: Option<&str>,
 ) -> Result<Value, String> {
+    // A person's contract may start a task after prompts were registered (K13); the guard keeps
+    // agents from running this command, so they still go through a floor-checked proposal.
     let tx = Transaction::open(root)?;
-    if root.join("intents.json").exists() {
-        return Err("prompt-managed lifecycle requires an event-bound proposal".to_owned());
-    }
     let (response, writes) = plan_start(root, contract, next, requested, expected)?;
     tx.commit(writes)?;
     Ok(response)

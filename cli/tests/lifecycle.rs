@@ -202,3 +202,18 @@ fn reset_rounds_needs_a_reason_and_an_exhausted_task() {
     assert_eq!(early.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&early.stderr).contains("budget_exhausted"));
 }
+
+#[test]
+fn a_person_can_start_a_task_after_a_prompt_was_registered() {
+    let f = Fixture::new("start-after-prompt");
+    let git = Command::new("git").arg("init").arg("-q").arg(&f.project).status().unwrap();
+    assert!(git.success());
+    let payload = json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":f.project,"prompt":"fix the parser"});
+    let mut hook = f.command().arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    hook.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+    assert!(hook.wait_with_output().unwrap().status.success());
+    assert!(f.state_root().join("intents.json").exists(), "prompt not registered");
+    let started = f.task("start", &["--contract", f.contract.to_str().unwrap()]);
+    assert!(started.status.success(), "{}", String::from_utf8_lossy(&started.stderr));
+    assert!(value(started)["task_id"].is_string());
+}
