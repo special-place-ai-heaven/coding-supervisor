@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.5](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.5.4...v0.5.5) (2026-11-02)
+
+
+### Bug Fixes
+
+* **claude-code:** discover npm checks in direct subfolders and let a person amend them ([cd12ed4](https://github.com/special-place-ai-heaven/coding-supervisor/commit/cd12ed442266ba32714f4e47863b21a99fd374f8))
+* **claude-code:** discover npm checks in direct subfolders and let a person amend them ([cca6f62](https://github.com/special-place-ai-heaven/coding-supervisor/commit/cca6f6240bc6f0d3efe6d1be038ebc32e3d97bdc))
+* **claude-code:** keep one floor entry per check id and name every differing field ([a5fbc3a](https://github.com/special-place-ai-heaven/coding-supervisor/commit/a5fbc3ab20e93e33b4fe16e207f2297f92fadc07))
+
 ## [0.5.4](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.5.3...v0.5.4) (2026-11-02)
 
 
