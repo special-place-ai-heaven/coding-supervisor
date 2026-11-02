@@ -50,8 +50,8 @@ configs hold a versioned binary path; unverified here, see X4).
 
 | ID | Item | Crit | Depends on | Status |
 |---|---|---|---|---|
-| F10a | Discover npm checks in workspace globs, else depth-1 subfolders (skip `node_modules`), as `npm --prefix <dir> run <script>`; `npm_definitions` and entry points learn the `--prefix` form. | P1 | – | todo |
-| F10b | "No checks found" becomes final: a structured, non-retryable error naming the operator-contract path. | P1 | F11c (same error style) | todo |
+| F10a | Discover npm checks in direct subfolders (skip `node_modules` and hidden folders) when the root has no package.json, as `npm --prefix <dir> run <script>` with ids like `AUTO_NPM_TEST_BACKEND`; `npm_definitions` (`<dir>/<script>`) and entry points learn the `--prefix` form. Owner, 2026-11-02: discovered commands are amendable by a person through `task amend-floor` (stored as `floor_overrides`), so a heavy suite can carry `--maxWorkers=2`. Workspace globs and deeper folders are not read yet. | P1 | – | done (wave 3 commit) |
+| F10b | "No checks found" becomes final: the error says `not retryable` and tells the model to stop and tell the user. It does not name the operator-contract path, because `task start` is refused once a prompt has been registered (see K13). | P1 | F11c (same error style) | done (wave 3 commit) |
 | K4 | `init` drafts checks from the same discovery, not a Rust draft in an npm repo. | P2 | F10a | todo |
 
 ## Wave 4: minor 0.6.0, modes (from PROPOSAL.md)
@@ -80,6 +80,7 @@ configs hold a versioned binary path; unverified here, see X4).
 | ID | Item | Crit | Depends on | Status |
 |---|---|---|---|---|
 | X4 | Generated configs hold absolute binary paths; check whether an npm upgrade leaves hooks on the old binary. `install.rs:189` records `current_exe()`. | P2 | – (needed for gate R1) | todo |
+| K13 | `supervisor task start` is refused once `intents.json` exists, so a person cannot supply an operator contract after the first prompt. Found while writing F10b. | P1 | – | todo |
 | K3 | `install --dry-run` reports writes into the checkout, including a tracked file. | P2 | – | todo |
 | K9 | State location differs with and without `SUPERVISOR_STATE_DIR` (`env` vs `home` rule), so agents see different task namespaces. | P2 | – | todo |
 | K7 | `task start` prints `queued` while `task_state` says `preparing`. | P3 | – | todo |

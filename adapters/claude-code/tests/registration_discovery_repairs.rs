@@ -618,3 +618,95 @@ fn continue_on_an_operator_task_says_it_converted_the_task() {
         );
     }
 }
+
+fn nested_npm_project(f: &Fixture) -> (PathBuf, PathBuf) {
+    let root = f.0.join("state");
+    let project = f.0.join("project");
+    fs::remove_file(project.join("Cargo.toml")).unwrap();
+    fs::remove_file(project.join("package.json")).unwrap();
+    for (dir, scripts) in [
+        ("backend", json!({"lint":"eslint .","test":"jest"})),
+        ("node_modules", json!({"test":"never"})),
+    ] {
+        fs::create_dir_all(project.join(dir)).unwrap();
+        fs::write(
+            project.join(dir).join("package.json"),
+            json!({"scripts":scripts}).to_string(),
+        )
+        .unwrap();
+    }
+    (root, project)
+}
+
+fn commands(event: &Value) -> Vec<String> {
+    event["required_criteria"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["command"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn nested_npm_project_produces_prefixed_floor() {
+    let f = Fixture::new();
+    let (root, project) = nested_npm_project(&f);
+    let event = prompt(&root, &project, "nested");
+    let commands = commands(&event);
+    assert!(
+        commands.contains(&"npm --prefix backend run lint".to_owned()),
+        "{commands:?}"
+    );
+    assert!(
+        commands.contains(&"npm --prefix backend run test".to_owned()),
+        "{commands:?}"
+    );
+    assert!(
+        !commands.iter().any(|c| c.contains("node_modules")),
+        "{commands:?}"
+    );
+    assert!(
+        event["npm_definitions"].get("backend/test").is_some(),
+        "{event}"
+    );
+    assert!(
+        event["npm_definitions"].get("node_modules/test").is_none(),
+        "{event}"
+    );
+    autonomy::propose(&root, &project, &proposal(&event, "start")).unwrap();
+}
+
+#[test]
+fn a_person_can_amend_a_discovered_floor_command() {
+    let f = Fixture::new();
+    let (root, project) = nested_npm_project(&f);
+    let stricter = "npm --prefix backend run test -- --maxWorkers=2";
+    autonomy::amend_floor(
+        &root,
+        &project,
+        "AUTO_NPM_TEST_BACKEND",
+        stricter,
+        "jest memory",
+    )
+    .unwrap();
+    let event = prompt(&root, &project, "amended");
+    let commands = commands(&event);
+    assert!(commands.contains(&stricter.to_owned()), "{commands:?}");
+    assert!(
+        !commands.contains(&"npm --prefix backend run test".to_owned()),
+        "{commands:?}"
+    );
+    autonomy::propose(&root, &project, &proposal(&event, "start")).unwrap();
+}
+
+#[test]
+fn empty_floor_error_is_final() {
+    let f = Fixture::new();
+    let root = f.0.join("state");
+    let project = f.0.join("project");
+    fs::remove_file(project.join("Cargo.toml")).unwrap();
+    fs::remove_file(project.join("package.json")).unwrap();
+    let event = prompt(&root, &project, "empty");
+    let refusal = autonomy::propose(&root, &project, &proposal(&event, "start")).unwrap_err();
+    assert!(refusal.contains("not retryable"), "{refusal}");
+}
