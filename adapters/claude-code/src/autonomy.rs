@@ -148,6 +148,48 @@ fn criterion(id: &str, command: &str) -> Value {
     json!({"id":id,"check":"repository_validation","mandatory":true,"command":command})
 }
 
+/// The root package.json (dir `None`) and those in direct subfolders, skipping `node_modules`,
+/// hidden folders and names a shell would need quoted.
+/// shortcut: workspace globs and deeper folders are not read; add them when a repo needs it.
+fn npm_packages(project: &Path) -> Result<Vec<(Option<String>, Value)>, String> {
+    let mut packages = Vec::new();
+    if let Some(package) = read(&project.join("package.json"))? {
+        packages.push((None, package));
+    }
+    let mut dirs: Vec<String> = match fs::read_dir(project) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|name| {
+                name != "node_modules"
+                    && !name.starts_with('.')
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            })
+            .collect(),
+        Err(e) => return Err(format!("{}: {e}", project.display())),
+    };
+    dirs.sort();
+    for dir in dirs {
+        if let Some(package) = read(&project.join(&dir).join("package.json"))? {
+            packages.push((Some(dir), package));
+        }
+    }
+    Ok(packages)
+}
+
+/// Add kept criteria to the floor, skipping ids it already has: a discovered check (such as
+/// AUTO_DIFF) stays the only entry under its id, or no proposal could match both.
+fn extend_floor(floor: &mut Vec<Value>, extra: Vec<Value>) {
+    for criterion in extra {
+        if !floor.iter().any(|c| c["id"] == criterion["id"]) {
+            floor.push(criterion);
+        }
+    }
+}
+
 /// A conservative floor discovered before edits. Unsupported repositories need an explicit
 /// preexisting contract; arbitrary model-selected commands are not a trusted check floor.
 fn repository_floor(project: &Path) -> Result<Vec<Value>, String> {
@@ -163,7 +205,13 @@ fn repository_floor(project: &Path) -> Result<Vec<Value>, String> {
             criterion("AUTO_TEST", "cargo test --workspace"),
         ]);
     }
-    if let Some(package) = read(&project.join("package.json"))? {
+    let packages = npm_packages(&project)?;
+    // Subfolder packages are the floor only when the root has none of its own.
+    let root_only = packages.iter().any(|(dir, _)| dir.is_none());
+    for (dir, package) in packages
+        .iter()
+        .filter(|(dir, _)| dir.is_none() || !root_only)
+    {
         for (script, id) in [
             ("test", "AUTO_NPM_TEST"),
             ("lint", "AUTO_NPM_LINT"),
@@ -175,7 +223,13 @@ fn repository_floor(project: &Path) -> Result<Vec<Value>, String> {
                 .and_then(Value::as_str)
                 .is_some_and(|s| !s.trim().is_empty())
             {
-                checks.push(criterion(id, &format!("npm run {script}")));
+                checks.push(match dir {
+                    None => criterion(id, &format!("npm run {script}")),
+                    Some(dir) => criterion(
+                        &format!("{id}_{}", dir.to_ascii_uppercase().replace('-', "_")),
+                        &format!("npm --prefix {dir} run {script}"),
+                    ),
+                });
             }
         }
     }
@@ -188,9 +242,10 @@ fn repository_floor(project: &Path) -> Result<Vec<Value>, String> {
 fn npm_definitions(project: &Path) -> Result<Value, String> {
     let project = PathBuf::from(project_identity(project)?);
     let mut scripts = serde_json::Map::new();
-    if let Some(package) = read(&project.join("package.json"))?
-        && let Some(entries) = package.get("scripts")
-    {
+    for (dir, package) in npm_packages(&project)? {
+        let Some(entries) = package.get("scripts") else {
+            continue;
+        };
         for (name, definition) in entries
             .as_object()
             .ok_or("package scripts must be an object")?
@@ -198,10 +253,10 @@ fn npm_definitions(project: &Path) -> Result<Value, String> {
             let definition = definition
                 .as_str()
                 .ok_or("package script must be a string")?;
-            scripts.insert(
-                name.clone(),
-                crate::sha256::hex(definition.as_bytes()).into(),
-            );
+            let key = dir
+                .as_ref()
+                .map_or_else(|| name.clone(), |dir| format!("{dir}/{name}"));
+            scripts.insert(key, crate::sha256::hex(definition.as_bytes()).into());
         }
     }
     Ok(scripts.into())
@@ -216,22 +271,37 @@ fn selected_entrypoints(contract: &Value, definitions: &Value) -> Result<Value, 
         .flat_map(|criterion| &criterion.command)
     {
         let parts: Vec<_> = command.split_whitespace().collect();
-        let script = match parts.as_slice() {
-            ["npm", "run", name, ..] => Some(*name),
-            ["npm", "test", ..] => Some("test"),
-            _ => None,
+        let (dir, script) = match parts.as_slice() {
+            ["npm", "run", name, ..] => ("", *name),
+            ["npm", "test", ..] => ("", "test"),
+            ["npm", "--prefix", dir, "run", name, ..] => (*dir, *name),
+            ["npm", "--prefix", dir, "test", ..] => (*dir, "test"),
+            _ => continue,
         };
-        let Some(script) = script else {
+        let dir = dir.trim_start_matches("./").trim_end_matches('/');
+        // Only direct subfolders are discovered; a deeper prefix stays unselected.
+        if dir.contains(['/', '\\']) {
             continue;
+        }
+        let key = |name: &str| {
+            if dir.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{dir}/{name}")
+            }
         };
-        if definitions.get(script).and_then(Value::as_str).is_none() {
+        if definitions
+            .get(key(script))
+            .and_then(Value::as_str)
+            .is_none()
+        {
             return Err("required npm script was absent at prompt registration".into());
         }
         // npm invokes pre/post hooks for the selected entrypoint, including hooks added later.
         for name in [
-            script.to_owned(),
-            format!("pre{script}"),
-            format!("post{script}"),
+            key(script),
+            key(&format!("pre{script}")),
+            key(&format!("post{script}")),
         ] {
             selected.insert(
                 name.clone(),
@@ -346,6 +416,16 @@ fn register(
     }
     let active = lifecycle::active_task(root)?;
     let mut floor = repository_floor(project)?;
+    // A person may replace a discovered command (`supervisor task amend-floor`).
+    for check in &mut floor {
+        if let Some(command) = check["id"]
+            .as_str()
+            .and_then(|id| store["floor_overrides"].get(id))
+            .and_then(|o| o.get("command"))
+        {
+            check["command"] = command.clone();
+        }
+    }
     if let Some(active) = &active {
         let (contract, digest) = state::read_contract(&active.dir)?;
         if let Stored::Tampered(_) = state::load_gate(&active.dir, &digest)? {
@@ -354,20 +434,26 @@ fn register(
         if !floor.iter().any(|criterion| criterion["id"] != "AUTO_DIFF")
             && let Some(contract) = contract
         {
-            floor.extend(contract.criteria.iter().filter(|c| c.mandatory).map(
-                |c| json!({"id":c.id.0,"check":c.check.0,"command":c.command,"mandatory":true}),
-            ));
+            let extra: Vec<Value> = contract
+                .criteria
+                .iter()
+                .filter(|c| c.mandatory)
+                .map(
+                    |c| json!({"id":c.id.0,"check":c.check.0,"command":c.command,"mandatory":true}),
+                )
+                .collect();
+            extend_floor(&mut floor, extra);
         }
     } else if !floor.iter().any(|criterion| criterion["id"] != "AUTO_DIFF")
         && let Some(approved) = store.get("project_floor")
     {
         validate_discovery_context(&approved["project"], project)?;
-        floor.extend(
+        extend_floor(
+            &mut floor,
             approved["required_criteria"]
                 .as_array()
                 .ok_or("invalid approved project floor")?
-                .iter()
-                .cloned(),
+                .to_vec(),
         );
     }
     let now = SystemTime::now()
@@ -589,13 +675,36 @@ pub fn amend_floor(
             "a task is active and its contract owns the floor; finish or cancel it first".into(),
         );
     }
-    if repository_floor(project)?
-        .iter()
-        .any(|c| c["id"] != "AUTO_DIFF")
-    {
-        return Err("this repository's checks are discovered from its files; a stored floor is not used here".into());
+    let mut store = load(root)?;
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let discovered = repository_floor(project)?;
+    if let Some(found) = discovered.iter().find(|c| c["id"] == criterion) {
+        let entry = &mut store["floor_overrides"][criterion];
+        let old = match entry.get("command").unwrap_or(&found["command"]) {
+            Value::String(s) => json!([s]),
+            other => other.clone(),
+        };
+        let mut amendments = entry
+            .get("amendments")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        amendments
+            .as_array_mut()
+            .ok_or("invalid floor override history")?
+            .push(json!({"t":t,"criterion":criterion,"old_command":old,"new_command":command,"reason":reason}));
+        *entry = json!({"command":command,"amendments":amendments});
+        tx.commit(vec![("intents.json".into(), format!("{store}\n"))])?;
+        return Ok(
+            json!({"criterion":criterion,"old_command":old,"new_command":command,"amended":true}),
+        );
     }
-    let mut store = read(&root.join("intents.json"))?.unwrap_or_else(|| json!({}));
+    if discovered.iter().any(|c| c["id"] != "AUTO_DIFF") {
+        return Err(format!(
+            "no discovered check is named {criterion}; this repository's checks are discovered from its files"
+        ));
+    }
     let floor = store
         .get_mut("project_floor")
         .ok_or("no stored project floor; one is kept when a prompt-managed task is cancelled")?;
@@ -611,9 +720,6 @@ pub fn amend_floor(
         other => other.clone(),
     };
     entry["command"] = command.into();
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
     let amendment = json!({"t":t,"criterion":criterion,"old_command":old,"new_command":command,"reason":reason});
     match floor.get_mut("amendments").and_then(Value::as_array_mut) {
         Some(list) => list.push(amendment),
@@ -840,7 +946,7 @@ fn add_floor(contract: &Value, floor: &Value) -> Result<Value, String> {
         .ok_or("criteria must be an array")?;
     let floor = floor.as_array().ok_or("invalid requirement floor")?;
     if floor.is_empty() || floor.iter().all(|c| c["id"] == "AUTO_DIFF") {
-        return Err("no deterministic repository checks found; establish an explicit initial contract first".into());
+        return Err("no deterministic repository checks found (not retryable): this repository has no Cargo.toml and no package.json scripts in its root or a direct subfolder, so no proposal can start a task. Stop retrying and tell the user that a person must provide the checks.".into());
     }
     for (required, expected) in floor.iter().zip(&required_contract.criteria) {
         if let Some(existing) = parsed.criteria.iter().find(|c| c.id == expected.id) {
@@ -848,19 +954,34 @@ fn add_floor(contract: &Value, floor: &Value) -> Result<Value, String> {
                 || existing.command != expected.command
                 || existing.mandatory != expected.mandatory
             {
-                let amend = if expected.id.0.starts_with("AUTO_") {
-                    " This check is discovered from the repository's files.".to_owned()
-                } else {
-                    format!(
-                        " A person can change it with `supervisor task amend-floor --criterion {} --command <command> --reason <text>` while no task is active.",
-                        expected.id.0
-                    )
-                };
+                let amend = format!(
+                    " A person can change it with `supervisor task amend-floor --criterion {} --command <command> --reason <text>` while no task is active.",
+                    expected.id.0
+                );
+                let mut differs = Vec::new();
+                if existing.command != expected.command {
+                    differs.push(format!(
+                        "command: floor `{}`, proposal `{}`",
+                        expected.command.join("` or `"),
+                        existing.command.join("` or `")
+                    ));
+                }
+                if existing.check != expected.check {
+                    differs.push(format!(
+                        "check: floor `{}`, proposal `{}`",
+                        expected.check.0, existing.check.0
+                    ));
+                }
+                if existing.mandatory != expected.mandatory {
+                    differs.push(format!(
+                        "mandatory: floor {}, proposal {}",
+                        expected.mandatory, existing.mandatory
+                    ));
+                }
                 return Err(format!(
-                    "proposal conflicts with immutable repository requirement floor: {} must run `{}`, the proposal has `{}`.{amend}",
+                    "proposal conflicts with immutable repository requirement floor: {} differs in {}. Copy the floor's values from required_criteria.{amend}",
                     expected.id.0,
-                    expected.command.join("` or `"),
-                    existing.command.join("` or `"),
+                    differs.join("; "),
                 ));
             }
         } else {
