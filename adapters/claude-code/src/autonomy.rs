@@ -907,6 +907,14 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         return Err("prompt event superseded by a newer prompt".into());
     }
     let action = text(proposal, "action")?;
+    if !matches!(
+        action,
+        "discussion" | "start" | "continue" | "revise" | "pause" | "resume" | "cancel"
+    ) {
+        return Err(format!(
+            "unknown action {action:?}; expected one of discussion|start|continue|revise|pause|resume|cancel"
+        ));
+    }
     let active = lifecycle::active_task(root)?;
     let current_id = active.as_ref().map(|a| a.task_id.as_str());
     if event["task_id"].as_str() != current_id {

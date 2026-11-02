@@ -28,22 +28,28 @@ env:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  runner:
+    uses: ./.github/workflows/pick-runner.yml
+    secrets: inherit
 
   build:
     name: Build ${{ matrix.target }}
-    needs: ci
-    runs-on: ${{ matrix.os }}
+    needs: [ci, runner]
+    runs-on: ${{ fromJSON(matrix.os) }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Owner's rule (2026-10-29): Linux builds on the five self-hosted
-          # runners labelled fresh; Windows on a GitHub-hosted runner (the
-          # repository is public).
+          # Owner's rule (2026-11-02): Linux on an idle self-hosted fresh runner
+          # when one is online, else GitHub-hosted (pick-runner.yml); Windows
+          # on a GitHub-hosted runner.
+          # os holds JSON for runs-on: a quoted label or a label list.
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
+            os: '"windows-latest"'
           - target: x86_64-unknown-linux-gnu
-            os: [self-hosted, Linux, X64, fresh]
+            os: ${{ needs.runner.outputs.linux }}
     defaults:
       run:
         shell: bash
@@ -119,7 +125,7 @@ jobs:
   release:
     name: Publish GitHub release
     needs: build
-    runs-on: [self-hosted, Linux, X64, fresh]
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
@@ -148,7 +154,7 @@ jobs:
   npm-package:
     name: Build npm packages
     needs: build
-    runs-on: [self-hosted, Linux, X64, fresh]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
@@ -232,7 +238,7 @@ jobs:
   npm-publish:
     name: Publish npm packages
     needs: [npm-package, release]
-    runs-on: [self-hosted, Linux, X64, fresh]
+    runs-on: ubuntu-latest
     steps:
       # A missing secret must fail here, visibly, rather than publish nothing.
       - name: Require the NPM_TOKEN secret

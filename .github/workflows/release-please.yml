@@ -29,7 +29,7 @@ permissions:
 jobs:
   release-please:
     name: Release PR
-    runs-on: [self-hosted, Linux, X64, fresh]
+    runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: write

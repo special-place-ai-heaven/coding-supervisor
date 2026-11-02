@@ -203,7 +203,7 @@ fn read_only_tool(payload: &Value) -> bool {
     let tool = text(payload, "tool_name").unwrap_or_default();
     if matches!(
         tool,
-        "Read" | "Glob" | "Grep" | "LS" | "TaskGet" | "TaskList"
+        "Read" | "Glob" | "Grep" | "LS" | "TaskGet" | "TaskList" | "ToolSearch"
     ) {
         return true;
     }
@@ -246,6 +246,55 @@ fn read_only_tool(payload: &Value) -> bool {
         tool,
         "mcp__supervisor__intent_apply" | "mcp__supervisor__task_state"
     )
+}
+
+/// One read-only shell command with no shell syntax, usable before the prompt is classified.
+/// It still passes the gate-state guard and the action policy, and is observed like any run.
+fn read_only_command(payload: &Value) -> bool {
+    if text(payload, "tool_name") != Some("Bash") {
+        return false;
+    }
+    let command = payload["tool_input"]["command"]
+        .as_str()
+        .unwrap_or_default();
+    if command.contains([';', '&', '|', '<', '>', '$', '`', '(', ')', '\n', '\r']) {
+        return false;
+    }
+    let words: Vec<&str> = command.split_whitespace().collect();
+    if words.iter().any(|w| w.starts_with("--output")) {
+        return false;
+    }
+    matches!(
+        words.as_slice(),
+        ["git", "status" | "log" | "diff" | "show" | "rev-parse", ..]
+            | ["git", "branch", "--show-current"]
+            | ["ls", ..]
+            | ["pwd"]
+            | ["supervisor", "status", ..]
+            | ["supervisor", "--help"]
+    )
+}
+
+/// What the pre-intent gate lets through while the current prompt is unclassified.
+fn inspection(payload: &Value) -> bool {
+    read_only_tool(payload) || read_only_command(payload)
+}
+
+/// A pending prompt blocks a stop once; while the harness is already continuing, release it
+/// visibly so the harness's own block cap is never reached.
+fn unclassified_stop(payload: &Value, reason: &str) -> Decision {
+    if payload
+        .get("stop_hook_active")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        Decision::System(
+            "GATE: prompt left unclassified; this stop is released and nothing is certified"
+                .to_owned(),
+        )
+    } else {
+        Decision::Block(reason.to_owned())
+    }
 }
 
 pub fn handle(payload: &Value, env: &mut Env) -> Decision {
@@ -299,21 +348,34 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
     if event == "UserPromptSubmit" && text(payload, "prompt").is_some() && !legacy_contract {
         let project = Path::new(text(payload, "cwd").unwrap_or("."));
         return match crate::autonomy::record_prompt(&root, project, payload) {
-            Ok(intent) => Decision::Context {
-                event: "UserPromptSubmit",
-                text: format!(
-                    "SUPERVISOR: current prompt requires an intent proposal before mutations. Read-only investigation is available. Call intent_apply with the event identity and a scoped contract or discussion/follow-up intent. {}",
-                    intent
-                ),
-            },
+            Ok(intent) => {
+                let mut call = serde_json::json!({"event_id":intent["event_id"],"nonce":intent["nonce"],"prompt_hash":intent["prompt_hash"],"task_id":intent["task_id"]});
+                let next = if intent["task_id"].is_null() {
+                    call["action"] = "start".into();
+                    format!(
+                        "Next call for new work: intent_apply {call} plus \"contract\": a scoped contract; for a question, the same fields with \"action\":\"discussion\"."
+                    )
+                } else {
+                    call["action"] = "continue".into();
+                    format!(
+                        "Next call to keep working on the active task: intent_apply {call}; change the action only if the prompt asks for it."
+                    )
+                };
+                Decision::Context {
+                    event: "UserPromptSubmit",
+                    text: format!(
+                        "SUPERVISOR: current prompt requires an intent proposal before mutations. Read-only investigation is available. Call intent_apply with the event identity and a scoped contract or discussion/follow-up intent. Valid actions: discussion|start|continue|revise|pause|resume|cancel. {next} {intent}"
+                    ),
+                }
+            }
             Err(_) => Decision::Block(
                 "GATE: prompt intent could not be recorded; task activation remains unverified"
                     .to_owned(),
             ),
         };
     }
-    let guarded_intent = (event == "PreToolUse" && !read_only_tool(payload))
-        || matches!(event, "Stop" | "SubagentStop");
+    let guarded_intent =
+        (event == "PreToolUse" && !inspection(payload)) || matches!(event, "Stop" | "SubagentStop");
     let intent_snapshot = if guarded_intent {
         match crate::autonomy::intent_authority(
             &root,
@@ -332,7 +394,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
         None
     };
     if event == "PreToolUse" {
-        if !read_only_tool(payload) {
+        if !inspection(payload) {
             match crate::autonomy::pending(&root, text(payload, "session_id").unwrap_or_default()) {
                 Ok(Some(_)) => return Decision::Deny("GATE: propose the current prompt intent and scoped contract before mutation or delegation".to_owned()),
                 Err(_) => return Decision::Deny("GATE: prompt intent state unavailable".to_owned()),
@@ -367,13 +429,22 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
             Ok(None) => {}
         }
         // Inspection and proposal routes do not need to open or advance the task gate.
-        if root.join("intents.json").exists() && read_only_tool(payload) {
+        if root.join("intents.json").exists()
+            && (read_only_tool(payload)
+                || (read_only_command(payload)
+                    && matches!(lifecycle::active_task(&root), Ok(None))))
+        {
             return Decision::None;
         }
     }
     if event == "Stop" {
         match crate::autonomy::pending(&root, text(payload, "session_id").unwrap_or_default()) {
-            Ok(Some(_)) => return Decision::Block("GATE: classify the current prompt with intent_apply before stopping; discussion needs no task".to_owned()),
+            Ok(Some(_)) => {
+                return unclassified_stop(
+                    payload,
+                    "GATE: classify the current prompt with intent_apply before stopping; discussion needs no task",
+                );
+            }
             Err(_) => return Decision::Block("GATE: prompt intent state unavailable".to_owned()),
             Ok(None) => {}
         }
@@ -450,7 +521,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                 // staged task while with_task holds its OS lock, before Session can mutate it.
                 if !crate::autonomy::owns_session(dir, text(payload, "session_id").unwrap_or_default())?
                 {
-                    return Ok(if event == "PreToolUse" && !read_only_tool(payload) {
+                    return Ok(if event == "PreToolUse" && !inspection(payload) {
                         Decision::Deny("GATE: task ownership changed; explicit user resume is required before mutation".to_owned()).to_json().unwrap_or(Value::Null)
                     } else {
                         Value::Null
@@ -467,8 +538,9 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                             Some(if event == "PreToolUse" {
                                 Decision::Deny("GATE: propose the current prompt intent before mutation or delegation".to_owned())
                             } else {
-                                Decision::Block(
-                                    "GATE: classify the current prompt before stopping".to_owned(),
+                                unclassified_stop(
+                                    payload,
+                                    "GATE: classify the current prompt before stopping",
                                 )
                             })
                         }

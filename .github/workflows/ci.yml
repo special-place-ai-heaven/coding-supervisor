@@ -2,14 +2,15 @@
 # The Rust toolchain is installed with rustup straight from rust-toolchain.toml,
 # so that file is the only place the version is written.
 #
-# Runner policy (owner, 2026-10-29): pushes run on the organisation's five
-# self-hosted Linux runners labelled fresh (one dynamic pool on the owner's
-# machine, about 72 GB RAM and 26 cores, so no job caps or serialisation);
-# organisation settings already restrict those runners to verified committers,
-# and the hosted ubuntu-latest job for pull requests is a second layer so a
-# fork's code never executes on a self-hosted machine; a hosted windows-latest
-# job runs for both, because the first user and the adapter's path handling
-# are Windows.
+# Runner policy (owner, 2026-11-02): Linux jobs use the owner's self-hosted
+# "fresh" runners when one is online and idle, and GitHub-hosted ubuntu-latest
+# otherwise (the fresh runners live on the owner's home PC, which is not always
+# on). The runner job below decides; it needs the RUNNER_STATUS_TOKEN secret
+# (or RELEASE_PLEASE_TOKEN; read access to the organisation's self-hosted runners) and picks hosted
+# when that secret is absent or the lookup fails. Pull requests always run
+# hosted, so a fork's code never executes on a self-hosted machine. A hosted
+# windows-latest job runs for both, because the first user and the adapter's
+# path handling are Windows.
 name: CI
 
 on:
@@ -32,10 +33,15 @@ env:
   RUSTC_WRAPPER: ""
 
 jobs:
-  linux-fresh:
-    name: "Linux (self-hosted fresh): format, lint, test, core dependency check"
-    if: github.event_name == 'push'
-    runs-on: [self-hosted, Linux, X64, fresh]
+  runner:
+    name: Pick the Linux runner
+    uses: ./.github/workflows/pick-runner.yml
+    secrets: inherit
+
+  linux:
+    name: "Linux: format, lint, test, core dependency check"
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.linux) }}
     steps:
       - uses: actions/checkout@v7
 
@@ -53,46 +59,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
-
-      # The autonomy fixtures spawn a real interpreter; Ubuntu images ship
-      # python3 but usually no `python` launcher (Windows images have one).
-      - name: Ensure python3 exists
-        run: |
-          command -v python3 || {
-            sudo apt-get update && sudo apt-get install -y python3
-          }
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Lint with warnings as errors
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Run tests
-        run: cargo test --workspace
-
-      # The core crate must stay free of dependencies. cargo tree prints one
-      # line (the crate itself) when it has none.
-      - name: Check the core crate has no dependencies
-        run: |
-          lines=$(cargo tree -p coding-supervisor --edges normal,build,dev | wc -l)
-          if [ "$lines" -ne 1 ]; then
-            echo "::error::coding-supervisor must have no dependencies, but cargo tree printed $lines lines:"
-            cargo tree -p coding-supervisor --edges normal,build,dev
-            exit 1
-          fi
-
-  linux-hosted:
-    name: "Linux (hosted, pull requests): format, lint, test, core dependency check"
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install the pinned Rust toolchain
-        run: rustup toolchain install
-
-      - uses: Swatinem/rust-cache@v2
 
       # The autonomy fixtures spawn a real interpreter; Ubuntu images ship
       # python3 but usually no `python` launcher (Windows images have one).
