@@ -453,9 +453,7 @@ fn register(
             approved["required_criteria"]
                 .as_array()
                 .ok_or("invalid approved project floor")?
-                .iter()
-                .cloned()
-                .collect(),
+                .to_vec(),
         );
     }
     let now = SystemTime::now()
