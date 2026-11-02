@@ -54,6 +54,10 @@ fn checkpoint_input(gate: &Value, contract_sha256: &str) -> Value {
         })
         .collect();
     map.insert("contract_sha256".to_owned(), contract_sha256.into());
+    // Optional fields join the checkpoint link only when present, so older gates verify.
+    if let Some(c) = gate.get("repair_charged").filter(|c| !c.is_null()) {
+        map.insert("repair_charged".to_owned(), c.clone());
+    }
     Value::Object(map)
 }
 

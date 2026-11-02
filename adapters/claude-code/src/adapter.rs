@@ -1432,12 +1432,18 @@ impl Session {
                         TaskState::Verifying | TaskState::ReadyForReview
                     )
                 {
-                    if judged_wrong || self.observed_failure() {
-                        if let Err(error) = self.task.request_repair() {
-                            reasons.push(render(&error));
-                        }
-                    } else {
+                    let current = self.task.candidate().cloned();
+                    if !(judged_wrong || self.observed_failure()) {
                         round = " (no repair round spent: no required check has been observed failing on this candidate)";
+                    } else if current.is_some()
+                        && self.gate.repair_charged.as_deref() == current.as_ref()
+                    {
+                        round = " (no repair round spent: a round was already charged on this version of the code; change the code before the next repair)";
+                    } else {
+                        match self.task.request_repair() {
+                            Ok(()) => self.gate.repair_charged = current.map(Box::new),
+                            Err(error) => reasons.push(render(&error)),
+                        }
                     }
                 }
                 let state = state_name(self.task.state());

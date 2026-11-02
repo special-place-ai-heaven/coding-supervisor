@@ -364,7 +364,9 @@ fn autonomous_stop_evaluates_evidence_without_completion_wording() {
 #[test]
 fn autonomous_refusals_exhaust_repair_budget_across_followup_prompts() {
     let (_d, mut env, task) = autonomous();
-    for index in 0..3 {
+    // Each round is a real repair: new code, checks run again, still failing.
+    for (index, version) in ["a", "b", "c"].into_iter().enumerate() {
+        env.candidate = Box::new(Fixed(version));
         run_autonomous_checks_with(&mut env, &format!("failing-{index}"), 1);
         assert!(matches!(stop(&mut env, "Stop", "main"), Decision::Block(_)));
         if index < 2 {
@@ -377,6 +379,28 @@ fn autonomous_refusals_exhaust_repair_budget_across_followup_prompts() {
         }
     }
     assert_eq!(gate(&env)["state"], "budget_exhausted");
+    assert_eq!(gate(&env)["consumed_repair_rounds"], 2);
+}
+
+#[test]
+fn repeated_refusals_on_unchanged_code_spend_one_round() {
+    let (_d, mut env, task) = autonomous();
+    run_autonomous_checks_with(&mut env, "failing", 1);
+    for index in 0..3 {
+        let Decision::Block(reason) = stop(&mut env, "Stop", "main") else {
+            panic!("a failing check must refuse");
+        };
+        if index > 0 {
+            assert!(reason.contains("already charged"), "{reason}");
+        }
+        let event = prompt(&mut env, &format!("wait-{index}"), "Continue the same work");
+        propose(&env, &event, "continue", Some(&task), None);
+    }
+    assert_eq!(gate(&env)["consumed_repair_rounds"], 1);
+    assert_ne!(gate(&env)["state"], "budget_exhausted");
+    env.candidate = Box::new(Fixed("b"));
+    run_autonomous_checks_with(&mut env, "failing-again", 1);
+    assert!(matches!(stop(&mut env, "Stop", "main"), Decision::Block(_)));
     assert_eq!(gate(&env)["consumed_repair_rounds"], 2);
 }
 
