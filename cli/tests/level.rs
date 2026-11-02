@@ -667,3 +667,27 @@ fn unresolvable_state_root_refuses_with_no_record() {
         "fallback state created"
     );
 }
+
+#[test]
+fn agents_cannot_reset_rounds_or_amend_the_floor() {
+    let f = Fixture::new("operator");
+    f.start_task();
+    let attempts = [
+        (
+            "Bash",
+            json!({"command":"supervisor task reset-rounds --task t --reason x"}),
+        ),
+        (
+            "PowerShell",
+            json!({"command":"& C:\\bin\\supervisor.exe task amend-floor --criterion C2 --command \"cargo test\" --reason x"}),
+        ),
+        (
+            "mcp__terminal_commander__run_and_watch",
+            json!({"argv":["supervisor","task","reset-rounds","--task","t","--reason","x"]}),
+        ),
+    ];
+    for (i, (tool, input)) in attempts.into_iter().enumerate() {
+        let decision = f.tool(&format!("op{i}"), tool, input.clone());
+        assert!(denied(&decision), "{tool} {input}: {decision}");
+    }
+}

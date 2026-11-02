@@ -1374,10 +1374,6 @@ impl Session {
         reasons: &mut Vec<String>,
     ) -> Result<Decision, String> {
         let message = text(payload, "last_assistant_message").unwrap_or_default();
-        let active = payload
-            .get("stop_hook_active")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
         if crate::autonomy::is_paused(dir)? {
             reasons.push("task paused; no completion attempted".to_owned());
             return Ok(Decision::None);
@@ -1396,8 +1392,11 @@ impl Session {
             None => (Vec::new(), Vec::new()),
         };
         self.note_asserted(reasons);
-        if let Err(why) = self.latest_attempts(dir, Path::new(text(payload, "cwd").unwrap_or(".")))
-        {
+        let project = Path::new(text(payload, "cwd").unwrap_or("."));
+        // A repair round is spent only on a candidate judged wrong, never on absent evidence.
+        // A redefined check entrypoint is a defect in the candidate.
+        let mut judged_wrong = crate::autonomy::validate_entrypoints(dir, project).is_err();
+        if let Err(why) = self.latest_attempts(dir, project) {
             problems.push(why);
         }
         let result = if problems.is_empty() {
@@ -1409,7 +1408,11 @@ impl Session {
                         TaskState::ReadyForReview => self.task.complete(),
                         _ => self.task.try_accept().and_then(|()| self.task.complete()),
                     }
-                    .map_err(|e| render(&e))
+                    .map_err(|e| {
+                        judged_wrong |=
+                            matches!(e, GateError::OutOfScope(_) | GateError::OpenFinding(_));
+                        render(&e)
+                    })
                 })
         } else {
             // An unlinked CHECK line refuses before any acceptance is tried.
@@ -1422,17 +1425,23 @@ impl Session {
             }
             Err(why) => {
                 reasons.push(why.clone());
+                let mut round = "";
                 if autonomous
                     && matches!(
                         self.task.state(),
                         TaskState::Verifying | TaskState::ReadyForReview
                     )
-                    && let Err(error) = self.task.request_repair()
                 {
-                    reasons.push(render(&error));
+                    if judged_wrong || self.observed_failure() {
+                        if let Err(error) = self.task.request_repair() {
+                            reasons.push(render(&error));
+                        }
+                    } else {
+                        round = " (no repair round spent: no required check has been observed failing on this candidate)";
+                    }
                 }
                 let state = state_name(self.task.state());
-                if active && self.gate.continuations >= 3 {
+                if self.gate.continuations >= 3 {
                     return Ok(Decision::System(format!(
                         "GATE: refusal cap reached; task remains {state}"
                     )));
@@ -1445,7 +1454,7 @@ impl Session {
                     "run the required check commands"
                 };
                 Ok(Decision::Block(format!(
-                    "GATE refuses completion (refusal {} of 3, harness cap 8): state {state}; {why}; {next} or report the task as not complete.{run_instead}",
+                    "GATE refuses completion (refusal {} of 3 this turn): state {state}{round}; {why}; {next} or report the task as not complete.{run_instead}",
                     self.gate.continuations
                 )))
             }
@@ -1482,6 +1491,17 @@ impl Session {
             return Decision::Deny(format!("GATE: task is {}", state_name(self.task.state())));
         }
         let tool = text(payload, "tool_name").unwrap_or_default();
+        let input = &payload["tool_input"];
+        if matches!(tool, "Bash" | "PowerShell")
+            && input["run_in_background"].as_bool() == Some(true)
+            && let Some(command) = text(input, "command")
+            && let Some(criterion) = self.criteria.iter().find(|c| c.accepts(command))
+        {
+            return Decision::Deny(format!(
+                "GATE: {} is a required check; run it in the foreground. Background runs are never counted.",
+                criterion.id.0
+            ));
+        }
         if !matches!(tool, "Write" | "Edit" | "Agent") {
             return Decision::None;
         }
@@ -1573,6 +1593,29 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    /// True when some mandatory criterion's latest hook-observed run on the current candidate
+    /// exited non-zero: the candidate was judged and found wrong.
+    fn observed_failure(&self) -> bool {
+        let (Some(current), Some(dir)) = (self.task.candidate(), self.evidence_dir.as_ref()) else {
+            return false;
+        };
+        self.criteria
+            .iter()
+            .filter(|c| c.mandatory)
+            .any(|criterion| {
+                self.gate
+                    .receipts
+                    .iter()
+                    .rev()
+                    .find(|r| {
+                        r.criterion == criterion.id
+                            && &r.candidate == current
+                            && receipt_is_observed(dir, &self.task_id, r)
+                    })
+                    .is_some_and(|r| r.exit_code.is_some_and(|code| code != 0))
+            })
     }
 
     /// Receipt status per criterion, read without any transition.

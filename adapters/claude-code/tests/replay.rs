@@ -1065,7 +1065,7 @@ fn chair_stop_citing_a_run_that_was_not_journaled_is_refused() {
     let r = chair_stop(&mut env, &ALL4, 1);
     let text = blocked(&r);
     assert!(
-        text.starts_with("GATE refuses completion (refusal 1 of 3, harness cap 8): state verifying; unlinked CHECK C1 | cargo test c1 | exit 0 (no run by agent main with that command and exit code); record the check with CHECK lines"),
+        text.starts_with("GATE refuses completion (refusal 1 of 3 this turn): state verifying; unlinked CHECK C1 | cargo test c1 | exit 0 (no run by agent main with that command and exit code); record the check with CHECK lines"),
         "{text}"
     );
     assert_eq!(gate(&env)["state"], "verifying");

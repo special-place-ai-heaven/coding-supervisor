@@ -569,6 +569,60 @@ pub fn requires_observed_completion(dir: &Path) -> Result<bool, String> {
     }
 }
 
+/// A person's change to one command of the stored project floor (the floor kept after a
+/// cancel when the repository's files yield no checks). Recorded with old and new command and
+/// the reason; the PreToolUse guard refuses this command to agents.
+pub fn amend_floor(
+    root: &Path,
+    project: &Path,
+    criterion: &str,
+    command: &str,
+    reason: &str,
+) -> Result<Value, String> {
+    let (command, reason) = (command.trim(), reason.trim());
+    if command.is_empty() || reason.is_empty() {
+        return Err("amend-floor needs a nonempty --command and --reason".into());
+    }
+    let tx = Transaction::open(root)?;
+    if lifecycle::active_task(root)?.is_some() {
+        return Err(
+            "a task is active and its contract owns the floor; finish or cancel it first".into(),
+        );
+    }
+    if repository_floor(project)?
+        .iter()
+        .any(|c| c["id"] != "AUTO_DIFF")
+    {
+        return Err("this repository's checks are discovered from its files; a stored floor is not used here".into());
+    }
+    let mut store = read(&root.join("intents.json"))?.unwrap_or_else(|| json!({}));
+    let floor = store
+        .get_mut("project_floor")
+        .ok_or("no stored project floor; one is kept when a prompt-managed task is cancelled")?;
+    validate_discovery_context(&floor["project"], project)?;
+    let entry = floor["required_criteria"]
+        .as_array_mut()
+        .ok_or("invalid approved project floor")?
+        .iter_mut()
+        .find(|c| c["id"] == criterion)
+        .ok_or_else(|| format!("the stored floor has no criterion {criterion}"))?;
+    let old = match &entry["command"] {
+        Value::String(s) => json!([s]),
+        other => other.clone(),
+    };
+    entry["command"] = command.into();
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let amendment = json!({"t":t,"criterion":criterion,"old_command":old,"new_command":command,"reason":reason});
+    match floor.get_mut("amendments").and_then(Value::as_array_mut) {
+        Some(list) => list.push(amendment),
+        None => floor["amendments"] = json!([amendment]),
+    }
+    tx.commit(vec![("intents.json".into(), format!("{store}\n"))])?;
+    Ok(json!({"criterion":criterion,"old_command":old,"new_command":command,"amended":true}))
+}
+
 pub fn is_paused(dir: &Path) -> Result<bool, String> {
     Ok(read(&dir.join("autonomy.json"))?.is_some_and(|v| v["paused"] == true))
 }
@@ -794,9 +848,20 @@ fn add_floor(contract: &Value, floor: &Value) -> Result<Value, String> {
                 || existing.command != expected.command
                 || existing.mandatory != expected.mandatory
             {
-                return Err(
-                    "proposal conflicts with immutable repository requirement floor".into(),
-                );
+                let amend = if expected.id.0.starts_with("AUTO_") {
+                    " This check is discovered from the repository's files.".to_owned()
+                } else {
+                    format!(
+                        " A person can change it with `supervisor task amend-floor --criterion {} --command <command> --reason <text>` while no task is active.",
+                        expected.id.0
+                    )
+                };
+                return Err(format!(
+                    "proposal conflicts with immutable repository requirement floor: {} must run `{}`, the proposal has `{}`.{amend}",
+                    expected.id.0,
+                    expected.command.join("` or `"),
+                    existing.command.join("` or `"),
+                ));
             }
         } else {
             criteria.push(required.clone());
@@ -970,7 +1035,10 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         if proposal.get("task_id").and_then(Value::as_str) != Some(&active.task_id) {
             return Err("proposal requires the current task_id".into());
         }
-        let mut metadata = read(&active.dir.join("autonomy.json"))?.unwrap_or_else(|| json!({"schema":1,"source":event["source"],"session_id":session,"paused":false,"revisions":[]}));
+        let existing = read(&active.dir.join("autonomy.json"))?;
+        // A task started with `supervisor task start` becomes prompt-managed here; say so.
+        let converted = existing.is_none() && action != "cancel";
+        let mut metadata = existing.unwrap_or_else(|| json!({"schema":1,"source":event["source"],"session_id":session,"paused":false,"revisions":[]}));
         if action != "cancel"
             && let Some(recorded) = metadata.get("project")
         {
@@ -1048,7 +1116,11 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                     .map(|c| json!({"id":c.id.0,"check":c.check.0,"command":c.command,"mandatory":true}))
                     .collect();
                 // Retain only the approved task checks, never the proposed replacement.
+                let amendments = store["project_floor"].get("amendments").cloned();
                 store["project_floor"] = json!({"project":metadata.get("project").unwrap_or(&event["project"]),"required_criteria":floor});
+                if let Some(amendments) = amendments {
+                    store["project_floor"]["amendments"] = amendments;
+                }
                 let mut archive = json!({"schema":2,"task_id":active.task_id,"disposition":"cancelled","successor":null,"event_id":id});
                 if retire_legacy_completed {
                     archive["unverified_legacy_context"] = true.into();
@@ -1157,7 +1229,12 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 format!("{metadata}\n"),
             ));
         }
-        json!({"action":action,"task_id":active.task_id,"state":task_state,"paused":metadata["paused"],"inactive":action=="cancel"})
+        let mut response = json!({"action":action,"task_id":active.task_id,"state":task_state,"paused":metadata["paused"],"inactive":action=="cancel"});
+        if converted {
+            response["converted_to_autonomous"] = true.into();
+            response["note"] = "this operator-started task is now prompt-managed: Stop judges it without a completion claim, a failing check spends a repair round, and only a cancel prompt ends it".into();
+        }
+        response
     };
     if action != "discussion" && action != "cancel" {
         let mut sessions = read(&root.join("sessions.json"))?.unwrap_or_else(|| json!({}));

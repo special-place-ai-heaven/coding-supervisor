@@ -27,13 +27,13 @@ Status: `todo`, `doing`, `done (<commit>)`, `dropped (<why>)`.
 
 | ID | Item | Crit | Depends on | Status |
 |---|---|---|---|---|
-| F12a | A Stop refusal spends a repair round only when a criterion was observed and failed (or a finding is open); a never-observed criterion refuses without spending one. | P0 | – | todo |
-| F12b | A contract criterion's command launched in the background is denied at PreToolUse with "run it in the foreground; background runs are never counted". | P0 | – | todo |
-| F12c | `continue` on an operator-started task keeps it operator-owned, or says it converted it. Pick after reading `autonomy.rs` metadata use. | P1 | F12a | todo |
-| F12d | `supervisor task reset-rounds --task <id> --reason <text>`: a person's command, journaled and hash-chained, moves `budget_exhausted` to `repairing`. The PreToolUse guard denies it from an agent's shell, as it denies `supervisor level` (owner's ruling). | P1 | F12a | todo |
-| F17a | The "immutable repository requirement floor" refusal names the criterion and shows the floor's command beside the proposed one. | P2 | – | todo |
-| F17b | `supervisor task amend-floor --criterion <id> --command <new> --reason <text>`: a person's command, journaled with old and new command, guard-denied to agents like F12d. Chosen over a list of flags that cannot weaken a run, which would be per-runner and fragile. Field case: adding `--workerIdleMemoryLimit=1536M` to a jest command was refused at `start` after a cancel. | P1 | F12d (same guard and journal) | todo |
-| F16 | Refusal counter never shows `n of 3` above 3; the cap is per turn and the message says so; no hardcoded "harness cap 8". | P2 | F12a (same Stop code) | todo |
+| F12a | A Stop refusal spends a repair round only when the candidate was judged wrong: a required check's latest observed run on it failed, a check's npm entrypoint was redefined, a finding is open, or the diff is out of scope. A missing or stale receipt refuses without spending one and says so. | P0 | – | done (wave 2 commit) |
+| F12b | A contract criterion's command launched in the background is denied at PreToolUse with "run it in the foreground; background runs are never counted". | P0 | – | done (wave 2 commit) |
+| F12c | `continue` on an operator-started task says it converted it (`converted_to_autonomous` plus a note naming what changes). Chosen over keeping it operator-owned, which would need a second session-binding path. | P1 | F12a | done (wave 2 commit) |
+| F12d | `supervisor task reset-rounds --task <id> --reason <text>`: a person's command, journaled and hash-chained, moves `budget_exhausted` to `repairing`. The PreToolUse guard denies it from an agent's shell, as it denies `supervisor level` (owner's ruling). | P1 | F12a | done (wave 2 commit) |
+| F17a | The "immutable repository requirement floor" refusal names the criterion and shows the floor's command beside the proposed one, and points at `amend-floor` for a stored floor. | P2 | – | done (wave 2 commit) |
+| F17b | `supervisor task amend-floor --criterion <id> --command <new> --reason <text>`: a person's command, recorded in the stored floor's `amendments` with old and new command, guard-denied to agents like F12d. Works only while no task is active and only on the stored floor (a repository whose files yield checks has none to amend). Chosen over a list of flags that cannot weaken a run, which would be per-runner and fragile. Field case: adding `--workerIdleMemoryLimit=1536M` to a jest command was refused at `start` after a cancel. | P1 | F12d (same guard and journal) | done (wave 2 commit) |
+| F16 | Refusal counter never shows `n of 3` above 3; the cap is per turn and the message says so; no hardcoded "harness cap 8". The fourth stop in a turn is released whether or not the harness is already continuing. | P2 | F12a (same Stop code) | done (wave 2 commit) |
 
 **Gate R1 (owner):** after 0.5.2 and 0.5.3 publish, JEZ installs them and reruns the faces fix and Part 1 of
 TestPilot on fresh tasks with no workarounds in the prompts. Before the rerun, `supervisor status --json`
@@ -93,5 +93,5 @@ configs hold a versioned binary path; unverified here, see X4).
 
 | ID | Item | Depends on | Status |
 |---|---|---|---|
-| H1 | Archive PR #2 (`feat/autonomous-gate`, head `120a0ed`): push tag `archive/autonomous-gate`, close with a note pointing here. Needs the owner's OK. | – | todo |
+| H1 | Archive PR #2 (`feat/autonomous-gate`, head `120a0ed`): push tag `archive/autonomous-gate`, close with a note pointing here. Owner approved 2026-11-02. | – | done (tag pushed, #2 closed) |
 | H2 | Refresh stale lines in `CLAUDE.md` (branch `phase-a-installable`, "uncommitted" work now on main). | Wave 1 | todo |

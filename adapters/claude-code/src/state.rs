@@ -361,9 +361,17 @@ pub fn load_gate(dir: &Path, contract_sha256: &str) -> Result<Stored, String> {
 }
 
 pub fn save_gate(dir: &Path, gate: &Gate, contract_sha256: &str) -> Result<(), String> {
+    crate::transaction::atomic_write(
+        &dir.join("gate.json"),
+        gate_text(gate, contract_sha256).as_bytes(),
+    )
+}
+
+/// gate.json's sealed text, for writers that commit it through a `Transaction`.
+pub fn gate_text(gate: &Gate, contract_sha256: &str) -> String {
     let mut v = gate.to_json();
     chain::seal(&mut v, contract_sha256);
-    crate::transaction::atomic_write(&dir.join("gate.json"), format!("{v}\n").as_bytes())
+    format!("{v}\n")
 }
 
 pub fn append_line(path: &Path, line: &Value) -> Result<(), String> {
