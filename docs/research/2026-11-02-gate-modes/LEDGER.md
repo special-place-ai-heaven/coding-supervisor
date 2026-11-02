@@ -51,6 +51,7 @@ configs hold a versioned binary path; unverified here, see X4).
 | ID | Item | Crit | Depends on | Status |
 |---|---|---|---|---|
 | F10a | Discover npm checks in direct subfolders (skip `node_modules` and hidden folders) when the root has no package.json, as `npm --prefix <dir> run <script>` with ids like `AUTO_NPM_TEST_BACKEND`; `npm_definitions` (`<dir>/<script>`) and entry points learn the `--prefix` form. Owner, 2026-11-02: discovered commands are amendable by a person through `task amend-floor` (stored as `floor_overrides`), so a heavy suite can carry `--maxWorkers=2`. Workspace globs and deeper folders are not read yet. | P1 | – | done (wave 3 commit) |
+| F18 | A check kept from a cancelled task's contract (stored floor or active contract) is added to the floor only when the discovered floor has no check with that id. Before, a repo whose discovery found only `AUTO_DIFF` got two `AUTO_DIFF` entries with different check labels, so no proposal could start a task. The floor refusal now names every field that differs (command, check label, mandatory) instead of only the commands. Field report on 0.5.3, `tp-sched-01`, 2026-11-02. | P0 | – | done (wave 3 commit) |
 | F10b | "No checks found" becomes final: the error says `not retryable` and tells the model to stop and tell the user. It does not name the operator-contract path, because `task start` is refused once a prompt has been registered (see K13). | P1 | F11c (same error style) | done (wave 3 commit) |
 | K4 | `init` drafts checks from the same discovery, not a Rust draft in an npm repo. | P2 | F10a | todo |
 
@@ -81,6 +82,7 @@ configs hold a versioned binary path; unverified here, see X4).
 |---|---|---|---|---|
 | X4 | Generated configs hold absolute binary paths; check whether an npm upgrade leaves hooks on the old binary. `install.rs:189` records `current_exe()`. | P2 | – (needed for gate R1) | todo |
 | K13 | `supervisor task start` is refused once `intents.json` exists, so a person cannot supply an operator contract after the first prompt. Found while writing F10b. | P1 | – | todo |
+| K14 | `intent_apply` takes the contract inline only, so the model must retype every command from a contract file; accept a contract path, read through the same validation. Field report, 2026-11-02. | P2 | – | todo |
 | K3 | `install --dry-run` reports writes into the checkout, including a tracked file. | P2 | – | todo |
 | K9 | State location differs with and without `SUPERVISOR_STATE_DIR` (`env` vs `home` rule), so agents see different task namespaces. | P2 | – | todo |
 | K7 | `task start` prints `queued` while `task_state` says `preparing`. | P3 | – | todo |

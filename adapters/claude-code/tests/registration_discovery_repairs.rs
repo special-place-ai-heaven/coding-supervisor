@@ -710,3 +710,43 @@ fn empty_floor_error_is_final() {
     let refusal = autonomy::propose(&root, &project, &proposal(&event, "start")).unwrap_err();
     assert!(refusal.contains("not retryable"), "{refusal}");
 }
+
+#[test]
+fn a_stored_floor_check_already_discovered_appears_once() {
+    let f = Fixture::new();
+    let (root, project) = floor_only_project(&f);
+    let path = root.join("intents.json");
+    let mut store: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    store["project_floor"]["required_criteria"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id":"AUTO_DIFF","check":"diff_check","mandatory":true,"command":["git diff --check"]}));
+    fs::write(&path, store.to_string()).unwrap();
+    let event = prompt(&root, &project, "dedupe");
+    let ids: Vec<&str> = event["required_criteria"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids.iter().filter(|id| **id == "AUTO_DIFF").count(),
+        1,
+        "{ids:?}"
+    );
+    autonomy::propose(&root, &project, &proposal(&event, "start")).unwrap();
+}
+
+#[test]
+fn floor_refusal_names_a_differing_check_label() {
+    let f = Fixture::new();
+    let (root, project) = floor_only_project(&f);
+    let event = prompt(&root, &project, "label");
+    let mut start = proposal(&event, "start");
+    start["contract"]["criteria"] = json!([{"id":"ROOT","check":"other_label","mandatory":true,"command":"python root_check.py"}]);
+    let refusal = autonomy::propose(&root, &project, &start).unwrap_err();
+    assert!(
+        refusal.contains("root_validation") && refusal.contains("other_label"),
+        "{refusal}"
+    );
+}

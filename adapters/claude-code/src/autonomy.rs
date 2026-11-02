@@ -180,6 +180,16 @@ fn npm_packages(project: &Path) -> Result<Vec<(Option<String>, Value)>, String> 
     Ok(packages)
 }
 
+/// Add kept criteria to the floor, skipping ids it already has: a discovered check (such as
+/// AUTO_DIFF) stays the only entry under its id, or no proposal could match both.
+fn extend_floor(floor: &mut Vec<Value>, extra: Vec<Value>) {
+    for criterion in extra {
+        if !floor.iter().any(|c| c["id"] == criterion["id"]) {
+            floor.push(criterion);
+        }
+    }
+}
+
 /// A conservative floor discovered before edits. Unsupported repositories need an explicit
 /// preexisting contract; arbitrary model-selected commands are not a trusted check floor.
 fn repository_floor(project: &Path) -> Result<Vec<Value>, String> {
@@ -424,20 +434,28 @@ fn register(
         if !floor.iter().any(|criterion| criterion["id"] != "AUTO_DIFF")
             && let Some(contract) = contract
         {
-            floor.extend(contract.criteria.iter().filter(|c| c.mandatory).map(
-                |c| json!({"id":c.id.0,"check":c.check.0,"command":c.command,"mandatory":true}),
-            ));
+            let extra: Vec<Value> = contract
+                .criteria
+                .iter()
+                .filter(|c| c.mandatory)
+                .map(
+                    |c| json!({"id":c.id.0,"check":c.check.0,"command":c.command,"mandatory":true}),
+                )
+                .collect();
+            extend_floor(&mut floor, extra);
         }
     } else if !floor.iter().any(|criterion| criterion["id"] != "AUTO_DIFF")
         && let Some(approved) = store.get("project_floor")
     {
         validate_discovery_context(&approved["project"], project)?;
-        floor.extend(
+        extend_floor(
+            &mut floor,
             approved["required_criteria"]
                 .as_array()
                 .ok_or("invalid approved project floor")?
                 .iter()
-                .cloned(),
+                .cloned()
+                .collect(),
         );
     }
     let now = SystemTime::now()
@@ -942,11 +960,30 @@ fn add_floor(contract: &Value, floor: &Value) -> Result<Value, String> {
                     " A person can change it with `supervisor task amend-floor --criterion {} --command <command> --reason <text>` while no task is active.",
                     expected.id.0
                 );
+                let mut differs = Vec::new();
+                if existing.command != expected.command {
+                    differs.push(format!(
+                        "command: floor `{}`, proposal `{}`",
+                        expected.command.join("` or `"),
+                        existing.command.join("` or `")
+                    ));
+                }
+                if existing.check != expected.check {
+                    differs.push(format!(
+                        "check: floor `{}`, proposal `{}`",
+                        expected.check.0, existing.check.0
+                    ));
+                }
+                if existing.mandatory != expected.mandatory {
+                    differs.push(format!(
+                        "mandatory: floor {}, proposal {}",
+                        expected.mandatory, existing.mandatory
+                    ));
+                }
                 return Err(format!(
-                    "proposal conflicts with immutable repository requirement floor: {} must run `{}`, the proposal has `{}`.{amend}",
+                    "proposal conflicts with immutable repository requirement floor: {} differs in {}. Copy the floor's values from required_criteria.{amend}",
                     expected.id.0,
-                    expected.command.join("` or `"),
-                    existing.command.join("` or `"),
+                    differs.join("; "),
                 ));
             }
         } else {
