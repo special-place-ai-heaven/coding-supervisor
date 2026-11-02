@@ -2,10 +2,12 @@
 # The Rust toolchain is installed with rustup straight from rust-toolchain.toml,
 # so that file is the only place the version is written.
 #
-# Runner policy (owner, 2026-11-02): GitHub-hosted runners only. The
-# self-hosted "fresh" pool is no longer used. ubuntu-latest and windows-latest
-# both run for pushes and pull requests; Windows because the first user and
-# the adapter's path handling are Windows.
+# Runner policy (owner, 2026-11-02): temporarily GitHub-hosted runners only,
+# while the owner's five self-hosted "fresh" runners (on the owner's home PC)
+# are offline. Revert this commit to return pushes and Linux release jobs to
+# the fresh pool. ubuntu-latest and windows-latest both run for pushes and
+# pull requests; Windows because the first user and the adapter's path
+# handling are Windows.
 name: CI
 
 on:
