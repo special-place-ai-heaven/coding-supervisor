@@ -21,7 +21,8 @@ const LOCK_BOUND: Duration = Duration::from_secs(15);
 const BUSY_BOUND: Duration = Duration::from_secs(25);
 
 /// A `git` that records whether `STUB_GIT_PROBE` is exclusively locked, sleeps
-/// `STUB_GIT_SLEEP_MS` and then fails as outside a repository. On `rev-parse HEAD`, with
+/// `STUB_GIT_SLEEP_MS` and then fails as outside a repository. On `rev-parse HEAD ...` (the
+/// candidate's HEAD lookup), with
 /// `STUB_GIT_HOLD_AT_HEAD` set, it first starts a copy of itself that holds that lock for 30 s
 /// and touches `STUB_GIT_HELD` once it has it, then sleeps `STUB_GIT_SLEEP_AT_HEAD_MS`.
 /// With `STUB_GIT_PIDS` it appends its pid there. With `STUB_GIT_ORPHAN` it leaves behind a
@@ -71,7 +72,7 @@ fn main() {
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Ok(lock) = std::env::var("STUB_GIT_HOLD_AT_HEAD")
-        && args.ends_with(&["rev-parse".to_owned(), "HEAD".to_owned()])
+        && args.windows(2).any(|w| w[0] == "rev-parse" && w[1] == "HEAD")
     {
         Command::new(std::env::current_exe().unwrap())
             .env("STUB_GIT_HOLDER", lock)
