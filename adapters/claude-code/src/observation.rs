@@ -445,7 +445,7 @@ pub(crate) fn observe(
         if dispatch
             .pointer("/identity/shell_line")
             .and_then(Value::as_str)
-            .is_some_and(|s| s.contains('|'))
+            .is_some_and(unquoted_pipe)
         {
             return Ok(false);
         }
@@ -486,15 +486,11 @@ pub(crate) fn observe(
             || dispatch
                 .pointer("/identity/shell_line")
                 .and_then(Value::as_str)
-                .is_some_and(|s| s.contains('|'))
+                .is_some_and(unquoted_pipe)
             || dispatch
                 .pointer("/identity/argv")
                 .and_then(Value::as_array)
-                .is_some_and(|args| {
-                    args.iter()
-                        .filter_map(Value::as_str)
-                        .any(|s| s.contains('|'))
-                });
+                .is_some_and(|args| shell_argv_pipe(args));
         run["pipeline_exit_masked"] = masked.into();
         if starts
             && !previous
@@ -683,6 +679,43 @@ pub(crate) fn read_runs(dir: &Path, task: &str) -> Result<Vec<Run>, String> {
             })
         })
         .collect())
+}
+
+/// F20: a `|` the shell would read as a pipe, i.e. outside single and double quotes. A `|` inside
+/// a quoted search pattern is text, and the command's exit code is its own. Bash and PowerShell
+/// escape differently (`\` and a backtick), so a line with an escaped quote or a backtick keeps
+/// the old rule: any `|` is a pipe.
+fn unquoted_pipe(line: &str) -> bool {
+    if line.contains("\\'") || line.contains("\\\"") || line.contains('`') {
+        return line.contains('|');
+    }
+    let (mut single, mut double) = (false, false);
+    for c in line.chars() {
+        match c {
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            '|' if !single && !double => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// An argv element reaches a program literally, so its `|` pipes only when the program is a
+/// shell that runs that element as a script.
+fn shell_argv_pipe(args: &[Value]) -> bool {
+    let mut words = args.iter().filter_map(Value::as_str);
+    let program = words.next().unwrap_or_default();
+    let name = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    matches!(
+        name,
+        "sh" | "bash" | "zsh" | "dash" | "pwsh" | "powershell" | "cmd"
+    ) && words.any(unquoted_pipe)
 }
 
 #[cfg(test)]
@@ -1412,6 +1445,97 @@ mod tests {
             ));
             assert!(!d.0.join("runs.jsonl").exists());
         }
+    }
+    /// F20: a `|` inside quotes, or inside one argument of a program that is not a shell, is
+    /// text, not a pipe; the run's exit code is still the command's own.
+    #[test]
+    fn a_quoted_pipe_is_not_a_pipeline() {
+        let approved = |command: &str| {
+            vec![Criterion {
+                id: coding_supervisor::CriterionId("C7".into()),
+                check: coding_supervisor::CheckName("no_disabled_specs".into()),
+                mandatory: true,
+                command: vec![command.into()],
+            }]
+        };
+        let shell = |command: &str| {
+            let (d, mut p, c) = setup();
+            p["tool_name"] = "Bash".into();
+            p["tool_input"] = json!({ "command": command });
+            p["hook_event_name"] = "PreToolUse".into();
+            assert!(
+                observe(
+                    &d.0,
+                    &p,
+                    "task-1",
+                    "main",
+                    Some(&c),
+                    100,
+                    &approved(command)
+                )
+                .unwrap()
+            );
+            p["hook_event_name"] = "PostToolUse".into();
+            p["tool_response"] = json!({"stdout":"","interrupted":false});
+            let recorded = observe(
+                &d.0,
+                &p,
+                "task-1",
+                "main",
+                Some(&c),
+                101,
+                &approved(command),
+            )
+            .unwrap();
+            (recorded, read_runs(&d.0, "task-1").unwrap())
+        };
+        let (recorded, runs) = shell(r#"rg -n 'xdescribe|fdescribe' src"#);
+        assert!(recorded);
+        assert_eq!(runs[0].exit_code, Some(0));
+        let (recorded, runs) = shell(r#"rg -n "xit|fit" src"#);
+        assert!(recorded);
+        assert_eq!(runs.len(), 1);
+        for piped in [
+            "rg -n xit src | head",
+            r#"rg -n "a\" | head"#,
+            "rg -n `\"a | head",
+        ] {
+            let (recorded, runs) = shell(piped);
+            assert!(!recorded, "{piped}");
+            assert!(runs.is_empty(), "{piped}");
+        }
+
+        let (d, mut p, c) = setup();
+        p["tool_input"]["argv"] = json!(["rg", "-n", "xit|fit", "src"]);
+        let command = r#"rg -n "xit|fit" src"#;
+        p["hook_event_name"] = "PreToolUse".into();
+        assert!(
+            observe(
+                &d.0,
+                &p,
+                "task-1",
+                "main",
+                Some(&c),
+                100,
+                &approved(command)
+            )
+            .unwrap()
+        );
+        let mut post = completed(&p, final_response());
+        post["hook_event_name"] = "PostToolUse".into();
+        assert!(
+            observe(
+                &d.0,
+                &post,
+                "task-1",
+                "main",
+                Some(&c),
+                101,
+                &approved(command)
+            )
+            .unwrap()
+        );
+        assert_eq!(read_runs(&d.0, "task-1").unwrap()[0].exit_code, Some(0));
     }
     #[test]
     fn shell_background_launch_is_not_completion_evidence() {
