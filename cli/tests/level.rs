@@ -483,10 +483,17 @@ fn every_record_stamps_the_effective_level_and_its_source() {
             (&json!(level), &json!(source)),
             "{verdict}"
         );
+        // M2: status reports the requested level; with no hooks configured in this fixture
+        // nothing can refuse, so a refusing level runs as audit there.
         let status = f.report("status");
+        let effective = if matches!(level, "enforce" | "strict") { "audit" } else { level };
         assert_eq!(
-            (&status["effective_level"], &status["level_source"]),
-            (&json!(level), &json!(source)),
+            (
+                &status["requested_level"],
+                &status["effective_level"],
+                &status["level_source"]
+            ),
+            (&json!(level), &json!(effective), &json!(source)),
             "{status}"
         );
         assert_eq!(status["schema_version"], 1);
