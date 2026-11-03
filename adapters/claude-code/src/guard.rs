@@ -89,7 +89,7 @@ fn level_command(payload: &Value) -> Option<String> {
 }
 
 /// The text of a shell or Terminal Commander call: the command, or every scanned TC field.
-fn command_text(tool: &str, input: &Value) -> Option<String> {
+pub(crate) fn command_text(tool: &str, input: &Value) -> Option<String> {
     if matches!(tool, "Bash" | "PowerShell") {
         return input
             .get("command")

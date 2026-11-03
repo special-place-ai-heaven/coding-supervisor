@@ -797,6 +797,13 @@ fn process(
         reasons.push("level strict: write outside the contract scope".to_owned());
         return Ok(denial);
     }
+    if event == "PreToolUse"
+        && env.level.level == Level::Strict
+        && let Some(denial) = forbidden_effect(payload, &contract.forbidden_effects)
+    {
+        reasons.push("level strict: forbidden effect".to_owned());
+        return Ok(denial);
+    }
     trace.state_before = stored.as_ref().map(|g| g.checkpoint.state);
     trace.candidate = observed.as_ref().ok().map(|c| c.id.clone());
     if let Err(why) = &observed {
@@ -881,6 +888,76 @@ fn out_of_scope(payload: &Value, scope: &[String]) -> Option<Decision> {
             "GATE: {tool} refused: {path} is outside the task's contract scope (level strict)"
         ))
     })
+}
+
+/// M5, strict: the typed forbidden effects of the contract are refused before they happen.
+/// `deny_path:<dir>` refuses an edit tool under that project path; `deny_git:<subcommand>` a git
+/// command with that subcommand; `deny_argv_prefix:<words>` a command (or a part of one between
+/// `;`, `&`, `|` or a newline) that starts with those words. Other entries stay unenforced.
+fn forbidden_effect(payload: &Value, effects: &[String]) -> Option<Decision> {
+    let tool = text(payload, "tool_name")?;
+    let input = payload.get("tool_input")?;
+    let edit = matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit");
+    let relative = edit
+        .then(|| text(input, "file_path").or_else(|| text(input, "notebook_path")))
+        .flatten()
+        .and_then(|path| {
+            let cwd = Path::new(text(payload, "cwd").unwrap_or("."));
+            project_relative(&location::canonical_project(cwd), &cwd.join(path))
+        });
+    let command = crate::guard::command_text(tool, input).map(|c| c.to_lowercase());
+    let segments: Vec<Vec<&str>> = command
+        .as_deref()
+        .map(|c| {
+            c.split([';', '&', '|', '\n'])
+                .map(|part| part.split_whitespace().collect())
+                .collect()
+        })
+        .unwrap_or_default();
+    let effect = effects.iter().find(|effect| {
+        let Some((kind, value)) = effect.split_once(':') else {
+            return false;
+        };
+        let value = value.trim();
+        match kind.trim() {
+            "deny_path" => relative
+                .as_deref()
+                .is_some_and(|path| coding_supervisor::scope_contains(value, path)),
+            "deny_git" => segments
+                .iter()
+                .any(|words| git_subcommand(words) == Some(value.to_lowercase().as_str())),
+            "deny_argv_prefix" => {
+                let prefix: Vec<String> =
+                    value.split_whitespace().map(str::to_lowercase).collect();
+                !prefix.is_empty()
+                    && segments.iter().any(|words| {
+                        words.len() >= prefix.len()
+                            && words.iter().zip(&prefix).all(|(w, p)| *w == p.as_str())
+                    })
+            }
+            _ => false,
+        }
+    })?;
+    Some(Decision::Deny(format!(
+        "GATE: {tool} refused: the task forbids {effect} (level strict)"
+    )))
+}
+
+/// The subcommand of a `git` invocation in `words`, skipping global options and the values of
+/// `-C` and `-c`.
+fn git_subcommand<'a>(words: &[&'a str]) -> Option<&'a str> {
+    let at = words
+        .iter()
+        .position(|w| w.rsplit(['/', '\\']).next() == Some("git"))?;
+    let mut rest = words[at + 1..].iter();
+    while let Some(word) = rest.next() {
+        if matches!(*word, "-c" | "-C") {
+            rest.next();
+        } else if !word.starts_with('-') {
+            return Some(word);
+        }
+    }
+    None
 }
 
 /// `path` relative to the canonical `project` (see `location::canonical_project`), in git's

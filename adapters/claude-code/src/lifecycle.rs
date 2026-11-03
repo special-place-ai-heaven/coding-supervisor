@@ -227,9 +227,9 @@ pub(crate) fn plan_start(
     ));
     let mut response = json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"state":"queued","recovery_of":recovery_of});
     if !parsed.forbidden_effects.is_empty() {
-        // F13b: until strict mode compiles them into denials, a reviewer checks them.
+        // F13b: only typed entries in strict mode become refusals (M5); a reviewer checks the rest.
         response["warnings"] = json!([
-            "forbidden_effects are recorded but not enforced: no tool call is refused for them; a reviewer must check them"
+            "forbidden_effects are recorded but not enforced, except typed entries (deny_path:, deny_git:, deny_argv_prefix:) in strict mode; a reviewer must check the rest"
         ]);
     }
     Ok((response, writes))
