@@ -769,6 +769,7 @@ fn journal_v1_fields() {
         "task_id",
         "state_location",
         "effective_level",
+        "requested_level",
         "level_source",
         "candidate",
         "event",
@@ -797,6 +798,8 @@ fn journal_v1_fields() {
         want.sort();
         assert_eq!(got, want);
         assert_eq!(line["task_id"], "t4-test");
+        // M2: Claude Code hooks can refuse, so they run at the mode that was asked for.
+        assert_eq!(line["requested_level"], line["effective_level"]);
         assert_eq!(
             (&line["effective_level"], &line["level_source"]),
             (&json!("enforce"), &json!("default"))

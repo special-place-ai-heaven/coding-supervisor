@@ -29,6 +29,15 @@ impl Level {
             _ => None,
         }
     }
+    /// M2: the mode a call runs at where the harness `can_refuse` or not; a refusing mode
+    /// requested where nothing can refuse runs as `audit`, and says so.
+    pub fn effective(self, can_refuse: bool) -> Self {
+        if can_refuse || self <= Self::Audit {
+            self
+        } else {
+            Self::Audit
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
             Self::Off => "off",

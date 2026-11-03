@@ -29,6 +29,9 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         println!("{report}");
     } else {
         println!("{}", human(&report));
+        if let Some(note) = report["level_note"].as_str() {
+            println!("note: {note}");
+        }
         if let Some(other) = report["other_state"].as_str() {
             println!(
                 "warning: another state directory for this project exists at {other}; a hook, MCP server or command started without SUPERVISOR_STATE_DIR uses it and sees different tasks"
@@ -323,10 +326,19 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
     })
     .map(|(_, label)| label)
     .collect();
-    let (effective, level_source) = level::in_effect(
+    let (requested, level_source) = level::in_effect(
         root,
         level::config_dir(&|key| std::env::var(key).ok()).as_deref(),
     );
+    // M2: only Claude Code with the refusing hooks configured can enforce a refusing mode.
+    let effective = requested.effective(harness == "claude-code" && required_hooks);
+    let level_note = (effective != requested).then(|| {
+        format!(
+            "{} requested, {} effective: this harness cannot refuse without the gate's PreToolUse, Stop and SubagentStop hooks",
+            requested.name(),
+            effective.name()
+        )
+    });
     json!({
         "schema_version":1,"harness":harness,"project":project,"project_state":root,"location_rule":rule,
         "other_state":supervisor_claude_code::location::shadow_state_dir(project, &|key| std::env::var(key).ok()),
@@ -334,7 +346,7 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
         "registration":configuration(project,harness),"hooks":hooks,
         "connection":connection(root,harness),
         "action_policy":supervisor_claude_code::policy::configuration_status(root),
-        "task":active,"mode":mode,"effective_level":effective.name(),"level_source":level_source,"receipt_provenance":provenance,
+        "task":active,"mode":mode,"effective_level":effective.name(),"requested_level":requested.name(),"level_note":level_note,"level_source":level_source,"receipt_provenance":provenance,
         "coverage":{"completion":completion,"basis":"supported unrestricted project hook configuration; adapter fixtures and recorded Claude 2.1.312 trials; global settings and current model loading unproven","action_policy":"configured simple commands and exact tools only; see COVERAGE.md","same_user_security_boundary":false}
     })
 }

@@ -228,6 +228,9 @@ impl Server {
             return match result {
                 Ok(mut value) => {
                     if let Some(fields) = value.as_object_mut() {
+                        // F15: the authority of this answer, not the task's enforcement;
+                        // `mode` stays one release for callers that read it.
+                        fields.insert("answer_authority".to_owned(), "advisory".into());
                         fields.insert("mode".to_owned(), "advisory".into());
                         fields.insert("source".to_owned(), "caller-asserted".into());
                     }
@@ -328,9 +331,11 @@ impl Server {
         (level, level_source): (Level, &'static str),
     ) -> Value {
         let mut reasons = Vec::new();
+        // M2: this server answers and never refuses, so a refusing mode runs here as audit.
         let mut trace = Trace {
-            level: Some(level),
+            level: Some(level.effective(false)),
             level_source: Some(level_source),
+            requested: Some(level),
             ..Trace::default()
         };
         let (text, is_error) = match self.run(tool, args, &mut reasons, &mut trace) {
