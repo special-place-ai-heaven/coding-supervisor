@@ -38,7 +38,7 @@ supervisor install --harness claude-code --project <project>
 
 When `enabledPlugins` has `coding-supervisor@coding-supervisor: true` in the most specific settings file that names it (the project's `.claude/settings.local.json`, then `.claude/settings.json`, then `~/.claude/settings.json`), install prints `the coding-supervisor@coding-supervisor plugin is enabled and runs the hooks: no hook entry is written, and any written earlier is removed`. It then writes no hook entry and removes the gate's earlier ones, so no event runs the gate twice. It still writes the MCP server, the `mcp__supervisor` allow rule and the skills. `supervisor status` reads hooks from the project's settings files only, so it reports plugin hooks as `not_configured`.
 
-The plugin adds hooks only, with no MCP server, command, agent, skill or executable, so it offers no way to change the [level](#levels); the level applies as with install's hooks. It registers `node hooks/supervisor-hook.js` on the same six events as install, with no matcher and a 30-second timeout. The script passes the payload to `supervisor hook` and its stdout back unchanged.
+The plugin adds the hooks and one command, `/supervisor`, with no MCP server, agent, skill or executable. `/supervisor` shows the [mode](#levels) and the status; `/supervisor <off|audit|enforce|strict>` sets the project's mode first. The command is marked `disable-model-invocation`, so only a person can run it, and it runs `supervisor level` and `supervisor status` before the model sees anything. The plugin carries no MCP server because Claude Code names a plugin server's tools `mcp__plugin_coding-supervisor_supervisor__<tool>`, while the gate, its skills and the permission rule install writes expect `mcp__supervisor__<tool>`; `supervisor install` stays the MCP registrar. It registers `node hooks/supervisor-hook.js` on the same six events as install, with no matcher and a 30-second timeout. The script passes the payload to `supervisor hook` and its stdout back unchanged.
 
 The script looks `supervisor` up in the absolute `PATH` entries only, trying each `PATHEXT` extension in order on Windows. Empty and relative entries, which mean the current directory, are skipped, so a `supervisor` or `supervisor.cmd` written in the project is never run. A `.cmd` or `.bat` (npm's shim on Windows) is started as `cmd.exe /d /s /c` with its quoted absolute path; anything else is started with no shell. The child gets `NoDefaultCurrentDirectoryInExePath=1`, so cmd.exe, including the shim's own `node`, does not run programs from the current directory either.
 
@@ -198,7 +198,7 @@ none:
 
 ```json
 {"schema_version":1,"verdict":"fail","reason":"mandatory_unmet","exit_code":3,"require":"observed",
- "effective_level":"full","level_source":"default",
+ "effective_level":"enforce","level_source":"default",
  "task":{"task_id":"task-…","contract_id":"probe","contract_digest":"<64 hex>"},
  "head":{"sha":"<40 hex>","dirty_digest":"<64 hex>","reason":null},
  "criteria":[{"id":"C1","mandatory":true,"state":"asserted_not_observed","reason":null,"provenance":"mcp",
@@ -255,18 +255,20 @@ Harness hook capabilities and a supervisor adapter are separate questions. A con
 
 ## Levels
 
-`supervisor level [off|lite|full|ultra] [--project <dir>] [--global]` shows the effective level (`level: <name> (project|global|default)`) or writes one (`level <name> written (project|global): <path>`). Exit 0 done, 1 error (for example an unreadable `level` file), 2 usage.
+`supervisor level [off|audit|enforce|strict] [--project <dir>] [--global]` shows the effective level (`level: <name> (project|global|default)`) or writes one (`level <name> written (project|global): <path>`). Exit 0 done, 1 error (for example an unreadable `level` file), 2 usage.
 
-Precedence: **project** (a `level` file in the project's state directory) over **global** (a `level` file in `SUPERVISOR_CONFIG_DIR`, else `%APPDATA%\coding-supervisor` on Windows, else `$XDG_CONFIG_HOME/coding-supervisor`, else `~/.config/coding-supervisor`) over **default** (`full`). The Claude Code hook reads it on every call:
+Precedence: **project** (a `level` file in the project's state directory) over **global** (a `level` file in `SUPERVISOR_CONFIG_DIR`, else `%APPDATA%\coding-supervisor` on Windows, else `$XDG_CONFIG_HOME/coding-supervisor`, else `~/.config/coding-supervisor`) over **default** (`enforce`). The names used before 0.7, `lite`, `full` and `ultra`, are still accepted for `audit`, `enforce` and `strict`, and level files written with them still read. The Claude Code hook reads it on every call:
 
 - `off`: nothing is judged or written; PreToolUse still denies writes to the gate's state and configured action-policy violations.
-- `lite`: judged as `full`, but every refusal is reported as a system message instead of blocking, and stop refusals do not count toward the refusal caps.
-- `full`: the gate as described above.
-- `ultra`: `full`, plus PreToolUse denies a `Write`, `Edit`, `MultiEdit` or `NotebookEdit` outside the active task's contract scope, under the same rule completion applies to changed paths. This scope check covers those edit tools only: a shell command (`Bash`, `PowerShell`, Terminal Commander) or another MCP tool that writes outside the scope is not checked before it runs.
+- `audit`: judged as `enforce`, but every refusal is reported as a system message instead of blocking, and stop refusals do not count toward the refusal caps.
+- `enforce`: the gate as described above.
+- `strict`: `enforce`, plus PreToolUse denies a `Write`, `Edit`, `MultiEdit` or `NotebookEdit` outside the active task's contract scope, under the same rule completion applies to changed paths. This scope check covers those edit tools only: a shell command (`Bash`, `PowerShell`, Terminal Commander) or another MCP tool that writes outside the scope is not checked before it runs.
 
-An unreadable `level` file runs the hook at `full` and journals why.
+An unreadable `level` file runs the hook at `enforce` and journals why.
 
-Every events.jsonl line, from the hook and from the MCP server, carries `effective_level` (the level the call ran at) and `level_source` (`project`, `global`, `default` or `unreadable`). `supervisor verdict --json` and `supervisor status --json` carry the same two keys, and status prints a `level: <name> (<source>)` line in its text output. When a `level` file is unreadable, the level is `full`, never `off` or `lite`, and the source is `unreadable`. At `off` the hook writes nothing: no journal line, no run record and no receipt, so a check run or claimed at `off` never counts as observed. The verdict and status are where `off` shows. These keys are additive; `schema_version` and the journal's `v` stay 1, and they are not part of the gate.json hash chain. The hook denies agent tool calls that write either `level` file or run `supervisor level <level>`; this is the same text-matching guard as for the gate's state, with the same same-user limits. `off` and `lite` are user-chosen bypasses of enforcement.
+The mode you ask for is the *requested* mode; the one a call actually runs at is the *effective* mode. Only Claude Code with the gate's PreToolUse, Stop and SubagentStop hooks can refuse, so anywhere else (the MCP server, another harness, Claude Code without those hooks) a requested `enforce` or `strict` runs as `audit`. `supervisor status --json` reports `requested_level`, `effective_level` and, when they differ, a `level_note` saying why; every journal line carries `requested_level` beside `effective_level`. MCP answers carry `answer_authority: "advisory"` for the answer itself; that is not the task's enforcement, which `status` reports (`mode` in MCP answers is kept for one release and means the same as `answer_authority`).
+
+Every events.jsonl line, from the hook and from the MCP server, carries `effective_level` (the level the call ran at) and `level_source` (`project`, `global`, `default` or `unreadable`). `supervisor verdict --json` and `supervisor status --json` carry the same two keys, and status prints a `level: <name> (<source>)` line in its text output. When a `level` file is unreadable, the level is `enforce`, never `off` or `audit`, and the source is `unreadable`. At `off` the hook writes nothing: no journal line, no run record and no receipt, so a check run or claimed at `off` never counts as observed. The verdict and status are where `off` shows. These keys are additive; `schema_version` and the journal's `v` stay 1, and they are not part of the gate.json hash chain. The hook denies agent tool calls that write either `level` file or run `supervisor level <level>`; this is the same text-matching guard as for the gate's state, with the same same-user limits. `off` and `audit` are user-chosen bypasses of enforcement.
 
 ## Optional action policy
 

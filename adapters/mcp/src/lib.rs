@@ -228,6 +228,9 @@ impl Server {
             return match result {
                 Ok(mut value) => {
                     if let Some(fields) = value.as_object_mut() {
+                        // F15: the authority of this answer, not the task's enforcement;
+                        // `mode` stays one release for callers that read it.
+                        fields.insert("answer_authority".to_owned(), "advisory".into());
                         fields.insert("mode".to_owned(), "advisory".into());
                         fields.insert("source".to_owned(), "caller-asserted".into());
                     }
@@ -328,9 +331,11 @@ impl Server {
         (level, level_source): (Level, &'static str),
     ) -> Value {
         let mut reasons = Vec::new();
+        // M2: this server answers and never refuses, so a refusing mode runs here as audit.
         let mut trace = Trace {
-            level: Some(level),
+            level: Some(level.effective(false)),
             level_source: Some(level_source),
+            requested: Some(level),
             ..Trace::default()
         };
         let (text, is_error) = match self.run(tool, args, &mut reasons, &mut trace) {
@@ -627,6 +632,36 @@ fn describe(
             (c.id.0.clone(), status.into())
         })
         .collect();
+    // K2: mandatory criteria whose passing receipts on the checkpoint's candidate are all
+    // caller-asserted. `supervisor verdict` (default: observed runs only) fails them.
+    let asserted_only: Vec<Value> = criteria
+        .iter()
+        .filter(|c| c.mandatory)
+        .filter(|c| {
+            let mut passing = session.gate.receipts.iter().filter(|r| {
+                r.criterion == c.id
+                    && Some(&r.candidate) == cp.candidate.as_ref()
+                    && r.exit_code == Some(0)
+                    && r.claim_supported
+            });
+            let first = passing.next();
+            first.is_some()
+                && first
+                    .into_iter()
+                    .chain(passing)
+                    .all(|r| r.output_ref.starts_with("mcp-asserted:"))
+        })
+        .map(|c| c.id.0.clone().into())
+        .collect();
+    let verdict_note = (!asserted_only.is_empty()
+        && matches!(cp.state, TaskState::ReadyForReview | TaskState::Completed))
+    .then(|| {
+        let ids: Vec<&str> = asserted_only.iter().filter_map(Value::as_str).collect();
+        format!(
+            "advisory: {} rest only on caller-asserted receipts; `supervisor verdict` (default --require observed) fails this candidate, and the Claude Code hooks do not count these receipts",
+            ids.join(", ")
+        )
+    });
     obj([
         ("task_id", session.gate.contract_id.clone().into()),
         (
@@ -662,6 +697,8 @@ fn describe(
                 .collect(),
         ),
         ("receipts", Value::Object(receipts)),
+        ("asserted_only", asserted_only.into()),
+        ("verdict_note", verdict_note.into()),
         ("rejected_claims", rejected_claims.into()),
     ])
 }

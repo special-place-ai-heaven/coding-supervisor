@@ -62,6 +62,7 @@ fn caller_intent_is_labeled_and_discussion_leaves_project_inactive() {
     );
     assert_eq!(result["action"], "discussion");
     assert_eq!(result["mode"], "advisory");
+    assert_eq!(result["answer_authority"], "advisory");
     assert!(lifecycle::active_task(s.state_dir()).unwrap().is_none());
 }
 

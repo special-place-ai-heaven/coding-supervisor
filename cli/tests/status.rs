@@ -211,3 +211,44 @@ fn status_names_a_second_state_directory_for_the_project() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// M2: status reports the requested mode and the one the harness can enforce: only Claude Code
+/// with the refusing hooks configured enforces; anywhere else a requested enforce runs as audit.
+#[test]
+fn status_reports_requested_and_effective_mode() {
+    let root = std::env::temp_dir().join(format!("sup-status-mode-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let (project, state) = (root.join("project"), root.join("state"));
+    fs::create_dir_all(project.join(".claude")).unwrap();
+    let status = |harness: &str| -> Value {
+        let out = Command::new(env!("CARGO_BIN_EXE_supervisor"))
+            .args(["status", "--json", "--harness", harness, "--project"])
+            .arg(&project)
+            .env("SUPERVISOR_STATE_DIR", &state)
+            .output()
+            .unwrap();
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    for harness in ["codex", "claude-code"] {
+        let report = status(harness);
+        assert_eq!(report["requested_level"], "enforce", "{harness}: {report}");
+        assert_eq!(report["effective_level"], "audit", "{harness}: {report}");
+        assert!(
+            report["level_note"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("cannot refuse"),
+            "{harness}: {report}"
+        );
+    }
+    let hook = json!([{"hooks":[{"type":"command","command":"supervisor hook"}]}]);
+    fs::write(
+        project.join(".claude/settings.json"),
+        json!({"hooks":{"PreToolUse":hook,"Stop":hook,"SubagentStop":hook}}).to_string(),
+    )
+    .unwrap();
+    let report = status("claude-code");
+    assert_eq!(report["effective_level"], "enforce", "{report}");
+    assert!(report["level_note"].is_null(), "{report}");
+    let _ = fs::remove_dir_all(&root);
+}

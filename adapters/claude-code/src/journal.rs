@@ -19,6 +19,8 @@ pub struct Trace {
     /// The level the call ran at and its source (see `level::Setting`).
     pub level: Option<Level>,
     pub level_source: Option<&'static str>,
+    /// The level the user asked for, when the call ran at another one (M2); else `level`.
+    pub requested: Option<Level>,
 }
 
 fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -171,6 +173,10 @@ pub fn line(
         ("task_id", trace.task_id.clone().into()),
         ("state_location", state_location.into()),
         ("effective_level", trace.level.map(Level::name).into()),
+        (
+            "requested_level",
+            trace.requested.or(trace.level).map(Level::name).into(),
+        ),
         ("level_source", trace.level_source.into()),
         (
             "candidate",

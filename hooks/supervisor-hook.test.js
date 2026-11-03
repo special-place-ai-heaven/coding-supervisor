@@ -214,11 +214,16 @@ test("supervisor hook gets the payload unchanged and its answer passes through b
 
 // The plugin adds hooks only: no MCP server, command, agent, skill, executable or setting, so it
 // offers the agent no tool or path to change the gate (for example its level).
-test("the plugin ships only its hooks, on every event install registers, with no matcher", () => {
+test("the plugin ships its hooks on every event install registers, with no matcher, and one user-only command", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, ".claude-plugin", "plugin.json"), "utf8"));
   assert.deepEqual(Object.keys(manifest).sort(), ["author", "description", "license", "name", "repository"]);
-  const components = [".mcp.json", ".lsp.json", "commands", "agents", "bin", "output-styles", "workflows", "themes", "monitors", "settings.json", "SKILL.md"];
+  const components = [".mcp.json", ".lsp.json", "agents", "bin", "output-styles", "workflows", "themes", "monitors", "settings.json", "SKILL.md"];
   assert.deepEqual(components.filter((p) => fs.existsSync(path.join(ROOT, p))), []);
+  // M3: /supervisor shows or sets the mode; only a person may run it, never the model.
+  assert.deepEqual(fs.readdirSync(path.join(ROOT, "commands")), ["supervisor.md"]);
+  const command = fs.readFileSync(path.join(ROOT, "commands", "supervisor.md"), "utf8");
+  assert.match(command, /^disable-model-invocation: true$/m);
+  assert.match(command, /^!`supervisor level \$ARGUMENTS`$/m);
   const skills = fs.readdirSync(path.join(ROOT, "skills"), { withFileTypes: true });
   assert.deepEqual(skills.filter((e) => fs.existsSync(path.join(ROOT, "skills", e.name, "SKILL.md"))), []);
 

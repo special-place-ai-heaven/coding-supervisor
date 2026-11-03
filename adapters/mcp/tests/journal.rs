@@ -110,19 +110,26 @@ fn every_line_stamps_the_effective_level_and_its_source() {
     ok(&s, "task_state", json!({}));
 
     let text = fs::read_to_string(s.task_dir().unwrap().join("events.jsonl")).unwrap();
-    let stamps: Vec<(Value, Value)> = text
+    // M2: the MCP server never refuses, so a requested enforce runs as audit there.
+    let stamps: Vec<(Value, Value, Value)> = text
         .lines()
         .map(|l| serde_json::from_str::<Value>(l).unwrap())
-        .map(|l| (l["effective_level"].clone(), l["level_source"].clone()))
+        .map(|l| {
+            (
+                l["requested_level"].clone(),
+                l["effective_level"].clone(),
+                l["level_source"].clone(),
+            )
+        })
         .collect();
     assert_eq!(
         stamps,
         [
-            (json!("full"), json!("default")),
-            (json!("full"), json!("default")),
-            (json!("lite"), json!("global")),
-            (json!("off"), json!("project")),
-            (json!("full"), json!("unreadable")),
+            (json!("enforce"), json!("audit"), json!("default")),
+            (json!("enforce"), json!("audit"), json!("default")),
+            (json!("audit"), json!("audit"), json!("global")),
+            (json!("off"), json!("off"), json!("project")),
+            (json!("enforce"), json!("audit"), json!("unreadable")),
         ]
     );
 }

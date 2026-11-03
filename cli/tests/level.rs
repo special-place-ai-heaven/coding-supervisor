@@ -200,27 +200,27 @@ fn level_command_shows_and_writes_with_documented_output_and_exit_codes() {
     let out = f.level(&[]);
     assert_eq!(
         (out.status.code(), stdout(&out)),
-        (Some(0), "level: full (default)\n")
+        (Some(0), "level: enforce (default)\n")
     );
     let out = f.level(&["lite", "--global"]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(
         stdout(&out),
         format!(
-            "level lite written (global): {}\n",
+            "level audit written (global): {}\n",
             f.config.join("level").display()
         )
     );
-    assert_eq!(stdout(&f.level(&[])), "level: lite (global)\n");
+    assert_eq!(stdout(&f.level(&[])), "level: audit (global)\n");
     let out = f.level(&["ultra"]);
     assert_eq!(
         stdout(&out),
         format!(
-            "level ultra written (project): {}\n",
+            "level strict written (project): {}\n",
             f.state_root().join("level").display()
         )
     );
-    assert_eq!(stdout(&f.level(&[])), "level: ultra (project)\n");
+    assert_eq!(stdout(&f.level(&[])), "level: strict (project)\n");
     for usage in [&["bogus"][..], &["--global"], &["full", "--bogus"]] {
         let out = f.level(usage);
         assert_eq!(out.status.code(), Some(2), "{usage:?}: {out:?}");
@@ -281,7 +281,7 @@ fn hook_at_lite_reports_a_stop_refusal_without_blocking_or_counting_it() {
     assert_eq!(continuations(&task), 1, "a reported refusal is not counted");
     let events = fs::read_to_string(task.join("events.jsonl")).unwrap();
     assert!(
-        events.contains("level lite: reported, not blocked"),
+        events.contains("level audit: reported, not blocked"),
         "{events}"
     );
 }
@@ -300,7 +300,7 @@ fn hook_at_ultra_denies_writes_outside_the_contract_scope() {
         outside["hookSpecificOutput"]["permissionDecisionReason"]
             .as_str()
             .unwrap()
-            .contains("outside the task's contract scope (level ultra)"),
+            .contains("outside the task's contract scope (level strict)"),
         "{outside}"
     );
     for (id, path) in [
@@ -405,7 +405,7 @@ fn showing_the_level_creates_no_state() {
     let out = f.level(&[]);
     assert_eq!(
         (out.status.code(), stdout(&out)),
-        (Some(0), "level: full (default)\n")
+        (Some(0), "level: enforce (default)\n")
     );
     assert!(!f.state.exists(), "show created {}", f.state.display());
 }
@@ -483,30 +483,41 @@ fn every_record_stamps_the_effective_level_and_its_source() {
             (&json!(level), &json!(source)),
             "{verdict}"
         );
+        // M2: status reports the requested level; with no hooks configured in this fixture
+        // nothing can refuse, so a refusing level runs as audit there.
         let status = f.report("status");
+        let effective = if matches!(level, "enforce" | "strict") {
+            "audit"
+        } else {
+            level
+        };
         assert_eq!(
-            (&status["effective_level"], &status["level_source"]),
-            (&json!(level), &json!(source)),
+            (
+                &status["requested_level"],
+                &status["effective_level"],
+                &status["level_source"]
+            ),
+            (&json!(level), &json!(effective), &json!(source)),
             "{status}"
         );
         assert_eq!(status["schema_version"], 1);
     };
-    assert_stamped("full", "default");
+    assert_stamped("enforce", "default");
     fs::create_dir_all(&f.config).unwrap();
     fs::write(f.config.join("level"), "lite\n").unwrap();
-    assert_stamped("lite", "global");
+    assert_stamped("audit", "global");
     f.set(&["ultra"]);
-    assert_stamped("ultra", "project");
+    assert_stamped("strict", "project");
     f.set(&["off"]);
     assert_stamped("off", "project");
     // An unreadable file falls back to `full`, never to `off` or `lite`: not to the project's
     // previous `off`, not to the global `lite` beneath it, and not from an unreadable global.
     let project = f.state_root().join("level");
     fs::write(&project, "nope\n").unwrap();
-    assert_stamped("full", "unreadable");
+    assert_stamped("enforce", "unreadable");
     fs::remove_file(&project).unwrap();
     fs::write(f.config.join("level"), "nope\n").unwrap();
-    assert_stamped("full", "unreadable");
+    assert_stamped("enforce", "unreadable");
 }
 
 /// Every file under `dir`, with its bytes.
@@ -695,4 +706,38 @@ fn agents_cannot_reset_rounds_or_amend_the_floor() {
         let decision = f.tool(&format!("op{i}"), tool, input.clone());
         assert!(denied(&decision), "{tool} {input}: {decision}");
     }
+}
+
+/// M1: the modes are off, audit, enforce and strict; lite, full and ultra stay accepted aliases,
+/// and a level file written by 0.5.x still reads.
+#[test]
+fn modes_have_new_names_and_old_names_still_work() {
+    let f = Fixture::new("modes");
+    assert_eq!(stdout(&f.level(&[])), "level: enforce (default)\n");
+    for (word, name) in [
+        ("audit", "audit"),
+        ("lite", "audit"),
+        ("strict", "strict"),
+        ("ultra", "strict"),
+        ("full", "enforce"),
+        ("enforce", "enforce"),
+        ("off", "off"),
+    ] {
+        assert_eq!(f.level(&[word]).status.code(), Some(0), "{word}");
+        assert_eq!(stdout(&f.level(&[])), format!("level: {name} (project)\n"));
+    }
+    fs::write(f.state_root().join("level"), "ultra\n").unwrap();
+    assert_eq!(stdout(&f.level(&[])), "level: strict (project)\n");
+}
+
+/// M3: `supervisor level status` shows the mode like the bare command, so the plugin's
+/// `/supervisor status` can pass its argument straight through.
+#[test]
+fn level_status_shows_the_mode() {
+    let f = Fixture::new("level-status");
+    let out = f.level(&["status"]);
+    assert_eq!(
+        (out.status.code(), stdout(&out)),
+        (Some(0), "level: enforce (default)\n")
+    );
 }
