@@ -927,8 +927,7 @@ fn forbidden_effect(payload: &Value, effects: &[String]) -> Option<Decision> {
                 .iter()
                 .any(|words| git_subcommand(words) == Some(value.to_lowercase().as_str())),
             "deny_argv_prefix" => {
-                let prefix: Vec<String> =
-                    value.split_whitespace().map(str::to_lowercase).collect();
+                let prefix: Vec<String> = value.split_whitespace().map(str::to_lowercase).collect();
                 !prefix.is_empty()
                     && segments.iter().any(|words| {
                         words.len() >= prefix.len()

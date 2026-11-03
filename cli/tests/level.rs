@@ -808,24 +808,58 @@ fn strict_refuses_typed_forbidden_effects() {
         "scope":["src/","docs/"],
         "forbidden_effects":["deny_path:docs/private/","deny_git:push","deny_argv_prefix:npm publish","no network"],
         "max_repair_rounds":2}).to_string()).unwrap();
-    let out = f.supervisor(&["task", "start", "--contract", contract.to_str().unwrap(),
-        "--project", f.project.to_str().unwrap()]);
+    let out = f.supervisor(&[
+        "task",
+        "start",
+        "--contract",
+        contract.to_str().unwrap(),
+        "--project",
+        f.project.to_str().unwrap(),
+    ]);
     assert!(out.status.success(), "{out:?}");
     let attempts = [
-        ("w1", "Write", json!({"file_path":"docs/private/notes.md","content":"x"}), true),
-        ("w2", "Write", json!({"file_path":"docs/public.md","content":"x"}), false),
-        ("b1", "Bash", json!({"command":"git -C . push origin main"}), true),
-        ("b2", "Bash", json!({"command":"git log --grep push"}), false),
-        ("b3", "Bash", json!({"command":"cd npm && npm publish --tag next"}), true),
+        (
+            "w1",
+            "Write",
+            json!({"file_path":"docs/private/notes.md","content":"x"}),
+            true,
+        ),
+        (
+            "w2",
+            "Write",
+            json!({"file_path":"docs/public.md","content":"x"}),
+            false,
+        ),
+        (
+            "b1",
+            "Bash",
+            json!({"command":"git -C . push origin main"}),
+            true,
+        ),
+        (
+            "b2",
+            "Bash",
+            json!({"command":"git log --grep push"}),
+            false,
+        ),
+        (
+            "b3",
+            "Bash",
+            json!({"command":"cd npm && npm publish --tag next"}),
+            true,
+        ),
         ("b4", "Bash", json!({"command":"npm pack"}), false),
     ];
     for level in ["strict", "enforce"] {
         f.set(&[level]);
         for (id, tool, input, forbidden) in &attempts {
             let decision = f.tool(&format!("{level}-{id}"), tool, input.clone());
-            let refused = denied(&decision)
-                && decision.to_string().contains("forbids");
-            assert_eq!(refused, *forbidden && level == "strict", "{level} {id}: {decision}");
+            let refused = denied(&decision) && decision.to_string().contains("forbids");
+            assert_eq!(
+                refused,
+                *forbidden && level == "strict",
+                "{level} {id}: {decision}"
+            );
         }
     }
 }
@@ -840,8 +874,14 @@ fn strict_needs_the_minimum_number_of_passing_tests() {
         fs::write(&contract, json!({"id":"min-tests","goal":"enough tests","criteria":[
             {"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test","min_tests":5}],
             "scope":["src/"],"forbidden_effects":[],"max_repair_rounds":2}).to_string()).unwrap();
-        let out = f.supervisor(&["task", "start", "--contract", contract.to_str().unwrap(),
-            "--project", f.project.to_str().unwrap()]);
+        let out = f.supervisor(&[
+            "task",
+            "start",
+            "--contract",
+            contract.to_str().unwrap(),
+            "--project",
+            f.project.to_str().unwrap(),
+        ]);
         assert!(out.status.success(), "{out:?}");
         f.set(&[level]);
         let run = |id: &str, passed: u32| {
@@ -852,10 +892,17 @@ fn strict_needs_the_minimum_number_of_passing_tests() {
             f.stop()
         };
         let few = run("few", 3);
-        assert_eq!(few.get("decision").is_none(), first_completes, "{level}: {few}");
+        assert_eq!(
+            few.get("decision").is_none(),
+            first_completes,
+            "{level}: {few}"
+        );
         if level == "strict" {
             let reason = few["reason"].as_str().unwrap_or_default();
-            assert!(reason.contains("at least 5") && reason.contains('3'), "{few}");
+            assert!(
+                reason.contains("at least 5") && reason.contains('3'),
+                "{few}"
+            );
             let enough = run("enough", 7);
             assert!(enough.get("decision").is_none(), "{enough}");
         }

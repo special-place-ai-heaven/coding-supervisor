@@ -1489,13 +1489,21 @@ mod tests {
     #[test]
     fn test_summaries_give_the_passed_count() {
         assert_eq!(
-            passed_tests("test result: ok. 3 passed; 0 failed
-test result: ok. 4 passed; 0 failed"),
+            passed_tests(
+                "test result: ok. 3 passed; 0 failed
+test result: ok. 4 passed; 0 failed"
+            ),
             Some(7)
         );
-        assert_eq!(passed_tests("Tests:       2 failed, 120 passed, 122 total"), Some(120));
+        assert_eq!(
+            passed_tests("Tests:       2 failed, 120 passed, 122 total"),
+            Some(120)
+        );
         assert_eq!(passed_tests(" Tests  12 passed (12)"), Some(12));
-        assert_eq!(passed_tests("===== 9 passed, 1 skipped in 0.50s ====="), Some(9));
+        assert_eq!(
+            passed_tests("===== 9 passed, 1 skipped in 0.50s ====="),
+            Some(9)
+        );
         assert_eq!(passed_tests("all good"), None);
     }
     /// F20: a `|` inside quotes, or inside one argument of a program that is not a shell, is
