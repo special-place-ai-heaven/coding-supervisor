@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.6.0...v0.7.0) (2026-11-03)
+
+
+### Features
+
+* gate modes off, audit, enforce and strict ([9cafc23](https://github.com/special-place-ai-heaven/coding-supervisor/commit/9cafc23794170648387385b79d6d4f88ecbed69c))
+
 ## [0.6.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.5.5...v0.6.0) (2026-11-03)
 
 
