@@ -27,6 +27,7 @@ fn git_root(cwd: &Path) -> Result<Option<PathBuf>, String> {
         .lock()
         .ok()
         .and_then(|roots| roots.iter().find(|(dir, _)| *dir == key).cloned())
+        && root_still_holds(&key, &root)
     {
         return Ok(Some(root));
     }
@@ -45,6 +46,24 @@ fn git_root(cwd: &Path) -> Result<Option<PathBuf>, String> {
         Ok(_) | Err(crate::git::Failure::Unavailable(_)) => Ok(None),
         Err(crate::git::Failure::TimedOut(why)) => Err(why),
     }
+}
+
+/// A remembered root still answers for `dir` when the root keeps its `.git` and no directory
+/// between them gained one: a long-lived process (the MCP server) sees a subdirectory turned
+/// into its own checkout. File lookups only, no git process.
+fn root_still_holds(dir: &str, root: &Path) -> bool {
+    let root_key = normalize(root);
+    let mut current = Some(Path::new(dir));
+    while let Some(path) = current {
+        if path.to_string_lossy() == root_key {
+            return path.join(".git").exists();
+        }
+        if path.join(".git").exists() {
+            return false;
+        }
+        current = path.parent();
+    }
+    false
 }
 
 fn normalize(path: &Path) -> String {
