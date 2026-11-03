@@ -234,7 +234,10 @@ fn status_reports_requested_and_effective_mode() {
         assert_eq!(report["requested_level"], "enforce", "{harness}: {report}");
         assert_eq!(report["effective_level"], "audit", "{harness}: {report}");
         assert!(
-            report["level_note"].as_str().unwrap_or_default().contains("cannot refuse"),
+            report["level_note"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("cannot refuse"),
             "{harness}: {report}"
         );
     }

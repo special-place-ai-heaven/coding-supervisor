@@ -536,7 +536,14 @@ fn acceptance_on_asserted_receipts_names_the_criteria_verdict_fails() {
     }
     let accepted = ok(&s, "accept_try", json!({}));
     assert_eq!(state(&accepted), "ready_for_review");
-    assert_eq!(accepted["asserted_only"], json!(["C1", "C2", "C3", "C4"]), "{accepted}");
+    assert_eq!(
+        accepted["asserted_only"],
+        json!(["C1", "C2", "C3", "C4"]),
+        "{accepted}"
+    );
     let note = accepted["verdict_note"].as_str().unwrap_or_default();
-    assert!(note.contains("supervisor verdict") && note.contains("C2"), "{accepted}");
+    assert!(
+        note.contains("supervisor verdict") && note.contains("C2"),
+        "{accepted}"
+    );
 }
