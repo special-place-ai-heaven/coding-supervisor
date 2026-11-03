@@ -821,6 +821,7 @@ fn process(
         false,
         reasons,
         Some(&env.state_dir),
+        env.level.level == Level::Strict,
     )?;
     if matches!(event, "Stop" | "SubagentStop") {
         session.sync_observed_receipts(&env.state_dir, agent, reasons)?;
@@ -852,6 +853,7 @@ fn process(
         reasons.push("level audit: reported, not blocked".to_owned());
     }
     session.gate.checkpoint = session.task.checkpoint();
+    session.gate.starting = session.task.starting_candidate().cloned().map(Box::new);
     trace.state_after = Some(session.task.state());
     state::save_gate(&env.state_dir, &session.gate, &contract_sha256)?;
     Ok(decision)
@@ -974,6 +976,10 @@ pub fn render(error: &GateError) -> String {
         } => format!("failing {} exit {exit_code}", criterion.0),
         GateError::OutOfScope(paths) => format!("out of scope {}", paths.join(", ")),
         GateError::OpenFinding(f) => format!("open finding {}", f.0),
+        GateError::NotReproduced(c) => format!(
+            "{} did not fail on the task's starting candidate: run it before changing the code, and it must reproduce the reported failure",
+            c.0
+        ),
         GateError::InvalidTransition { from, event } => {
             format!("{event} is not allowed in state {}", state_name(*from))
         }
@@ -1034,7 +1040,15 @@ impl Session {
         honour_asserted: bool,
         reasons: &mut Vec<String>,
     ) -> Result<Self, String> {
-        Self::open_with_observed(contract, stored, observed, honour_asserted, reasons, None)
+        Self::open_with_observed(
+            contract,
+            stored,
+            observed,
+            honour_asserted,
+            reasons,
+            None,
+            false,
+        )
     }
 
     fn open_with_observed(
@@ -1044,6 +1058,7 @@ impl Session {
         honour_asserted: bool,
         reasons: &mut Vec<String>,
         evidence_dir: Option<&Path>,
+        reproduction: bool,
     ) -> Result<Self, String> {
         let criteria = contract.criteria.clone();
         let contract_id = contract.id.0.clone();
@@ -1054,6 +1069,9 @@ impl Session {
         let (task, gate) = match stored {
             None => {
                 let mut task = Task::new(contract);
+                if reproduction {
+                    task.require_reproduction();
+                }
                 task.start_preparing().map_err(|e| render(&e))?;
                 if let Ok(current) = &observed {
                     task.observe_candidate(current.clone())
@@ -1070,6 +1088,12 @@ impl Session {
                     ));
                 }
                 let mut task = Task::resume(contract, gate.checkpoint.clone());
+                if reproduction {
+                    task.require_reproduction();
+                }
+                if let Some(starting) = &gate.starting {
+                    task.set_starting_candidate((**starting).clone());
+                }
                 if let Ok(current) = &observed {
                     if task.state() == TaskState::Repairing {
                         task.observe_candidate(current.clone())
@@ -1114,15 +1138,19 @@ impl Session {
             return Ok(());
         }
         let runs = observation::read_runs(dir, &self.task_id)?;
+        let starting = self.task.starting_candidate().cloned();
         for run in runs.iter().filter(|run| {
             (run.agent_id == agent || run.recovered_by.as_deref() == Some(agent))
-                && run.candidate == current.id
+                && (run.candidate == current.id || Some(&run.candidate) == starting.as_ref())
                 && run.cwd == run.execution_root
         }) {
             if !current_dispatch_reference(dir, &self.task_id, &run.reference)? {
                 continue;
             }
-            for criterion in self.criteria.iter().filter(|c| c.accepts(&run.command)) {
+            // K6: a run on the starting candidate evidences only a baseline criterion.
+            for criterion in self.criteria.iter().filter(|c| {
+                c.accepts(&run.command) && (run.candidate == current.id || c.is_baseline())
+            }) {
                 if self
                     .gate
                     .receipts
@@ -1675,6 +1703,18 @@ impl Session {
                             .is_some_and(|dir| receipt_is_observed(dir, &self.task_id, r))
                 })
                 .collect();
+            // M7: in strict, the baseline must have failed on the starting candidate.
+            if self.task.requires_reproduction() && criterion.is_baseline() {
+                let starting = self.task.starting_candidate();
+                match observed.last() {
+                    Some(r)
+                        if Some(&r.candidate) == starting
+                            && r.exit_code.is_some_and(|code| code != 0) => {}
+                    Some(_) => return Err(GateError::NotReproduced(criterion.id.clone())),
+                    None => return Err(GateError::MissingReceipt(criterion.id.clone())),
+                }
+                continue;
+            }
             match observed.iter().rev().find(|r| &r.candidate == current) {
                 Some(r) => match r.exit_code {
                     Some(0) => {}
@@ -1701,9 +1741,11 @@ impl Session {
         let (Some(current), Some(dir)) = (self.task.candidate(), self.evidence_dir.as_ref()) else {
             return false;
         };
+        // A failing baseline is what strict asks for, not a sign the candidate is wrong.
+        let reproduction = self.task.requires_reproduction();
         self.criteria
             .iter()
-            .filter(|c| c.mandatory)
+            .filter(|c| c.mandatory && !(reproduction && c.is_baseline()))
             .any(|criterion| {
                 self.gate
                     .receipts

@@ -741,3 +741,58 @@ fn level_status_shows_the_mode() {
         (Some(0), "level: enforce (default)\n")
     );
 }
+
+/// M7 with K6: in strict, a bug fix (a mandatory baseline criterion) completes only when the
+/// baseline failed on the starting candidate and the fix passes now; in enforce the baseline
+/// stays an ordinary check that must pass.
+#[test]
+fn strict_bug_fix_needs_the_failure_reproduced_before_the_fix() {
+    for (level, baseline_exit, completes) in [
+        ("strict", 1, true),
+        ("strict", 0, false),
+        ("enforce", 1, false),
+    ] {
+        let f = Fixture::new(&format!("bugfix-{level}-{baseline_exit}"));
+        let contract = f.root.join("contract.json");
+        fs::write(&contract, json!({"id":"bug-fix","goal":"fix the reported bug","criteria":[
+            {"id":"C1","check":"baseline_reproduces_reported_failure","mandatory":true,"command":"cargo test repro"},
+            {"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test"}],
+            "scope":["src/"],"forbidden_effects":[],"max_repair_rounds":2}).to_string()).unwrap();
+        let out = f.supervisor(&[
+            "task",
+            "start",
+            "--contract",
+            contract.to_str().unwrap(),
+            "--project",
+            f.project.to_str().unwrap(),
+        ]);
+        assert!(out.status.success(), "{out:?}");
+        f.set(&[level]);
+        let run = |id: &str, command: &str, exit: i32| {
+            let _ = f.tool(id, "Bash", json!({ "command": command }));
+            let _ = if exit == 0 {
+                f.hook(json!({"hook_event_name":"PostToolUse","tool_use_id":id,"tool_name":"Bash",
+                    "tool_input":{"command":command},"tool_response":{"stdout":"ok","stderr":"","interrupted":false}}))
+            } else {
+                f.hook(json!({"hook_event_name":"PostToolUseFailure","tool_use_id":id,"tool_name":"Bash",
+                    "tool_input":{"command":command},"error":format!("Exit code {exit}")}))
+            };
+        };
+        run("repro", "cargo test repro", baseline_exit);
+        fs::create_dir_all(f.project.join("src")).unwrap();
+        fs::write(f.project.join("src/lib.rs"), "// the fix\n").unwrap();
+        run("fixed", "cargo test", 0);
+        let stop = f.stop();
+        let case = format!("{level} baseline exit {baseline_exit}: {stop}");
+        assert_eq!(stop.get("decision").is_none(), completes, "{case}");
+        if level == "strict" && !completes {
+            assert!(
+                stop["reason"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("starting candidate"),
+                "{case}"
+            );
+        }
+    }
+}

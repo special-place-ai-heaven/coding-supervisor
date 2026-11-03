@@ -1143,3 +1143,96 @@ fn stopping_a_resumed_task_needs_no_workspace() {
         assert_eq!(t.complete(), Err(GateError::CandidateNotObserved));
     }
 }
+
+fn bug_fix_contract() -> TaskContract {
+    let mut c = contract();
+    c.criteria[0].check = CheckName("baseline_reproduces_reported_failure".into());
+    c
+}
+
+/// K6: a baseline receipt recorded on the task's starting candidate stays current after the
+/// fix changes the candidate; every other receipt goes stale as before.
+#[test]
+fn k6_baseline_receipt_on_the_starting_candidate_survives_the_fix() {
+    let mut t = Task::new(bug_fix_contract());
+    t.start_preparing().unwrap();
+    t.observe_candidate(candidate("start")).unwrap();
+    let start = candidate("start").id;
+    t.record_receipt(FakeRunner::receipt("C1", &start, Some(1)))
+        .unwrap();
+    pass(&mut t, "C2");
+    t.observe_candidate(candidate("fixed")).unwrap();
+    assert_eq!(t.starting_candidate(), Some(&start));
+    assert_eq!(
+        t.receipt_status(&CriterionId("C1".into())),
+        Some(ReceiptStatus::Current)
+    );
+    assert_eq!(
+        t.receipt_status(&CriterionId("C2".into())),
+        Some(ReceiptStatus::Stale)
+    );
+}
+
+/// M7: with reproduction required (strict), the baseline must have failed on the starting
+/// candidate; a baseline that passed there does not show the reported failure.
+#[test]
+fn m7_strict_needs_the_failure_reproduced_on_the_starting_candidate() {
+    for (baseline_exit, accepted) in [(1, true), (0, false)] {
+        let mut t = Task::new(bug_fix_contract());
+        t.require_reproduction();
+        t.start_preparing().unwrap();
+        t.observe_candidate(candidate("start")).unwrap();
+        let start = candidate("start").id;
+        t.record_receipt(FakeRunner::receipt("C1", &start, Some(baseline_exit)))
+            .unwrap();
+        t.observe_candidate(candidate("fixed")).unwrap();
+        for id in ["C2", "C3", "C4"] {
+            pass(&mut t, id);
+        }
+        let result = t.try_accept();
+        if accepted {
+            assert_eq!(result, Ok(()));
+        } else {
+            assert_eq!(
+                result,
+                Err(GateError::NotReproduced(CriterionId("C1".into())))
+            );
+        }
+    }
+}
+
+/// M7: without reproduction required (enforce), a baseline is an ordinary check: it must pass
+/// on the current candidate, as before.
+#[test]
+fn m7_enforce_keeps_the_baseline_an_ordinary_check() {
+    let mut t = Task::new(bug_fix_contract());
+    t.start_preparing().unwrap();
+    t.observe_candidate(candidate("start")).unwrap();
+    for id in ["C1", "C2", "C3", "C4"] {
+        pass(&mut t, id);
+    }
+    assert_eq!(t.try_accept(), Ok(()));
+}
+
+/// K6: the baseline may be recorded after the fix too (receipts are derived at Stop), as long
+/// as it cites the starting candidate; any other criterion still needs the current one.
+#[test]
+fn k6_a_baseline_receipt_for_the_starting_candidate_is_accepted_after_the_fix() {
+    let mut t = Task::new(bug_fix_contract());
+    t.start_preparing().unwrap();
+    t.observe_candidate(candidate("start")).unwrap();
+    t.observe_candidate(candidate("fixed")).unwrap();
+    let start = candidate("start").id;
+    assert_eq!(
+        t.record_receipt(FakeRunner::receipt("C1", &start, Some(1))),
+        Ok(())
+    );
+    assert_eq!(
+        t.receipt_status(&CriterionId("C1".into())),
+        Some(ReceiptStatus::Current)
+    );
+    assert!(matches!(
+        t.record_receipt(FakeRunner::receipt("C2", &start, Some(0))),
+        Err(GateError::ReceiptForOtherCandidate { .. })
+    ));
+}
