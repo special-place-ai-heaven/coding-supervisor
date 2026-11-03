@@ -523,3 +523,20 @@ fn terminal_state_hides_foreign_candidate_receipts() {
         assert_eq!(now["receipts"][c], "missing", "{c}: {}", now["receipts"]);
     }
 }
+
+/// K2: an MCP acceptance on asserted receipts says that `verdict` (default: observed runs only)
+/// fails the same candidate, so the two answers no longer disagree silently.
+#[test]
+fn acceptance_on_asserted_receipts_names_the_criteria_verdict_fails() {
+    let d = dir("k2");
+    let s = server(&d);
+    started(&s);
+    for c in ["C1", "C2", "C3", "C4"] {
+        pass(&s, c);
+    }
+    let accepted = ok(&s, "accept_try", json!({}));
+    assert_eq!(state(&accepted), "ready_for_review");
+    assert_eq!(accepted["asserted_only"], json!(["C1", "C2", "C3", "C4"]), "{accepted}");
+    let note = accepted["verdict_note"].as_str().unwrap_or_default();
+    assert!(note.contains("supervisor verdict") && note.contains("C2"), "{accepted}");
+}
