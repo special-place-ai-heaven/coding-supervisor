@@ -239,7 +239,7 @@ pub fn deactivate(root: &Path, expected: &str, requested: Option<&str>) -> Resul
     let tx = Transaction::open(root)?;
     let active = active_task(root)?.ok_or("no active task")?;
     if crate::autonomy::is_autonomous_task(&active.dir)? {
-        return Err("autonomous tasks require a prompt-bound cancellation proposal".to_owned());
+        return Err("autonomous tasks require a prompt-bound cancellation proposal; a person can run `supervisor task cancel --task <id> --reason <text>`".to_owned());
     }
     if active.task_id != expected {
         return Err("active task changed".to_owned());

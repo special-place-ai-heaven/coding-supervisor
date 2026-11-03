@@ -749,6 +749,93 @@ pub fn amend_floor(
     Ok(json!({"criterion":criterion,"old_command":old,"new_command":command,"amended":true}))
 }
 
+/// The mandatory checks of a task being cancelled; a tampered gate is not cancelled.
+fn cancelled_floor(dir: &Path) -> Result<Vec<Value>, String> {
+    let (contract, digest) = state::read_contract(dir)?;
+    if let Stored::Tampered(_) = state::load_gate(dir, &digest)? {
+        return Err("active task gate is tampered".into());
+    }
+    let contract = contract.ok_or("active contract missing")?;
+    Ok(contract
+        .criteria
+        .iter()
+        .filter(|c| c.mandatory)
+        .map(|c| json!({"id":c.id.0,"check":c.check.0,"command":c.command,"mandatory":true}))
+        .collect())
+}
+
+/// Retain only the approved task checks as the project floor, never a proposed replacement,
+/// keeping a person's earlier amendments.
+fn keep_floor(store: &mut Value, project: &Value, floor: Vec<Value>) {
+    let amendments = store["project_floor"].get("amendments").cloned();
+    store["project_floor"] = json!({"project":project,"required_criteria":floor});
+    if let Some(amendments) = amendments {
+        store["project_floor"]["amendments"] = amendments;
+    }
+}
+
+/// A person's end to the active task without a supervised session (K17), for a prompt-managed
+/// task that `task deactivate` refuses: archived as cancelled with the reason and journaled; its
+/// checks are kept as the project floor, as a cancel prompt keeps them. The PreToolUse guard
+/// refuses this command to agents.
+pub fn cancel(root: &Path, expected: &str, reason: &str) -> Result<Value, String> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err("cancel needs a nonempty --reason".into());
+    }
+    let tx = Transaction::open(root)?;
+    let active = lifecycle::active_task(root)?.ok_or("no active task")?;
+    if active.task_id != expected {
+        return Err("active task changed".into());
+    }
+    if gate_state(&active.dir)? == "completed" {
+        return Err("completed task is immutable; start a new task".into());
+    }
+    let floor = cancelled_floor(&active.dir)?;
+    let mut writes = Vec::new();
+    if let Some(project) = read(&active.dir.join("autonomy.json"))?
+        .as_ref()
+        .and_then(|metadata| metadata.get("project"))
+    {
+        let mut store = load(root)?;
+        keep_floor(&mut store, project, floor);
+        writes.push((PathBuf::from("intents.json"), format!("{store}\n")));
+    }
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut journal = match fs::read_to_string(active.dir.join("events.jsonl")) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.to_string()),
+    };
+    journal.push_str(&format!(
+        "{}\n",
+        json!({"t":t,"event":"person_cancel","task_id":active.task_id,"reason":reason})
+    ));
+    writes.extend([
+        (
+            PathBuf::from("tasks")
+                .join(&active.task_id)
+                .join("events.jsonl"),
+            journal,
+        ),
+        (
+            PathBuf::from("archives").join(format!("{}.json", active.task_id)),
+            format!(
+                "{}\n",
+                json!({"schema":2,"task_id":active.task_id,"disposition":"cancelled","successor":null,"reason":reason})
+            ),
+        ),
+        (
+            PathBuf::from("active.json"),
+            "{\"schema\":2,\"task_id\":null}\n".to_owned(),
+        ),
+    ]);
+    tx.commit(writes)?;
+    Ok(json!({"inactive":true,"archived_task_id":active.task_id,"disposition":"cancelled"}))
+}
+
 pub fn is_paused(dir: &Path) -> Result<bool, String> {
     Ok(read(&dir.join("autonomy.json"))?.is_some_and(|v| v["paused"] == true))
 }
@@ -1253,23 +1340,12 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
             "pause" => metadata["paused"] = true.into(),
             "resume" => metadata["paused"] = false.into(),
             "cancel" => {
-                let (contract, digest) = state::read_contract(&active.dir)?;
-                if let Stored::Tampered(_) = state::load_gate(&active.dir, &digest)? {
-                    return Err("active task gate is tampered".into());
-                }
-                let contract = contract.ok_or("active contract missing")?;
-                let floor: Vec<Value> = contract
-                    .criteria
-                    .iter()
-                    .filter(|c| c.mandatory)
-                    .map(|c| json!({"id":c.id.0,"check":c.check.0,"command":c.command,"mandatory":true}))
-                    .collect();
-                // Retain only the approved task checks, never the proposed replacement.
-                let amendments = store["project_floor"].get("amendments").cloned();
-                store["project_floor"] = json!({"project":metadata.get("project").unwrap_or(&event["project"]),"required_criteria":floor});
-                if let Some(amendments) = amendments {
-                    store["project_floor"]["amendments"] = amendments;
-                }
+                let floor = cancelled_floor(&active.dir)?;
+                keep_floor(
+                    &mut store,
+                    metadata.get("project").unwrap_or(&event["project"]),
+                    floor,
+                );
                 let mut archive = json!({"schema":2,"task_id":active.task_id,"disposition":"cancelled","successor":null,"event_id":id});
                 if retire_legacy_completed {
                     archive["unverified_legacy_context"] = true.into();

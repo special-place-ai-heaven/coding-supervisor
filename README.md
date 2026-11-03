@@ -120,14 +120,15 @@ supervisor task deactivate --project <project> --task <active-id>
 
 For unfinished work, `next` or `deactivate` requires `--disposition cancelled`, `failed`, `blocked`, or `budget_exhausted`. The old task is archived; its evidence is retained. Prefer a fresh harness session for a successor; use `rebind` only to deliberately reuse an existing session. Rebinding does not transfer pending checks.
 
-Two commands are for a person only; the gate refuses them from an agent's shell, as it refuses `supervisor level`:
+Three commands are for a person only; the gate refuses them from an agent's shell, as it refuses `supervisor level`:
 
 ```sh
 supervisor task reset-rounds --project <project> --task <active-id> --reason <why>
 supervisor task amend-floor --project <project> --criterion <id> --command <command> --reason <why>
+supervisor task cancel --project <project> --task <active-id> --reason <why>
 ```
 
-`reset-rounds` moves a `budget_exhausted` task back to `repairing` with no rounds spent and journals the reason. `amend-floor` replaces one command of the requirement floor while no task is active, and records the old and new command with the reason: a discovered check (for example `AUTO_NPM_TEST_BACKEND`, to add `--maxWorkers=2`), or a check of the stored floor kept when a prompt-managed task is cancelled in a repository whose files yield none. Discovery reads `Cargo.toml` and the `test`, `lint` and `typecheck` scripts of the root `package.json`, or, when the root has none, of each direct subfolder's `package.json` as `npm --prefix <dir> run <script>`. A Stop refusal spends a repair round only when a required check was observed failing, a check's npm entrypoint was redefined, a finding is open, or the diff leaves the scope, and at most once per version of the code; a check that never ran, or another refusal before the code changes, spends nothing. A required check started in the background is refused: run it in the foreground.
+`reset-rounds` moves a `budget_exhausted` task back to `repairing` with no rounds spent and journals the reason. `cancel` ends the active task, including a prompt-managed one that `deactivate` refuses and that otherwise only a cancel prompt in a supervised session can end; it is archived as `cancelled` with the reason, and its checks are kept as the project floor, as a cancel prompt keeps them. `amend-floor` replaces one command of the requirement floor while no task is active, and records the old and new command with the reason: a discovered check (for example `AUTO_NPM_TEST_BACKEND`, to add `--maxWorkers=2`), or a check of the stored floor kept when a prompt-managed task is cancelled in a repository whose files yield none. Discovery reads `Cargo.toml` and the `test`, `lint` and `typecheck` scripts of the root `package.json`, or, when the root has none, of each direct subfolder's `package.json` as `npm --prefix <dir> run <script>`. A Stop refusal spends a repair round only when a required check was observed failing, a check's npm entrypoint was redefined, a finding is open, or the diff leaves the scope, and at most once per version of the code; a check that never ran, or another refusal before the code changes, spends nothing. A required check started in the background is refused: run it in the foreground.
 
 Legacy state requires explicit selection after checking its ownership:
 
