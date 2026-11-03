@@ -55,9 +55,12 @@ impl GitCandidate {
     }
 
     fn observe_worktree(&self) -> Result<Candidate, Unobserved> {
-        let base_commit = self.git(&["rev-parse", "HEAD"])?.trim().to_owned();
-        // Scope and exclusions are worktree-relative for hooks and MCP, even from a subdirectory.
-        let prefix = self.git(&["rev-parse", "--show-prefix"])?.trim().to_owned();
+        // One git for both: HEAD on the first line, the subdirectory prefix (empty at the root) on
+        // the second. Scope and exclusions are worktree-relative, even from a subdirectory.
+        let answer = self.git(&["rev-parse", "HEAD", "--show-prefix"])?;
+        let mut lines = answer.lines();
+        let base_commit = lines.next().unwrap_or_default().trim().to_owned();
+        let prefix = lines.next().unwrap_or_default().trim().to_owned();
         let status = self.git(&[
             "status",
             "--porcelain=v1",

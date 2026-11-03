@@ -15,14 +15,55 @@ pub(crate) fn checked_project(cwd: &Path) -> Result<String, String> {
     Ok(normalize(git_root(cwd)?.as_deref().unwrap_or(cwd)))
 }
 
+/// Each directory's worktree root, asked of git once per process: a Stop used to start the same
+/// `rev-parse --show-toplevel` 16 times. Keyed by the normalized directory, so every spelling of
+/// one directory shares an entry. Only roots found are kept, so a directory that becomes a
+/// repository later is still seen.
+static ROOTS: std::sync::Mutex<Vec<(String, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+
 fn git_root(cwd: &Path) -> Result<Option<PathBuf>, String> {
+    let key = normalize(cwd);
+    if let Some((_, root)) = ROOTS
+        .lock()
+        .ok()
+        .and_then(|roots| roots.iter().find(|(dir, _)| *dir == key).cloned())
+        && root_still_holds(&key, &root)
+    {
+        return Ok(Some(root));
+    }
     match crate::git::run(cwd, &["rev-parse", "--show-toplevel"]) {
-        Ok(out) if out.status.success() => Ok(String::from_utf8(out.stdout)
-            .ok()
-            .map(|s| PathBuf::from(s.trim()))),
+        Ok(out) if out.status.success() => {
+            let root = String::from_utf8(out.stdout)
+                .ok()
+                .map(|s| PathBuf::from(s.trim()));
+            // The root is its own root too: later lookups often start from it.
+            if let (Some(root), Ok(mut roots)) = (&root, ROOTS.lock()) {
+                roots.push((key, root.clone()));
+                roots.push((normalize(root), root.clone()));
+            }
+            Ok(root)
+        }
         Ok(_) | Err(crate::git::Failure::Unavailable(_)) => Ok(None),
         Err(crate::git::Failure::TimedOut(why)) => Err(why),
     }
+}
+
+/// A remembered root still answers for `dir` when the root keeps its `.git` and no directory
+/// between them gained one: a long-lived process (the MCP server) sees a subdirectory turned
+/// into its own checkout. File lookups only, no git process.
+fn root_still_holds(dir: &str, root: &Path) -> bool {
+    let root_key = normalize(root);
+    let mut current = Some(Path::new(dir));
+    while let Some(path) = current {
+        if path.to_string_lossy() == root_key {
+            return path.join(".git").exists();
+        }
+        if path.join(".git").exists() {
+            return false;
+        }
+        current = path.parent();
+    }
+    false
 }
 
 fn normalize(path: &Path) -> String {

@@ -118,8 +118,11 @@ jobs:
       - name: Lint with warnings as errors
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # nextest runs every test in its own process, test files in parallel.
-      - uses: taiki-e/install-action@nextest
+      # nextest runs every test in its own process, test files in parallel. Installed into
+      # ~/.cargo/bin without sudo (the fresh runners have none), once per runner.
+      - name: Install cargo-nextest if missing
+        run: |
+          command -v cargo-nextest > /dev/null || curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Run tests
         run: cargo nextest run --workspace --no-fail-fast
