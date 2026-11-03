@@ -676,6 +676,47 @@ fn nested_npm_project_produces_prefixed_floor() {
     autonomy::propose(&root, &project, &proposal(&event, "start")).unwrap();
 }
 
+/// K17: a prompt-managed task stuck in a working copy can be ended by a person without a
+/// supervised session; then `amend-floor` is free to run.
+#[test]
+fn a_person_can_cancel_a_prompt_managed_task() {
+    let f = Fixture::new();
+    let (root, project) = nested_npm_project(&f);
+    let event = prompt(&root, &project, "stuck");
+    let started = autonomy::propose(&root, &project, &proposal(&event, "start")).unwrap();
+    let task = started["task_id"].as_str().unwrap();
+    assert!(lifecycle::deactivate(&root, task, Some("cancelled")).is_err());
+    assert!(
+        autonomy::cancel(&root, task, " ").is_err(),
+        "needs a reason"
+    );
+    assert!(
+        autonomy::cancel(&root, "other", "x").is_err(),
+        "names the task"
+    );
+
+    let out = autonomy::cancel(&root, task, "stuck after a failed attempt").unwrap();
+
+    assert_eq!(out["archived_task_id"], task);
+    assert!(lifecycle::active_task(&root).unwrap().is_none());
+    let archive: Value = serde_json::from_slice(
+        &fs::read(root.join("archives").join(format!("{task}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(archive["disposition"], "cancelled");
+    assert_eq!(archive["reason"], "stuck after a failed attempt");
+    let journal = fs::read_to_string(root.join("tasks").join(task).join("events.jsonl")).unwrap();
+    assert!(journal.contains("\"event\":\"person_cancel\""), "{journal}");
+    autonomy::amend_floor(
+        &root,
+        &project,
+        "AUTO_NPM_TEST_BACKEND",
+        "npm --prefix backend run test -- --maxWorkers=2",
+        "after cancel",
+    )
+    .unwrap();
+}
+
 #[test]
 fn a_person_can_amend_a_discovered_floor_command() {
     let f = Fixture::new();
