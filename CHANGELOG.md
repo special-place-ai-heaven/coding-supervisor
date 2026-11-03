@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.7.0...v0.8.0) (2026-11-03)
+
+
+### Features
+
+* what strict mode adds ([1e65cb0](https://github.com/special-place-ai-heaven/coding-supervisor/commit/1e65cb07baade71c297325ccd1cdebaf9ab1f98b))
+
 ## [0.7.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.6.0...v0.7.0) (2026-11-03)
 
 
