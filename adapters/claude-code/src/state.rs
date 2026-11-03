@@ -76,6 +76,9 @@ pub struct Gate {
     /// version of the code. Written only when set, so older gate files read unchanged.
     /// Boxed so `Stored::Valid` stays close in size to the other variants.
     pub repair_charged: Option<Box<CandidateId>>,
+    /// The task's first candidate, which a baseline receipt binds to (K6). Written only when
+    /// set, so older gate files read unchanged.
+    pub starting: Option<Box<CandidateId>>,
 }
 
 impl Gate {
@@ -88,6 +91,7 @@ impl Gate {
             continuations: 0,
             handback_refusals: BTreeMap::new(),
             repair_charged: None,
+            starting: None,
         }
     }
 
@@ -95,6 +99,9 @@ impl Gate {
         let mut v = self.base_json();
         if let (Some(c), Some(o)) = (&self.repair_charged, v.as_object_mut()) {
             o.insert("repair_charged".to_owned(), candidate_json(c));
+        }
+        if let (Some(c), Some(o)) = (&self.starting, v.as_object_mut()) {
+            o.insert("starting_candidate".to_owned(), candidate_json(c));
         }
         v
     }
@@ -159,6 +166,10 @@ impl Gate {
                 .collect::<Result<_, _>>()?,
             continuations: small(v, "continuations")?,
             repair_charged: match v.get("repair_charged") {
+                None | Some(Value::Null) => None,
+                Some(c) => Some(Box::new(candidate_from(c)?)),
+            },
+            starting: match v.get("starting_candidate") {
                 None | Some(Value::Null) => None,
                 Some(c) => Some(Box::new(candidate_from(c)?)),
             },
@@ -351,6 +362,21 @@ pub fn read_contract(dir: &Path) -> Result<(Option<TaskContract>, String), Strin
     let v: Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     let contract = contract_from(&v).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok((Some(contract), digest))
+}
+
+/// M6: each criterion's `min_tests` from the task's contract.json; read beside the core
+/// contract, which does not carry it.
+pub fn min_tests(dir: &Path) -> Result<BTreeMap<String, u64>, String> {
+    let Some(text) = read_optional(&dir.join("contract.json"))? else {
+        return Ok(BTreeMap::new());
+    };
+    let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    Ok(v["criteria"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| Some((c["id"].as_str()?.to_owned(), c["min_tests"].as_u64()?)))
+        .collect())
 }
 
 /// What gate.json holds after its hash chain was checked.

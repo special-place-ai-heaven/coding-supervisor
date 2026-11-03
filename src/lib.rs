@@ -23,6 +23,10 @@ impl Criterion {
     pub fn accepts(&self, command: &str) -> bool {
         self.command.iter().any(|c| c.trim() == command.trim())
     }
+    /// The Duet C1 check: the reported failure reproduced on the task's starting candidate.
+    pub fn is_baseline(&self) -> bool {
+        self.check.0 == "baseline_reproduces_reported_failure"
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Budget {
@@ -172,6 +176,8 @@ pub enum GateError {
     },
     OutOfScope(Vec<String>),
     OpenFinding(FindingId),
+    /// Reproduction required: the baseline did not fail on the starting candidate.
+    NotReproduced(CriterionId),
     UnknownFinding(FindingId),
     RepairBudgetExhausted {
         max: u32,
@@ -189,6 +195,10 @@ pub struct Task {
     rejected_claims: Vec<String>,
     awaiting_observation: bool,
     next_action: String,
+    /// The first candidate the task observed: what a baseline receipt is bound to (K6).
+    starting: Option<CandidateId>,
+    /// Strict mode: a baseline criterion is met by a failure on the starting candidate (M7).
+    reproduction: bool,
 }
 impl Task {
     pub fn new(contract: TaskContract) -> Self {
@@ -203,6 +213,8 @@ impl Task {
             rejected_claims: Vec::new(),
             awaiting_observation: false,
             next_action: String::new(),
+            starting: None,
+            reproduction: false,
         }
     }
     fn ensure_observed(&self) -> Result<(), GateError> {
@@ -242,9 +254,21 @@ impl Task {
                 event: "observe_candidate",
             });
         }
+        if self.starting.is_none() {
+            self.starting = Some(candidate.id.clone());
+        }
         if self.candidate_identity.as_ref() != Some(&candidate.id) {
-            for (_, status) in &mut self.receipts {
-                *status = ReceiptStatus::Stale;
+            // K6: a baseline receipt on the starting candidate shows the failure before the
+            // fix; changing the code cannot make that observation stale.
+            for (receipt, status) in &mut self.receipts {
+                let baseline = self
+                    .contract
+                    .criteria
+                    .iter()
+                    .any(|c| c.id == receipt.criterion && c.is_baseline());
+                if !(baseline && Some(&receipt.candidate) == self.starting.as_ref()) {
+                    *status = ReceiptStatus::Stale;
+                }
             }
             if self.state == TaskState::ReadyForReview {
                 self.state = TaskState::Verifying;
@@ -276,12 +300,6 @@ impl Task {
             .candidate_identity
             .as_ref()
             .ok_or(GateError::CandidateNotObserved)?;
-        if &receipt.candidate != expected {
-            return Err(GateError::ReceiptForOtherCandidate {
-                expected: expected.clone(),
-                got: receipt.candidate,
-            });
-        }
         let Some(criterion) = self
             .contract
             .criteria
@@ -290,6 +308,15 @@ impl Task {
         else {
             return Err(GateError::UnknownCriterion(receipt.criterion));
         };
+        // K6: a baseline may cite the starting candidate after the fix changed the code.
+        let baseline_at_start =
+            criterion.is_baseline() && Some(&receipt.candidate) == self.starting.as_ref();
+        if &receipt.candidate != expected && !baseline_at_start {
+            return Err(GateError::ReceiptForOtherCandidate {
+                expected: expected.clone(),
+                got: receipt.candidate,
+            });
+        }
         if !criterion.accepts(&receipt.command) {
             return Err(GateError::WrongCommand {
                 criterion: criterion.id.clone(),
@@ -366,6 +393,16 @@ impl Task {
                 .iter()
                 .rev()
                 .find(|(r, s)| r.criterion == criterion.id && *s == ReceiptStatus::Current);
+            if self.reproduction && criterion.is_baseline() {
+                match receipt {
+                    Some((r, _))
+                        if Some(&r.candidate) == self.starting.as_ref()
+                            && r.exit_code.is_some_and(|code| code != 0) => {}
+                    Some(_) => return Err(GateError::NotReproduced(criterion.id.clone())),
+                    None => return Err(GateError::MissingReceipt(criterion.id.clone())),
+                }
+                continue;
+            }
             match receipt {
                 Some((r, _)) => match r.exit_code {
                     Some(0) => (),
@@ -467,7 +504,25 @@ impl Task {
             rejected_claims: Vec::new(),
             awaiting_observation: true,
             next_action: checkpoint.next_action,
+            starting: None,
+            reproduction: false,
         }
+    }
+    /// The first candidate this task observed; a resumed task gets it back from its store.
+    pub fn starting_candidate(&self) -> Option<&CandidateId> {
+        self.starting.as_ref()
+    }
+    /// Restore the starting candidate after `resume`, before receipts are replayed.
+    pub fn set_starting_candidate(&mut self, id: CandidateId) {
+        self.starting.get_or_insert(id);
+    }
+    /// Judge baseline criteria as the reported failure reproduced on the starting candidate
+    /// (exit code not 0) instead of as an ordinary passing check (M7, strict mode).
+    pub fn require_reproduction(&mut self) {
+        self.reproduction = true;
+    }
+    pub fn requires_reproduction(&self) -> bool {
+        self.reproduction
     }
     pub fn state(&self) -> TaskState {
         self.state

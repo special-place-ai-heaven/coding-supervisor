@@ -741,3 +741,170 @@ fn level_status_shows_the_mode() {
         (Some(0), "level: enforce (default)\n")
     );
 }
+
+/// M7 with K6: in strict, a bug fix (a mandatory baseline criterion) completes only when the
+/// baseline failed on the starting candidate and the fix passes now; in enforce the baseline
+/// stays an ordinary check that must pass.
+#[test]
+fn strict_bug_fix_needs_the_failure_reproduced_before_the_fix() {
+    for (level, baseline_exit, completes) in [
+        ("strict", 1, true),
+        ("strict", 0, false),
+        ("enforce", 1, false),
+    ] {
+        let f = Fixture::new(&format!("bugfix-{level}-{baseline_exit}"));
+        let contract = f.root.join("contract.json");
+        fs::write(&contract, json!({"id":"bug-fix","goal":"fix the reported bug","criteria":[
+            {"id":"C1","check":"baseline_reproduces_reported_failure","mandatory":true,"command":"cargo test repro"},
+            {"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test"}],
+            "scope":["src/"],"forbidden_effects":[],"max_repair_rounds":2}).to_string()).unwrap();
+        let out = f.supervisor(&[
+            "task",
+            "start",
+            "--contract",
+            contract.to_str().unwrap(),
+            "--project",
+            f.project.to_str().unwrap(),
+        ]);
+        assert!(out.status.success(), "{out:?}");
+        f.set(&[level]);
+        let run = |id: &str, command: &str, exit: i32| {
+            let _ = f.tool(id, "Bash", json!({ "command": command }));
+            let _ = if exit == 0 {
+                f.hook(json!({"hook_event_name":"PostToolUse","tool_use_id":id,"tool_name":"Bash",
+                    "tool_input":{"command":command},"tool_response":{"stdout":"ok","stderr":"","interrupted":false}}))
+            } else {
+                f.hook(json!({"hook_event_name":"PostToolUseFailure","tool_use_id":id,"tool_name":"Bash",
+                    "tool_input":{"command":command},"error":format!("Exit code {exit}")}))
+            };
+        };
+        run("repro", "cargo test repro", baseline_exit);
+        fs::create_dir_all(f.project.join("src")).unwrap();
+        fs::write(f.project.join("src/lib.rs"), "// the fix\n").unwrap();
+        run("fixed", "cargo test", 0);
+        let stop = f.stop();
+        let case = format!("{level} baseline exit {baseline_exit}: {stop}");
+        assert_eq!(stop.get("decision").is_none(), completes, "{case}");
+        if level == "strict" && !completes {
+            assert!(
+                stop["reason"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("starting candidate"),
+                "{case}"
+            );
+        }
+    }
+}
+
+/// M5: in strict, typed forbidden effects are refused before they happen; untyped ones and
+/// every effect at enforce are only recorded.
+#[test]
+fn strict_refuses_typed_forbidden_effects() {
+    let f = Fixture::new("forbidden");
+    let contract = f.root.join("contract.json");
+    fs::write(&contract, json!({"id":"forbidden","goal":"respect forbidden effects","criteria":[
+        {"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test"}],
+        "scope":["src/","docs/"],
+        "forbidden_effects":["deny_path:docs/private/","deny_git:push","deny_argv_prefix:npm publish","no network"],
+        "max_repair_rounds":2}).to_string()).unwrap();
+    let out = f.supervisor(&[
+        "task",
+        "start",
+        "--contract",
+        contract.to_str().unwrap(),
+        "--project",
+        f.project.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    let attempts = [
+        (
+            "w1",
+            "Write",
+            json!({"file_path":"docs/private/notes.md","content":"x"}),
+            true,
+        ),
+        (
+            "w2",
+            "Write",
+            json!({"file_path":"docs/public.md","content":"x"}),
+            false,
+        ),
+        (
+            "b1",
+            "Bash",
+            json!({"command":"git -C . push origin main"}),
+            true,
+        ),
+        (
+            "b2",
+            "Bash",
+            json!({"command":"git log --grep push"}),
+            false,
+        ),
+        (
+            "b3",
+            "Bash",
+            json!({"command":"cd npm && npm publish --tag next"}),
+            true,
+        ),
+        ("b4", "Bash", json!({"command":"npm pack"}), false),
+    ];
+    for level in ["strict", "enforce"] {
+        f.set(&[level]);
+        for (id, tool, input, forbidden) in &attempts {
+            let decision = f.tool(&format!("{level}-{id}"), tool, input.clone());
+            let refused = denied(&decision) && decision.to_string().contains("forbids");
+            assert_eq!(
+                refused,
+                *forbidden && level == "strict",
+                "{level} {id}: {decision}"
+            );
+        }
+    }
+}
+
+/// M6: in strict, a criterion's `min_tests` is met only by an observed run whose test summary
+/// shows at least that many passing tests; enforce ignores it.
+#[test]
+fn strict_needs_the_minimum_number_of_passing_tests() {
+    for (level, first_completes) in [("strict", false), ("enforce", true)] {
+        let f = Fixture::new(&format!("min-tests-{level}"));
+        let contract = f.root.join("contract.json");
+        fs::write(&contract, json!({"id":"min-tests","goal":"enough tests","criteria":[
+            {"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test","min_tests":5}],
+            "scope":["src/"],"forbidden_effects":[],"max_repair_rounds":2}).to_string()).unwrap();
+        let out = f.supervisor(&[
+            "task",
+            "start",
+            "--contract",
+            contract.to_str().unwrap(),
+            "--project",
+            f.project.to_str().unwrap(),
+        ]);
+        assert!(out.status.success(), "{out:?}");
+        f.set(&[level]);
+        let run = |id: &str, passed: u32| {
+            let _ = f.tool(id, "Bash", json!({"command":"cargo test"}));
+            let _ = f.hook(json!({"hook_event_name":"PostToolUse","tool_use_id":id,"tool_name":"Bash",
+                "tool_input":{"command":"cargo test"},"tool_response":{"interrupted":false,"stderr":"",
+                "stdout":format!("running {passed} tests\ntest result: ok. {passed} passed; 0 failed; 0 ignored\n")}}));
+            f.stop()
+        };
+        let few = run("few", 3);
+        assert_eq!(
+            few.get("decision").is_none(),
+            first_completes,
+            "{level}: {few}"
+        );
+        if level == "strict" {
+            let reason = few["reason"].as_str().unwrap_or_default();
+            assert!(
+                reason.contains("at least 5") && reason.contains('3'),
+                "{few}"
+            );
+            let enough = run("enough", 7);
+            assert!(enough.get("decision").is_none(), "{enough}");
+        }
+    }
+}

@@ -20,6 +20,8 @@ pub(crate) struct Run {
     pub t: u64,
     pub finished: u64,
     pub recovered_by: Option<String>,
+    /// Passing tests in the run's test summary, when its output had one (M6); never the output.
+    pub passed_tests: Option<u64>,
 }
 
 fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -536,6 +538,16 @@ pub(crate) fn observe(
     run["kind"] = "completed".into();
     run["completion_trust"] = completion_trust.into();
     run["exit_code"] = exit.into();
+    if shell {
+        let output = ["/tool_response/stdout", "/tool_response/stderr", "/error"]
+            .iter()
+            .filter_map(|p| payload.pointer(p).and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(passed) = passed_tests(&output) {
+            run["passed_tests"] = passed.into();
+        }
+    }
     run["finished"] = now.into();
     if text(dispatch, "session_id") != Some(session) {
         run["recovered_by_session"] = session.into();
@@ -670,6 +682,7 @@ pub(crate) fn read_runs(dir: &Path, task: &str) -> Result<Vec<Run>, String> {
                 ),
                 t: v.get("t")?.as_u64()?,
                 finished: v.get("finished")?.as_u64()?,
+                passed_tests: v.get("passed_tests").and_then(Value::as_u64),
                 recovered_by: text(v, "dispatch_id")
                     .and_then(|id| {
                         recovered
@@ -679,6 +692,32 @@ pub(crate) fn read_runs(dir: &Path, task: &str) -> Result<Vec<Run>, String> {
             })
         })
         .collect())
+}
+
+/// M6: passing tests in a test runner's summary lines: cargo (`test result: ok. N passed`, one
+/// line per test binary, summed), jest (`Tests: ... N passed`), vitest (`Tests  N passed`) and
+/// pytest (`== N passed ... ==`). `None` when no summary line names a passed count.
+pub(crate) fn passed_tests(output: &str) -> Option<u64> {
+    let mut total = None;
+    for line in output.lines() {
+        let line = line.trim();
+        let summary = line.starts_with("test result:")
+            || line.starts_with("Tests:")
+            || line.starts_with("Tests ")
+            || (line.starts_with('=') && line.contains(" passed"));
+        if !summary {
+            continue;
+        }
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if let Some(n) = words
+            .windows(2)
+            .find(|w| w[1].trim_end_matches([',', ';']) == "passed")
+            .and_then(|w| w[0].parse::<u64>().ok())
+        {
+            *total.get_or_insert(0) += n;
+        }
+    }
+    total
 }
 
 /// F20: a `|` the shell would read as a pipe, i.e. outside single and double quotes. A `|` inside
@@ -1445,6 +1484,27 @@ mod tests {
             ));
             assert!(!d.0.join("runs.jsonl").exists());
         }
+    }
+    /// M6: the passed count from cargo (summed over test binaries), jest, vitest and pytest.
+    #[test]
+    fn test_summaries_give_the_passed_count() {
+        assert_eq!(
+            passed_tests(
+                "test result: ok. 3 passed; 0 failed
+test result: ok. 4 passed; 0 failed"
+            ),
+            Some(7)
+        );
+        assert_eq!(
+            passed_tests("Tests:       2 failed, 120 passed, 122 total"),
+            Some(120)
+        );
+        assert_eq!(passed_tests(" Tests  12 passed (12)"), Some(12));
+        assert_eq!(
+            passed_tests("===== 9 passed, 1 skipped in 0.50s ====="),
+            Some(9)
+        );
+        assert_eq!(passed_tests("all good"), None);
     }
     /// F20: a `|` inside quotes, or inside one argument of a program that is not a shell, is
     /// text, not a pipe; the run's exit code is still the command's own.

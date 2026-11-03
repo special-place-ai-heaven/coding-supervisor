@@ -797,6 +797,13 @@ fn process(
         reasons.push("level strict: write outside the contract scope".to_owned());
         return Ok(denial);
     }
+    if event == "PreToolUse"
+        && env.level.level == Level::Strict
+        && let Some(denial) = forbidden_effect(payload, &contract.forbidden_effects)
+    {
+        reasons.push("level strict: forbidden effect".to_owned());
+        return Ok(denial);
+    }
     trace.state_before = stored.as_ref().map(|g| g.checkpoint.state);
     trace.candidate = observed.as_ref().ok().map(|c| c.id.clone());
     if let Err(why) = &observed {
@@ -821,6 +828,7 @@ fn process(
         false,
         reasons,
         Some(&env.state_dir),
+        env.level.level == Level::Strict,
     )?;
     if matches!(event, "Stop" | "SubagentStop") {
         session.sync_observed_receipts(&env.state_dir, agent, reasons)?;
@@ -852,6 +860,7 @@ fn process(
         reasons.push("level audit: reported, not blocked".to_owned());
     }
     session.gate.checkpoint = session.task.checkpoint();
+    session.gate.starting = session.task.starting_candidate().cloned().map(Box::new);
     trace.state_after = Some(session.task.state());
     state::save_gate(&env.state_dir, &session.gate, &contract_sha256)?;
     Ok(decision)
@@ -879,6 +888,75 @@ fn out_of_scope(payload: &Value, scope: &[String]) -> Option<Decision> {
             "GATE: {tool} refused: {path} is outside the task's contract scope (level strict)"
         ))
     })
+}
+
+/// M5, strict: the typed forbidden effects of the contract are refused before they happen.
+/// `deny_path:<dir>` refuses an edit tool under that project path; `deny_git:<subcommand>` a git
+/// command with that subcommand; `deny_argv_prefix:<words>` a command (or a part of one between
+/// `;`, `&`, `|` or a newline) that starts with those words. Other entries stay unenforced.
+fn forbidden_effect(payload: &Value, effects: &[String]) -> Option<Decision> {
+    let tool = text(payload, "tool_name")?;
+    let input = payload.get("tool_input")?;
+    let edit = matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit");
+    let relative = edit
+        .then(|| text(input, "file_path").or_else(|| text(input, "notebook_path")))
+        .flatten()
+        .and_then(|path| {
+            let cwd = Path::new(text(payload, "cwd").unwrap_or("."));
+            project_relative(&location::canonical_project(cwd), &cwd.join(path))
+        });
+    let command = crate::guard::command_text(tool, input).map(|c| c.to_lowercase());
+    let segments: Vec<Vec<&str>> = command
+        .as_deref()
+        .map(|c| {
+            c.split([';', '&', '|', '\n'])
+                .map(|part| part.split_whitespace().collect())
+                .collect()
+        })
+        .unwrap_or_default();
+    let effect = effects.iter().find(|effect| {
+        let Some((kind, value)) = effect.split_once(':') else {
+            return false;
+        };
+        let value = value.trim();
+        match kind.trim() {
+            "deny_path" => relative
+                .as_deref()
+                .is_some_and(|path| coding_supervisor::scope_contains(value, path)),
+            "deny_git" => segments
+                .iter()
+                .any(|words| git_subcommand(words) == Some(value.to_lowercase().as_str())),
+            "deny_argv_prefix" => {
+                let prefix: Vec<String> = value.split_whitespace().map(str::to_lowercase).collect();
+                !prefix.is_empty()
+                    && segments.iter().any(|words| {
+                        words.len() >= prefix.len()
+                            && words.iter().zip(&prefix).all(|(w, p)| *w == p.as_str())
+                    })
+            }
+            _ => false,
+        }
+    })?;
+    Some(Decision::Deny(format!(
+        "GATE: {tool} refused: the task forbids {effect} (level strict)"
+    )))
+}
+
+/// The subcommand of a `git` invocation in `words`, skipping global options and the values of
+/// `-C` and `-c`.
+fn git_subcommand<'a>(words: &[&'a str]) -> Option<&'a str> {
+    let at = words
+        .iter()
+        .position(|w| w.rsplit(['/', '\\']).next() == Some("git"))?;
+    let mut rest = words[at + 1..].iter();
+    while let Some(word) = rest.next() {
+        if matches!(*word, "-c" | "-C") {
+            rest.next();
+        } else if !word.starts_with('-') {
+            return Some(word);
+        }
+    }
+    None
 }
 
 /// `path` relative to the canonical `project` (see `location::canonical_project`), in git's
@@ -974,6 +1052,10 @@ pub fn render(error: &GateError) -> String {
         } => format!("failing {} exit {exit_code}", criterion.0),
         GateError::OutOfScope(paths) => format!("out of scope {}", paths.join(", ")),
         GateError::OpenFinding(f) => format!("open finding {}", f.0),
+        GateError::NotReproduced(c) => format!(
+            "{} did not fail on the task's starting candidate: run it before changing the code, and it must reproduce the reported failure",
+            c.0
+        ),
         GateError::InvalidTransition { from, event } => {
             format!("{event} is not allowed in state {}", state_name(*from))
         }
@@ -1034,7 +1116,15 @@ impl Session {
         honour_asserted: bool,
         reasons: &mut Vec<String>,
     ) -> Result<Self, String> {
-        Self::open_with_observed(contract, stored, observed, honour_asserted, reasons, None)
+        Self::open_with_observed(
+            contract,
+            stored,
+            observed,
+            honour_asserted,
+            reasons,
+            None,
+            false,
+        )
     }
 
     fn open_with_observed(
@@ -1044,6 +1134,7 @@ impl Session {
         honour_asserted: bool,
         reasons: &mut Vec<String>,
         evidence_dir: Option<&Path>,
+        reproduction: bool,
     ) -> Result<Self, String> {
         let criteria = contract.criteria.clone();
         let contract_id = contract.id.0.clone();
@@ -1054,6 +1145,9 @@ impl Session {
         let (task, gate) = match stored {
             None => {
                 let mut task = Task::new(contract);
+                if reproduction {
+                    task.require_reproduction();
+                }
                 task.start_preparing().map_err(|e| render(&e))?;
                 if let Ok(current) = &observed {
                     task.observe_candidate(current.clone())
@@ -1070,6 +1164,12 @@ impl Session {
                     ));
                 }
                 let mut task = Task::resume(contract, gate.checkpoint.clone());
+                if reproduction {
+                    task.require_reproduction();
+                }
+                if let Some(starting) = &gate.starting {
+                    task.set_starting_candidate((**starting).clone());
+                }
                 if let Ok(current) = &observed {
                     if task.state() == TaskState::Repairing {
                         task.observe_candidate(current.clone())
@@ -1114,15 +1214,19 @@ impl Session {
             return Ok(());
         }
         let runs = observation::read_runs(dir, &self.task_id)?;
+        let starting = self.task.starting_candidate().cloned();
         for run in runs.iter().filter(|run| {
             (run.agent_id == agent || run.recovered_by.as_deref() == Some(agent))
-                && run.candidate == current.id
+                && (run.candidate == current.id || Some(&run.candidate) == starting.as_ref())
                 && run.cwd == run.execution_root
         }) {
             if !current_dispatch_reference(dir, &self.task_id, &run.reference)? {
                 continue;
             }
-            for criterion in self.criteria.iter().filter(|c| c.accepts(&run.command)) {
+            // K6: a run on the starting candidate evidences only a baseline criterion.
+            for criterion in self.criteria.iter().filter(|c| {
+                c.accepts(&run.command) && (run.candidate == current.id || c.is_baseline())
+            }) {
                 if self
                     .gate
                     .receipts
@@ -1493,6 +1597,10 @@ impl Session {
         if let Err(why) = self.latest_attempts(dir, project) {
             problems.push(why);
         }
+        // M6 rides on strict, which is when reproduction is required.
+        if self.task.requires_reproduction() {
+            problems.extend(self.too_few_tests(dir)?);
+        }
         let result = if problems.is_empty() {
             self.observed_evidence()
                 .map_err(|e| render(&e))
@@ -1675,6 +1783,18 @@ impl Session {
                             .is_some_and(|dir| receipt_is_observed(dir, &self.task_id, r))
                 })
                 .collect();
+            // M7: in strict, the baseline must have failed on the starting candidate.
+            if self.task.requires_reproduction() && criterion.is_baseline() {
+                let starting = self.task.starting_candidate();
+                match observed.last() {
+                    Some(r)
+                        if Some(&r.candidate) == starting
+                            && r.exit_code.is_some_and(|code| code != 0) => {}
+                    Some(_) => return Err(GateError::NotReproduced(criterion.id.clone())),
+                    None => return Err(GateError::MissingReceipt(criterion.id.clone())),
+                }
+                continue;
+            }
             match observed.iter().rev().find(|r| &r.candidate == current) {
                 Some(r) => match r.exit_code {
                     Some(0) => {}
@@ -1695,15 +1815,50 @@ impl Session {
         Ok(())
     }
 
+    /// M6, strict: each criterion with `min_tests` whose latest observed receipt on the current
+    /// candidate came from a run that showed fewer passing tests, or no test summary.
+    fn too_few_tests(&self, dir: &Path) -> Result<Vec<String>, String> {
+        let minimums = state::min_tests(dir)?;
+        let Some(current) = self.task.candidate() else {
+            return Ok(Vec::new());
+        };
+        let runs = observation::read_runs(dir, &self.task_id)?;
+        let mut problems = Vec::new();
+        for (id, min) in &minimums {
+            let Some(receipt) = self
+                .gate
+                .receipts
+                .iter()
+                .rev()
+                .find(|r| &r.criterion.0 == id && &r.candidate == current)
+            else {
+                continue;
+            };
+            let seen = runs
+                .iter()
+                .find(|run| run.reference == receipt.output_ref)
+                .and_then(|run| run.passed_tests);
+            if seen.is_none_or(|n| n < *min) {
+                problems.push(format!(
+                    "{id} needs at least {min} passing tests; its run showed {} (level strict)",
+                    seen.map_or("no test summary".to_owned(), |n| n.to_string())
+                ));
+            }
+        }
+        Ok(problems)
+    }
+
     /// True when some mandatory criterion's latest hook-observed run on the current candidate
     /// exited non-zero: the candidate was judged and found wrong.
     fn observed_failure(&self) -> bool {
         let (Some(current), Some(dir)) = (self.task.candidate(), self.evidence_dir.as_ref()) else {
             return false;
         };
+        // A failing baseline is what strict asks for, not a sign the candidate is wrong.
+        let reproduction = self.task.requires_reproduction();
         self.criteria
             .iter()
-            .filter(|c| c.mandatory)
+            .filter(|c| c.mandatory && !(reproduction && c.is_baseline()))
             .any(|criterion| {
                 self.gate
                     .receipts

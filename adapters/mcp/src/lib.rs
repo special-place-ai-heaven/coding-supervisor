@@ -442,6 +442,7 @@ impl Server {
         let mut session = Session::open(contract, stored, observed, true, reasons)?;
         let result = apply(&op, &mut session, reasons);
         session.gate.checkpoint = session.task.checkpoint();
+        session.gate.starting = session.task.starting_candidate().cloned().map(Box::new);
         trace.state_after = Some(session.task.state());
         trace.candidate = session.task.candidate().cloned();
         state::save_gate(dir, &session.gate, &digest)?;
