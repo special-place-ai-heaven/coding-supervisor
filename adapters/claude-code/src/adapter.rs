@@ -1598,6 +1598,10 @@ impl Session {
         if let Err(why) = self.latest_attempts(dir, project) {
             problems.push(why);
         }
+        // M6 rides on strict, which is when reproduction is required.
+        if self.task.requires_reproduction() {
+            problems.extend(self.too_few_tests(dir)?);
+        }
         let result = if problems.is_empty() {
             self.observed_evidence()
                 .map_err(|e| render(&e))
@@ -1810,6 +1814,39 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    /// M6, strict: each criterion with `min_tests` whose latest observed receipt on the current
+    /// candidate came from a run that showed fewer passing tests, or no test summary.
+    fn too_few_tests(&self, dir: &Path) -> Result<Vec<String>, String> {
+        let minimums = state::min_tests(dir)?;
+        let Some(current) = self.task.candidate() else {
+            return Ok(Vec::new());
+        };
+        let runs = observation::read_runs(dir, &self.task_id)?;
+        let mut problems = Vec::new();
+        for (id, min) in &minimums {
+            let Some(receipt) = self
+                .gate
+                .receipts
+                .iter()
+                .rev()
+                .find(|r| &r.criterion.0 == id && &r.candidate == current)
+            else {
+                continue;
+            };
+            let seen = runs
+                .iter()
+                .find(|run| run.reference == receipt.output_ref)
+                .and_then(|run| run.passed_tests);
+            if seen.is_none_or(|n| n < *min) {
+                problems.push(format!(
+                    "{id} needs at least {min} passing tests; its run showed {} (level strict)",
+                    seen.map_or("no test summary".to_owned(), |n| n.to_string())
+                ));
+            }
+        }
+        Ok(problems)
     }
 
     /// True when some mandatory criterion's latest hook-observed run on the current candidate

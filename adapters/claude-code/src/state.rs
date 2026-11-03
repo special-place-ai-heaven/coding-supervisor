@@ -364,6 +364,21 @@ pub fn read_contract(dir: &Path) -> Result<(Option<TaskContract>, String), Strin
     Ok((Some(contract), digest))
 }
 
+/// M6: each criterion's `min_tests` from the task's contract.json; read beside the core
+/// contract, which does not carry it.
+pub fn min_tests(dir: &Path) -> Result<BTreeMap<String, u64>, String> {
+    let Some(text) = read_optional(&dir.join("contract.json"))? else {
+        return Ok(BTreeMap::new());
+    };
+    let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    Ok(v["criteria"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| Some((c["id"].as_str()?.to_owned(), c["min_tests"].as_u64()?)))
+        .collect())
+}
+
 /// What gate.json holds after its hash chain was checked.
 pub enum Stored {
     Absent,

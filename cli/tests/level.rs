@@ -829,3 +829,35 @@ fn strict_refuses_typed_forbidden_effects() {
         }
     }
 }
+
+/// M6: in strict, a criterion's `min_tests` is met only by an observed run whose test summary
+/// shows at least that many passing tests; enforce ignores it.
+#[test]
+fn strict_needs_the_minimum_number_of_passing_tests() {
+    for (level, first_completes) in [("strict", false), ("enforce", true)] {
+        let f = Fixture::new(&format!("min-tests-{level}"));
+        let contract = f.root.join("contract.json");
+        fs::write(&contract, json!({"id":"min-tests","goal":"enough tests","criteria":[
+            {"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test","min_tests":5}],
+            "scope":["src/"],"forbidden_effects":[],"max_repair_rounds":2}).to_string()).unwrap();
+        let out = f.supervisor(&["task", "start", "--contract", contract.to_str().unwrap(),
+            "--project", f.project.to_str().unwrap()]);
+        assert!(out.status.success(), "{out:?}");
+        f.set(&[level]);
+        let run = |id: &str, passed: u32| {
+            let _ = f.tool(id, "Bash", json!({"command":"cargo test"}));
+            let _ = f.hook(json!({"hook_event_name":"PostToolUse","tool_use_id":id,"tool_name":"Bash",
+                "tool_input":{"command":"cargo test"},"tool_response":{"interrupted":false,"stderr":"",
+                "stdout":format!("running {passed} tests\ntest result: ok. {passed} passed; 0 failed; 0 ignored\n")}}));
+            f.stop()
+        };
+        let few = run("few", 3);
+        assert_eq!(few.get("decision").is_none(), first_completes, "{level}: {few}");
+        if level == "strict" {
+            let reason = few["reason"].as_str().unwrap_or_default();
+            assert!(reason.contains("at least 5") && reason.contains('3'), "{few}");
+            let enough = run("enough", 7);
+            assert!(enough.get("decision").is_none(), "{enough}");
+        }
+    }
+}
