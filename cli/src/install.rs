@@ -65,9 +65,10 @@ root (`[mcp_servers.supervisor]`). Codex names them `mcp__supervisor__<tool>`.\n
 In code mode they are deferred: the `exec` tool's description does not list\n\
 them, so look them up in `ALL_TOOLS` inside a code cell and call them there.\n\
 Codex reads that file only for a trusted project; if the tools are missing,\n\
-check the project's `trust_level` in `~/.codex/config.toml` and run\n\
+check the project's `trust_level` in `$CODEX_HOME/config.toml` (default\n\
+`~/.codex/config.toml`) and run\n\
 `codex mcp list`.",
-        manual: "Trust the project so Codex loads .codex/config.toml: add these lines to {HOME}/.codex/config.toml\n    [projects.'{PROJECT}']\n    trust_level = \"trusted\"\n  (section 2, row 3; the Windows spelling of that key follows this machine's config, not a documented rule: gap G3).",
+        manual: "Trust the project so Codex loads .codex/config.toml: add these lines to {CODEX_HOME}/config.toml\n    [projects.'{PROJECT}']\n    trust_level = \"trusted\"\n  (section 2, row 3; the Windows spelling of that key follows this machine's config, not a documented rule: gap G3).",
         notes: &[
             "User-level skills directory, not written: {HOME}/.agents/skills (section 2, row 1); {HOME}/.codex/skills is not in the current Codex docs (gap G2).",
             "Cursor and OMP also read project .agents/skills (sections 3 and 4, row 1), so they can see this copy as well.",
@@ -244,6 +245,12 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
     for c in &changes {
         print!("{}", diff(&c.path, c.before.as_deref(), &c.after));
     }
+    for path in tracked_by_git(&project, &changes) {
+        println!(
+            "note: {} is tracked by git; this change will show in the project's diff",
+            path.display()
+        );
+    }
     if dry_run {
         println!("dry run: nothing written");
     } else if !changes.is_empty() {
@@ -265,8 +272,13 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         println!("{verb} .supervisor/ to {}", path.display());
     }
     let home_shown = home.to_string_lossy().replace('\\', "/");
+    // X5: Codex reads its user config from `CODEX_HOME`, else `~/.codex`.
+    let codex_home = std::env::var("CODEX_HOME")
+        .map(|dir| dir.replace('\\', "/"))
+        .unwrap_or_else(|_| format!("{home_shown}/.codex"));
     let fill = |text: &str| {
-        text.replace("{HOME}", &home_shown)
+        text.replace("{CODEX_HOME}", &codex_home)
+            .replace("{HOME}", &home_shown)
             .replace("{PROJECT}", &project.to_string_lossy())
             .replace("{BINARY}", &binary)
     };
@@ -845,5 +857,43 @@ fn sensitive_lines(lines: &[&str]) -> Vec<bool> {
             }
             (toml_env && !header) || CREDENTIAL_WORDS.iter().any(|w| lower.contains(w))
         })
+        .collect()
+}
+
+/// K3: the planned writes that git tracks in the project; none when git cannot say.
+fn tracked_by_git<'a>(project: &Path, changes: &'a [Change]) -> Vec<&'a Path> {
+    let relative: Vec<&Path> = changes
+        .iter()
+        .filter_map(|c| c.path.strip_prefix(project).ok())
+        .collect();
+    if relative.is_empty() {
+        return Vec::new();
+    }
+    let Ok(out) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["ls-files", "-z", "--"])
+        .args(&relative)
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let listed: Vec<&str> = std::str::from_utf8(&out.stdout)
+        .unwrap_or_default()
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .collect();
+    changes
+        .iter()
+        .filter(|c| {
+            c.path.strip_prefix(project).is_ok_and(|rel| {
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                listed.contains(&rel.as_str())
+            })
+        })
+        .map(|c| c.path.as_path())
         .collect()
 }

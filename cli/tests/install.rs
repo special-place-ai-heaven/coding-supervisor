@@ -738,3 +738,61 @@ fn the_most_specific_settings_file_decides_whether_the_plugin_runs_the_hooks() {
     let settings = project.join(".claude").join("settings.json");
     assert_eq!(gate_hooks(&read_json(&settings)), Vec::<String>::new());
 }
+
+/// X5: the Codex trust step names the config under `CODEX_HOME` when it is set.
+#[test]
+fn codex_trust_step_follows_codex_home() {
+    let root = std::env::temp_dir().join(format!("sup-install-codex-home-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let (project, home) = (root.join("project"), root.join("home"));
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    let out = Command::new(BIN)
+        .args(["install", "--harness", "codex", "--dry-run", "--project"])
+        .arg(&project)
+        .arg("--home")
+        .arg(&home)
+        .args(["--binary", FAKE_BINARY])
+        .env("CODEX_HOME", "/elsewhere/codex-home")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(
+        stdout.contains("/elsewhere/codex-home/config.toml"),
+        "{stdout}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// K3: a planned write to a file git tracks is named, so the person knows it reaches their diff.
+#[test]
+fn install_names_files_that_git_tracks() {
+    let root = std::env::temp_dir().join(format!("sup-install-tracked-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let (project, home) = (root.join("project"), root.join("home"));
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::write(project.join(".mcp.json"), "{}\n").unwrap();
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args(args)
+            .current_dir(&project)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", ".mcp.json"]);
+    git(&["commit", "-q", "-m", "x"]);
+    let out = install(&project, &home, "claude-code", &["--dry-run"]);
+    let tracked: Vec<&str> = out
+        .lines()
+        .filter(|l| l.contains("tracked by git"))
+        .collect();
+    assert_eq!(tracked.len(), 1, "{out}");
+    assert!(tracked[0].contains(".mcp.json"), "{out}");
+    let _ = fs::remove_dir_all(&root);
+}
