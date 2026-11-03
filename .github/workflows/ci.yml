@@ -13,9 +13,29 @@
 # path handling are Windows.
 name: CI
 
+# Runs once per change (owner, 2026-11-03: remove all waste): a push to main and a pull
+# request, not a push to every branch or tag. A change to documentation only runs nothing;
+# the skill templates under skills/ are compiled into the binary, so they are not skipped.
+# release.yml calls this workflow on each release tag, which is the one run a release gets:
+# release-please's own pull request and its merge into main change version numbers only.
 on:
   push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+      - "CHANGELOG.md"
+      - "CLAUDE.md"
+      - "HANDOVER.md"
+      - "LICENSE"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+      - "CHANGELOG.md"
+      - "CLAUDE.md"
+      - "HANDOVER.md"
+      - "LICENSE"
   workflow_call:
 
 # A new push cancels the superseded run of the same branch.
@@ -33,8 +53,32 @@ env:
   RUSTC_WRAPPER: ""
 
 jobs:
+  # Skips release-please's version-only pull request and its merge commit on main; a release
+  # tag (release.yml) still runs everything.
+  changes:
+    name: Decide whether to run
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - id: decide
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          REF: ${{ github.ref }}
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          run=true
+          case "$HEAD_REF" in release-please--*) run=false ;; esac
+          if [ "$REF" = "refs/heads/main" ] && printf '%s' "$MESSAGE" | head -n 1 | grep -q 'release-please--branches--'; then
+            run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "run: $run"
+
   runner:
     name: Pick the Linux runner
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     uses: ./.github/workflows/pick-runner.yml
     secrets: inherit
 
@@ -74,8 +118,11 @@ jobs:
       - name: Lint with warnings as errors
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # nextest runs every test in its own process, test files in parallel.
+      - uses: taiki-e/install-action@nextest
+
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo nextest run --workspace --no-fail-fast
 
       - name: Check the core crate has no dependencies
         run: |
@@ -86,8 +133,11 @@ jobs:
             exit 1
           fi
 
+  # Formatting, lint and the dependency check are the same on both systems and run on Linux.
   windows-hosted:
-    name: "Windows (hosted): format, lint, test"
+    name: "Windows (hosted): test"
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: windows-latest
     defaults:
       run:
@@ -100,11 +150,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Lint with warnings as errors
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - uses: taiki-e/install-action@nextest
 
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo nextest run --workspace --no-fail-fast
