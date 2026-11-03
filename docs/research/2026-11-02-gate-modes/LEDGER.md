@@ -25,6 +25,9 @@ untracked), so the gate supervises its own development.
 - **Wave loop** (one release per wave): fmt, clippy and the workspace tests once on the branch; PR; CI green;
   merge; release-please PR merges; watch `release.yml` and npm `latest`; `npm install -g` the new version
   and keep dogfooding on it.
+- **Outcome (2026-11-03)**: waves 3b, 4 and 5 shipped as 0.6.0, 0.7.0 and 0.8.0. Rows still open wait on the
+  owner: M7 (confirm the bug-fix default), M8 (live run on the owner's quota), X7 (state backup on upgrade),
+  and gate R1 (JEZ reruns TestPilot on the new release).
 - **Stop rule**: a row that needs an owner decision is set to `waiting (owner: <question>)` with a
   proposed default and the loop moves on; the loop stops when every row is done, dropped or waiting.
 
@@ -40,7 +43,7 @@ M7, M8).
 | F11b | Before the prompt is classified, allow `ToolSearch` and a narrow set of single read-only commands (`git status/log/diff/show/rev-parse`, `git branch --show-current`, `ls`, `pwd`, `supervisor status`, `supervisor --help`; no pipes, redirects, chaining or substitution; no `--output`). Guard and policy still apply. | P0 | – | done (e8132b3) |
 | F11c | An unknown `intent_apply` action is refused as unknown, with the seven valid actions, before any other check. | P1 | – | done (e8132b3) |
 | F11d | The UserPromptSubmit context names the valid actions and gives the ready-to-copy next call (`continue` with the task id when a task is active; `start` with a contract, or `discussion`, when not). | P1 | – | done (e8132b3) |
-| F11e | Every PreToolUse denial and Stop block is journaled to `events.jsonl` with its reason. | P2 | – | done (wave 3b, PR fix/field-followups) |
+| F11e | Every PreToolUse denial and Stop block is journaled to `events.jsonl` with its reason. | P2 | – | done (wave 3b, PR #27, 0.6.0) |
 
 ## Wave 2: patch 0.5.3, repair rounds and background runs (F12, F16)
 
@@ -72,31 +75,31 @@ configs hold a versioned binary path; unverified here, see X4).
 | F10a | Discover npm checks in direct subfolders (skip `node_modules` and hidden folders) when the root has no package.json, as `npm --prefix <dir> run <script>` with ids like `AUTO_NPM_TEST_BACKEND`; `npm_definitions` (`<dir>/<script>`) and entry points learn the `--prefix` form. Owner, 2026-11-02: discovered commands are amendable by a person through `task amend-floor` (stored as `floor_overrides`), so a heavy suite can carry `--maxWorkers=2`. Workspace globs and deeper folders are not read yet. | P1 | – | done (wave 3 commit) |
 | F18 | A check kept from a cancelled task's contract (stored floor or active contract) is added to the floor only when the discovered floor has no check with that id. Before, a repo whose discovery found only `AUTO_DIFF` got two `AUTO_DIFF` entries with different check labels, so no proposal could start a task. The floor refusal now names every field that differs (command, check label, mandatory) instead of only the commands. Field report on 0.5.3, `tp-sched-01`, 2026-11-02. | P0 | – | done (a5fbc3a, 0.5.5; owner confirmed fixed in the field 2026-11-03) |
 | F10b | "No checks found" becomes final: the error says `not retryable` and tells the model to stop and tell the user. It does not name the operator-contract path, because `task start` is refused once a prompt has been registered (see K13). | P1 | F11c (same error style) | done (wave 3 commit) |
-| F19 | Installing the hooks into a running Claude Code session locks it: UserPromptSubmit demands `intent_apply`, but Claude Code connects a project's `.mcp.json` server only at session start, so no proposal, no write and no uninstall is possible; a person must run `supervisor level off` from outside. Found dogfooding 0.5.5 on this repository, 2026-11-03. Fix: the same proposal through the CLI (`supervisor intent apply`), allowed from the agent's shell while a prompt is pending, and named in the prompt context. | P0 | – | done (wave 3b, PR fix/field-followups) |
-| F20 | A check whose command has a `|` inside quotes (a search pattern such as `'xdescribe|fdescribe'`) was treated as a shell pipeline whose exit code cannot be trusted: the gate saw it start and never recorded its finish, so the check never cleared. Same for a `|` inside one argv element of a program that is not a shell. Now only a `|` outside quotes counts (a line with an escaped quote or a backtick keeps the old any-`|` rule, since Bash and PowerShell escape differently), and argv counts only for a shell's script argument. Field report on 0.5.5 from JEZ, TestPilot schedule rework check C7, 2026-11-03; the run there split C7 into four checks without `|` as a workaround. | P1 | – | done (wave 3b, PR fix/field-followups) |
+| F19 | Installing the hooks into a running Claude Code session locks it: UserPromptSubmit demands `intent_apply`, but Claude Code connects a project's `.mcp.json` server only at session start, so no proposal, no write and no uninstall is possible; a person must run `supervisor level off` from outside. Found dogfooding 0.5.5 on this repository, 2026-11-03. Fix: the same proposal through the CLI (`supervisor intent apply`), allowed from the agent's shell while a prompt is pending, and named in the prompt context. | P0 | – | done (wave 3b, PR #27, 0.6.0) |
+| F20 | A check whose command has a `|` inside quotes (a search pattern such as `'xdescribe|fdescribe'`) was treated as a shell pipeline whose exit code cannot be trusted: the gate saw it start and never recorded its finish, so the check never cleared. Same for a `|` inside one argv element of a program that is not a shell. Now only a `|` outside quotes counts (a line with an escaped quote or a backtick keeps the old any-`|` rule, since Bash and PowerShell escape differently), and argv counts only for a shell's script argument. Field report on 0.5.5 from JEZ, TestPilot schedule rework check C7, 2026-11-03; the run there split C7 into four checks without `|` as a workaround. | P1 | – | done (wave 3b, PR #27, 0.6.0) |
 | K15 | The person-only command guard matches the words anywhere in a shell command, including inside a quoted script or commit message, so an agent's edit script that mentions the command is refused. Conservative; keep unless it blocks real work. | P3 | – | dropped (kept as is: refusing too much here only costs an agent a script file, refusing too little would let it reset its own budget) |
-| K16 | `status` coverage still says `harness cap 8` (F16 removed it from refusals only). | P3 | – | done (wave 3b, PR fix/field-followups) |
-| K4 | `init` drafts checks from the same discovery, not a Rust draft in an npm repo. | P2 | F10a | done (wave 3b, PR fix/field-followups) |
+| K16 | `status` coverage still says `harness cap 8` (F16 removed it from refusals only). | P3 | – | done (wave 3b, PR #27, 0.6.0) |
+| K4 | `init` drafts checks from the same discovery, not a Rust draft in an npm repo. | P2 | F10a | done (wave 3b, PR #27, 0.6.0) |
 
 ## Wave 4: minor 0.6.0, modes (from PROPOSAL.md)
 
 | ID | Item | Crit | Depends on | Status |
 |---|---|---|---|---|
-| M1 | Modes `off`, `audit`, `enforce`, `strict`; `lite`, `full`, `ultra` stay accepted as aliases; journals and status print the new names. | P1 | Wave 2 (Stop code settles first) | done (wave 4, PR feat/modes) |
-| M2 | Requested vs effective mode: a mode the harness cannot enforce runs as `audit` and says so in status and every journal line. Absorbs F15 (MCP answers say `answer_authority`, task says its enforcement). | P1 | M1 | done (wave 4, PR feat/modes) |
-| M3 | `/supervisor <mode>` and `/supervisor status` in the plugin, user-invoked only. | P1 | M1 | done (wave 4, PR feat/modes) |
+| M1 | Modes `off`, `audit`, `enforce`, `strict`; `lite`, `full`, `ultra` stay accepted as aliases; journals and status print the new names. | P1 | Wave 2 (Stop code settles first) | done (wave 4, PR #29, 0.7.0) |
+| M2 | Requested vs effective mode: a mode the harness cannot enforce runs as `audit` and says so in status and every journal line. Absorbs F15 (MCP answers say `answer_authority`, task says its enforcement). | P1 | M1 | done (wave 4, PR #29, 0.7.0) |
+| M3 | `/supervisor <mode>` and `/supervisor status` in the plugin, user-invoked only. | P1 | M1 | done (wave 4, PR #29, 0.7.0) |
 | M4 | One-step plugin setup: the plugin also starts the MCP server. First find why `1ea1aad` left it out ("F1"); drop this row if the reason holds. | P2 | M3 | dropped (the reason holds: Claude Code names a plugin server's tools `mcp__plugin_coding-supervisor_supervisor__<tool>`, but the gate's pre-registration allowlist, the skills and install's permission rule expect `mcp__supervisor__<tool>`; a plugin-served server would bring back the F19 lock-out. One-step setup needs name-agnostic tool matching first) |
-| F13b | `task start` warns that `forbidden_effects` are not enforced (owner's ruling: LINUS checks them in review until M5). | P2 | – | done (wave 3b, PR fix/field-followups) |
-| K2 | MCP `accept_try` and `verdict` must not disagree: asserted-only receipts cannot reach `ready_for_review` where `verdict` would fail. | P1 | M2 | done (wave 4, PR feat/modes) |
+| F13b | `task start` warns that `forbidden_effects` are not enforced (owner's ruling: LINUS checks them in review until M5). | P2 | – | done (wave 3b, PR #27, 0.6.0) |
+| K2 | MCP `accept_try` and `verdict` must not disagree: asserted-only receipts cannot reach `ready_for_review` where `verdict` would fail. | P1 | M2 | done (wave 4, PR #29, 0.7.0) |
 
 ## Wave 5: minor 0.7.0, what `strict` adds
 
 | ID | Item | Crit | Depends on | Status |
 |---|---|---|---|---|
-| K6 | A failing-before-fix receipt binds to the task's starting candidate and stays valid after the fix is committed. | P1 | – | done (wave 5, PR feat/strict) |
-| M5 | `strict`: typed `forbidden_effects` (`deny_paths`, `deny_git`, `deny_argv_prefix`) compiled into PreToolUse denials for the active task (F13a). | P1 | M1, F13b | done (wave 5, PR feat/strict) |
-| M6 | `strict`: optional per-criterion `min_tests`; a run satisfies it only when the parsed jest/cargo/pytest summary shows enough passed tests (F14). Owner: LINUS confirms counts until then. | P1 | M1 | done (wave 5, PR feat/strict) |
-| M7 | `strict`: a bug fix needs the reported failure observed failing on the starting candidate, then passing on the current one (C1 then C2). How a task is marked as a bug fix is open. | P1 | M1, K6 | done (wave 5, PR feat/strict); waiting (owner: confirm the default that a task is a bug fix when its contract has a mandatory `baseline_reproduces_reported_failure` criterion; the alternative is a contract or proposal field such as `"kind": "bug_fix"`) |
+| K6 | A failing-before-fix receipt binds to the task's starting candidate and stays valid after the fix is committed. | P1 | – | done (wave 5, PR #30, 0.8.0) |
+| M5 | `strict`: typed `forbidden_effects` (`deny_paths`, `deny_git`, `deny_argv_prefix`) compiled into PreToolUse denials for the active task (F13a). | P1 | M1, F13b | done (wave 5, PR #30, 0.8.0) |
+| M6 | `strict`: optional per-criterion `min_tests`; a run satisfies it only when the parsed jest/cargo/pytest summary shows enough passed tests (F14). Owner: LINUS confirms counts until then. | P1 | M1 | done (wave 5, PR #30, 0.8.0) |
+| M7 | `strict`: a bug fix needs the reported failure observed failing on the starting candidate, then passing on the current one (C1 then C2). How a task is marked as a bug fix is open. | P1 | M1, K6 | done (wave 5, PR #30, 0.8.0); waiting (owner: confirm the default that a task is a bug fix when its contract has a mandatory `baseline_reproduces_reported_failure` criterion; the alternative is a contract or proposal field such as `"kind": "bug_fix"`) |
 | M8 | Live Claude Code run of every mode with only the plugin installed. | P1 | M1–M7 | waiting (owner: a live Claude Code run of every mode with only the plugin installed spends your Claude quota; it also settles whether the plugin command's `!` lines pass through the PreToolUse hooks. Proposed: run it when you say so, one short scripted task per mode) |
 
 ## Unscheduled (P2 and P3)
@@ -104,20 +107,21 @@ configs hold a versioned binary path; unverified here, see X4).
 | ID | Item | Crit | Depends on | Status |
 |---|---|---|---|---|
 | X4 | Generated configs hold absolute binary paths; check whether an npm upgrade leaves hooks on the old binary. `install.rs:189` records `current_exe()`. | P2 | – (needed for gate R1) | done (no change: the recorded path `…/node_modules/coding-supervisor-windows-x64/bin/supervisor.exe` carries no version; `npm install -g coding-supervisor@0.5.5` over 0.5.2 replaced the binary in place and `status` reported 0.5.5 from that path, 2026-11-03; owner confirmed 0.5.5 behaviour in the field) |
-| K13 | `supervisor task start` is refused once `intents.json` exists, so a person cannot supply an operator contract after the first prompt. Found while writing F10b. | P1 | – | done (wave 3b, PR fix/field-followups) |
-| K14 | `intent_apply` takes the contract inline only, so the model must retype every command from a contract file; accept a contract path, read through the same validation. Field report, 2026-11-02. | P2 | – | done (wave 3b, PR fix/field-followups) |
-| K3 | `install --dry-run` reports writes into the checkout, including a tracked file. | P2 | – | done (wave 3b, PR fix/field-followups) |
-| K9 | State location differs with and without `SUPERVISOR_STATE_DIR` (`env` vs `home` rule), so agents see different task namespaces. | P2 | – | done (wave 3b, PR fix/field-followups) |
+| K13 | `supervisor task start` is refused once `intents.json` exists, so a person cannot supply an operator contract after the first prompt. Found while writing F10b. | P1 | – | done (wave 3b, PR #27, 0.6.0) |
+| K14 | `intent_apply` takes the contract inline only, so the model must retype every command from a contract file; accept a contract path, read through the same validation. Field report, 2026-11-02. | P2 | – | done (wave 3b, PR #27, 0.6.0) |
+| K17 | A prompt-managed task can only be cancelled by a prompt in a supervised session; `task deactivate` refuses it, so a person has no command of their own to clear a stuck task, and `amend-floor` waits on it. Field, TestPilot, 2026-11-03. | P1 | – | in progress (owner go 2026-11-03: `supervisor task cancel`, a person's command the guard refuses to agents) |
+| K3 | `install --dry-run` reports writes into the checkout, including a tracked file. | P2 | – | done (wave 3b, PR #27, 0.6.0) |
+| K9 | State location differs with and without `SUPERVISOR_STATE_DIR` (`env` vs `home` rule), so agents see different task namespaces. | P2 | – | done (wave 3b, PR #27, 0.6.0) |
 | K7 | `task start` prints `queued` while `task_state` says `preparing`. | P3 | – | dropped (not a bug: a task is `queued` until the gate first opens it, and `task_state` is what opens it, so it then reads `preparing`; the core moves Queued to Preparing on purpose) |
-| K8 | `recorded_at` truncated to seconds; README promises milliseconds. | P3 | – | done (wave 3b, PR fix/field-followups) |
+| K8 | `recorded_at` truncated to seconds; README promises milliseconds. | P3 | – | done (wave 3b, PR #27, 0.6.0) |
 | K5 | `init` without `--output` writes into the repo root. | P3 | – | dropped (documented: the draft must be editable by the person and readable by the agent, and the state directory is closed to agents; `--output` chooses another path) |
-| K11 | `supervisor --help` does not mention the MCP tools or the receipt sequence. | P3 | – | done (wave 3b, PR fix/field-followups) |
-| K12 | README Install still says 0.1.1; also says the autonomous workflow is unreleased (shipped in 0.2.0). | P3 | – | done (wave 3b, PR fix/field-followups) |
-| X1 | `supervisor --version`. | P3 | – | done (wave 3b, PR fix/field-followups) |
-| X2 | Alias bin `coding-supervisor` or a clearer install message. | P3 | – | done (wave 3b, PR fix/field-followups) |
-| X3 | `verdict` outside a git repo prints a git error for `no_active_task`. | P3 | – | done (wave 3b, PR fix/field-followups) |
-| X5 | Codex trust step ignores `CODEX_HOME`. | P3 | – | done (wave 3b, PR fix/field-followups) |
-| X6 | README: criteria design advice from the report's environment note (no parallel heavy checks, cgroup over `prlimit --as`, `jest <files> -t`). | P3 | – | done (wave 3b, PR fix/field-followups) |
+| K11 | `supervisor --help` does not mention the MCP tools or the receipt sequence. | P3 | – | done (wave 3b, PR #27, 0.6.0) |
+| K12 | README Install still says 0.1.1; also says the autonomous workflow is unreleased (shipped in 0.2.0). | P3 | – | done (wave 3b, PR #27, 0.6.0) |
+| X1 | `supervisor --version`. | P3 | – | done (wave 3b, PR #27, 0.6.0) |
+| X2 | Alias bin `coding-supervisor` or a clearer install message. | P3 | – | done (wave 3b, PR #27, 0.6.0) |
+| X3 | `verdict` outside a git repo prints a git error for `no_active_task`. | P3 | – | done (wave 3b, PR #27, 0.6.0) |
+| X5 | Codex trust step ignores `CODEX_HOME`. | P3 | – | done (wave 3b, PR #27, 0.6.0) |
+| X6 | README: criteria design advice from the report's environment note (no parallel heavy checks, cgroup over `prlimit --as`, `jest <files> -t`). | P3 | – | done (wave 3b, PR #27, 0.6.0) |
 | X7 | State backup before upgrade. | P3 | – | waiting (owner: snapshot state on upgrade? npm upgrades never run our code, so it would need a postinstall script, which many setups disable; proposed default: drop, since state formats migrate in place through `task migrate`) |
 | K1 | No non-Claude path yields an observed receipt. Design limit of MCP; recorded, no fix planned. | – | – | dropped (by design) |
 
@@ -126,4 +130,6 @@ configs hold a versioned binary path; unverified here, see X4).
 | ID | Item | Depends on | Status |
 |---|---|---|---|
 | H1 | Archive PR #2 (`feat/autonomous-gate`, head `120a0ed`): push tag `archive/autonomous-gate`, close with a note pointing here. Owner approved 2026-11-02. | – | done (tag pushed, #2 closed) |
-| H2 | Refresh stale lines in `CLAUDE.md` (branch `phase-a-installable`, "uncommitted" work now on main). | Wave 1 | done (wave 3b, PR fix/field-followups) |
+| H2 | Refresh stale lines in `CLAUDE.md` (branch `phase-a-installable`, "uncommitted" work now on main). | Wave 1 | done (wave 3b, PR #27, 0.6.0) |
+| H3 | CI waste (owner, 2026-11-03: "remove any and all waste"): every PR ran CI twice (push and pull_request), docs-only and release-please changes ran it too, Windows repeated fmt and clippy, tests ran one file at a time. | – | done (PR #33: one run per change, Linux-only fmt/clippy, `cargo nextest`; Linux 3m0s to 1m55s, Windows 8m40s–10m30s to 5m27s) |
+| H4 | One Stop started 19 git processes (16 the same root lookup), every tool call 8 to 10; tens of milliseconds each on Windows. | – | done (PR #34, 0.8.1: 3 per hook call, pinned by `cli/tests/git_calls.rs`; also nextest installs on the `fresh` runners without `sudo`; reusable write-up: `docs/research/2026-11-03-ci-speed/CI-SPEED-GUIDE.md`) |
