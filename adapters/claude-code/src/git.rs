@@ -21,6 +21,18 @@ pub enum Failure {
 /// `git -C cwd args`, killed and reaped if it is still running after the deadline.
 pub fn run(cwd: &Path, args: &[&str]) -> Result<Output, Failure> {
     let what = format!("git {}", args.join(" "));
+    // Test seam: `SUPERVISOR_GIT_TRACE=<file>` appends each git's subcommand (no paths, no
+    // output) so a test can pin how many processes a hook call starts.
+    if let Ok(trace) = std::env::var("SUPERVISOR_GIT_TRACE") {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(trace)
+        {
+            let _ = writeln!(f, "{what}");
+        }
+    }
     let mut command = Command::new("git");
     command
         .args(["-c", "core.fsmonitor=false", "-C"])
