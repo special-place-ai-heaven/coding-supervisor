@@ -32,15 +32,38 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         // C1..C4 are the Duet checks; only C2 and C3 are mandatory in the starting contract.
         // The commands are placeholders: edit them to the exact commands a receipt must cite.
         let criterion = |id: &str, check: &str, mandatory: bool, command: &str| json!({ "id": id, "check": check, "mandatory": mandatory, "command": command });
+        // K4: the checks the gate would discover here; the Duet placeholders only when none.
+        let discovered =
+            supervisor_claude_code::autonomy::repository_floor(&project).unwrap_or_default();
+        let criteria = if discovered.is_empty() {
+            vec![
+                criterion(
+                    "C1",
+                    "baseline_reproduces_reported_failure",
+                    false,
+                    "cargo test",
+                ),
+                criterion("C2", "candidate_passes_reported_test", true, "cargo test"),
+                criterion(
+                    "C3",
+                    "regression_suite_passes",
+                    true,
+                    "cargo test --workspace",
+                ),
+                criterion(
+                    "C4",
+                    "diff_within_contract_scope",
+                    false,
+                    "git diff --name-only",
+                ),
+            ]
+        } else {
+            discovered
+        };
         let contract = json!({
             "id": id,
             "goal": "Describe what this task must achieve.",
-            "criteria": [
-                criterion("C1", "baseline_reproduces_reported_failure", false, "cargo test"),
-                criterion("C2", "candidate_passes_reported_test", true, "cargo test"),
-                criterion("C3", "regression_suite_passes", true, "cargo test --workspace"),
-                criterion("C4", "diff_within_contract_scope", false, "git diff --name-only"),
-            ],
+            "criteria": criteria,
             "forbidden_effects": [],
             "scope": ["src/", "tests/"],
             "max_repair_rounds": 2,

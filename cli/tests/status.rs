@@ -180,3 +180,34 @@ fn restricted_noncommand_and_disabled_hooks_never_claim_full_coverage() {
     assert_eq!(report["hooks"]["state"], "disabled");
     assert_eq!(report["coverage"]["completion"], json!([]));
 }
+
+/// K9: with `SUPERVISOR_STATE_DIR` set, status names the default-rule state directory for the
+/// same project when one exists, because a process without the variable would use it.
+#[test]
+fn status_names_a_second_state_directory_for_the_project() {
+    let root = std::env::temp_dir().join(format!("sup-status-shadow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (project, env_state, base) = (root.join("project"), root.join("env"), root.join("base"));
+    std::fs::create_dir_all(&project).unwrap();
+    let key = supervisor_claude_code::location::project_key(&project);
+    let shadow = base.join("coding-supervisor").join("state").join(&key);
+    std::fs::create_dir_all(&shadow).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_supervisor"))
+        .args(["status", "--json", "--project"])
+        .arg(&project)
+        .env("SUPERVISOR_STATE_DIR", &env_state)
+        .env("LOCALAPPDATA", &base)
+        .env("XDG_STATE_HOME", &base)
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let other = report["other_state"]
+        .as_str()
+        .unwrap_or_default()
+        .replace('\\', "/");
+    assert!(
+        other.ends_with(&format!("coding-supervisor/state/{key}")),
+        "{report}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

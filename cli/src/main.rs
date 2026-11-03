@@ -27,7 +27,15 @@ const USAGE: &str = "usage: supervisor mcp [--project <dir>]  (serve the gate as
        supervisor level [off|lite|full|ultra] [--project <dir>] [--global]  (no level: show the effective one; a level: write it for the project, or with --global for the user; exit 0 done, 1 error, 2 usage)
        supervisor status [--project <dir>] [--harness <claude-code|codex>] [--json]
        supervisor verdict [--project <dir>] [--task <active-id>] [--require <observed|asserted>] [--json]  (exit 0 pass, 3 fail, 1 could not answer, 2 usage; stdout empty on 1 and 2)
-       supervisor install --harness <claude-code|codex|cursor|omp|grok> [--project <dir>] [--home <dir>] [--binary <path>] [--dry-run]";
+       supervisor install --harness <claude-code|codex|cursor|omp|grok> [--project <dir>] [--home <dir>] [--binary <path>] [--dry-run]
+       supervisor --version
+
+A supervised task, in order: each user prompt is classified with the MCP tool intent_apply
+(start with a scoped contract, continue, discussion, ...); the agent runs each required check's
+command; the hooks record an observed receipt per run; Stop accepts only when every mandatory
+criterion has a current receipt. MCP tools: intent_record, intent_apply, task_start,
+candidate_observe, receipt_record, finding_raise, repair_request, accept_try, task_complete,
+task_state (MCP receipts are caller-asserted and never satisfy the hooks).";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -35,6 +43,10 @@ fn main() -> ExitCode {
         Some((command, rest)) if command == "mcp" => return supervisor_mcp::run_stdio(rest),
         Some((command, rest)) if command == "hook" && rest.is_empty() => return hook(),
         // Asked-for help is not a usage error (the npm launcher passes the exit code through).
+        Some((command, [])) if command == "--version" || command == "-V" => {
+            let _ = writeln!(io::stdout(), "supervisor {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
         Some((command, [])) if command == "--help" || command == "-h" => {
             let _ = writeln!(io::stdout(), "{USAGE}");
             return ExitCode::SUCCESS;
@@ -104,10 +116,11 @@ fn main() -> ExitCode {
 /// `intent_apply` without MCP: same validation, same caller-asserted answer.
 fn intent(flags: &Flags) -> Result<(), Failure> {
     let project = flags.project()?;
-    let (root, _) = supervisor_claude_code::location::resolve_state_dir_checked(&project, &|name| {
-        std::env::var(name).ok()
-    })
-    .map_err(Failure::Error)?;
+    let (root, _) =
+        supervisor_claude_code::location::resolve_state_dir_checked(&project, &|name| {
+            std::env::var(name).ok()
+        })
+        .map_err(Failure::Error)?;
     let text = flags
         .value("--proposal")
         .ok_or_else(|| Failure::Usage("intent apply requires --proposal".to_owned()))?;

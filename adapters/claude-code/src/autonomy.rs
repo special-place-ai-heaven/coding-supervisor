@@ -192,7 +192,9 @@ fn with_contract_file(project: &Path, proposal: &Value, file: &Value) -> Result<
     let contract: Value = serde_json::from_str(&text)
         .map_err(|e| format!("contract_file {name} is not valid JSON: {e}"))?;
     let mut proposal = proposal.clone();
-    let fields = proposal.as_object_mut().ok_or("proposal must be an object")?;
+    let fields = proposal
+        .as_object_mut()
+        .ok_or("proposal must be an object")?;
     fields.remove("contract_file");
     fields.insert("contract".into(), contract);
     Ok(proposal)
@@ -210,7 +212,7 @@ fn extend_floor(floor: &mut Vec<Value>, extra: Vec<Value>) {
 
 /// A conservative floor discovered before edits. Unsupported repositories need an explicit
 /// preexisting contract; arbitrary model-selected commands are not a trusted check floor.
-fn repository_floor(project: &Path) -> Result<Vec<Value>, String> {
+pub fn repository_floor(project: &Path) -> Result<Vec<Value>, String> {
     let project = PathBuf::from(project_identity(project)?);
     let mut checks = Vec::new();
     if project.join("Cargo.toml").is_file() {

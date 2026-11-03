@@ -111,6 +111,25 @@ fn select_state_dir(
     })
 }
 
+/// K9: when `SUPERVISOR_STATE_DIR` chose the state directory, the one the default rule would
+/// pick, if it exists. A hook, MCP server or command started without that variable uses it,
+/// and so sees a different task namespace for the same project.
+pub fn shadow_state_dir(
+    cwd: &Path,
+    env_lookup: &dyn Fn(&str) -> Option<String>,
+) -> Option<PathBuf> {
+    env_lookup("SUPERVISOR_STATE_DIR").filter(|v| !v.is_empty())?;
+    let without = |name: &str| {
+        if name == "SUPERVISOR_STATE_DIR" {
+            None
+        } else {
+            env_lookup(name)
+        }
+    };
+    let (dir, rule) = select_state_dir(cwd, &without);
+    (rule != "cwd-fallback" && dir.is_dir()).then_some(dir)
+}
+
 /// Checked initialization for production callers. No configured namespace silently falls back.
 pub fn resolve_state_dir_checked(
     cwd: &Path,
