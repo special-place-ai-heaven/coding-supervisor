@@ -34,7 +34,7 @@ pub fn run(args: &[String]) -> Result<(), Failure> {
     };
     let level = Level::parse(word).ok_or_else(|| {
         Failure::Usage(format!(
-            "unknown level: {word}; expected off, lite, full or ultra"
+            "unknown level: {word}; expected off, audit, enforce or strict (lite, full and ultra still work)"
         ))
     })?;
     let (dir, scope): (PathBuf, &str) = if flags.switch("--global") {

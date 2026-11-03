@@ -1,5 +1,6 @@
-//! How strictly the gate judges: `off`, `lite`, `full` (default) or `ultra`. A `level` file in
-//! the project's state root beats the global one in the user config directory.
+//! How strictly the gate judges, its mode: `off`, `audit`, `enforce` (default) or `strict`. The
+//! names before 0.7, `lite`, `full` and `ultra`, stay accepted. A `level` file in the project's
+//! state root beats the global one in the user config directory.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -10,30 +11,30 @@ use std::path::{Path, PathBuf};
 pub enum Level {
     /// Nothing is judged or written; only the state guard and the action policy answer.
     Off,
-    /// Judged as `full`; refusals are reported instead of blocking.
-    Lite,
+    /// Judged as `enforce`; refusals are reported instead of blocking.
+    Audit,
     #[default]
-    Full,
-    /// `full`, plus writes outside the task's contract scope are refused before they happen.
-    Ultra,
+    Enforce,
+    /// `enforce`, plus writes outside the task's contract scope are refused before they happen.
+    Strict,
 }
 
 impl Level {
     pub fn parse(word: &str) -> Option<Self> {
         match word {
             "off" => Some(Self::Off),
-            "lite" => Some(Self::Lite),
-            "full" => Some(Self::Full),
-            "ultra" => Some(Self::Ultra),
+            "audit" | "lite" => Some(Self::Audit),
+            "enforce" | "full" => Some(Self::Enforce),
+            "strict" | "ultra" => Some(Self::Strict),
             _ => None,
         }
     }
     pub fn name(self) -> &'static str {
         match self {
             Self::Off => "off",
-            Self::Lite => "lite",
-            Self::Full => "full",
-            Self::Ultra => "ultra",
+            Self::Audit => "audit",
+            Self::Enforce => "enforce",
+            Self::Strict => "strict",
         }
     }
 }
@@ -46,14 +47,14 @@ pub struct Setting {
     pub source: &'static str,
     /// Holds the global `level` file; agents may not write it.
     pub config_dir: Option<PathBuf>,
-    /// Why a `level` file could not be used; the call then runs at `full`.
+    /// Why a `level` file could not be used; the call then runs at `enforce`.
     pub error: Option<String>,
 }
 
 impl Default for Setting {
     fn default() -> Self {
         Self {
-            level: Level::Full,
+            level: Level::Enforce,
             source: "default",
             config_dir: None,
             error: None,
@@ -82,7 +83,7 @@ pub fn read(dir: &Path) -> Result<Option<Level>, String> {
     match fs::read_to_string(&path) {
         Ok(text) => Level::parse(text.trim()).map(Some).ok_or_else(|| {
             format!(
-                "{}: unknown level {:?}; expected off, lite, full or ultra",
+                "{}: unknown level {:?}; expected off, audit, enforce or strict",
                 path.display(),
                 text.trim()
             )
@@ -105,11 +106,11 @@ pub fn effective(
     {
         return Ok((level, "global"));
     }
-    Ok((Level::Full, "default"))
+    Ok((Level::Enforce, "default"))
 }
 
 /// The level a hook runs at and its source, as stamped on records: an unusable `level` file runs
-/// the hook at `full` from source `unreadable`.
+/// the hook at `enforce` from source `unreadable`.
 pub fn in_effect(state_root: &Path, config_dir: Option<&Path>) -> (Level, &'static str) {
-    effective(state_root, config_dir).unwrap_or((Level::Full, "unreadable"))
+    effective(state_root, config_dir).unwrap_or((Level::Enforce, "unreadable"))
 }

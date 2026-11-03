@@ -118,11 +118,11 @@ fn every_line_stamps_the_effective_level_and_its_source() {
     assert_eq!(
         stamps,
         [
-            (json!("full"), json!("default")),
-            (json!("full"), json!("default")),
-            (json!("lite"), json!("global")),
+            (json!("enforce"), json!("default")),
+            (json!("enforce"), json!("default")),
+            (json!("audit"), json!("global")),
             (json!("off"), json!("project")),
-            (json!("full"), json!("unreadable")),
+            (json!("enforce"), json!("unreadable")),
         ]
     );
 }

@@ -475,7 +475,7 @@ fn t01_verdict_json_every_key_present_on_every_path() {
     assert_eq!(r["reason"], Value::Null);
     assert_eq!(
         (&r["effective_level"], &r["level_source"]),
-        (&json!("full"), &json!("default"))
+        (&json!("enforce"), &json!("default"))
     );
     assert_eq!(
         keys(&r["task"]),

@@ -799,7 +799,7 @@ fn journal_v1_fields() {
         assert_eq!(line["task_id"], "t4-test");
         assert_eq!(
             (&line["effective_level"], &line["level_source"]),
-            (&json!("full"), &json!("default"))
+            (&json!("enforce"), &json!("default"))
         );
         assert_eq!(
             line["candidate"],

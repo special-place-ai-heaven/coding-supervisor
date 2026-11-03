@@ -103,7 +103,7 @@ impl Env {
             .and_then(|(root, _)| level::effective(root, config_dir.as_deref()))
         {
             Ok((level, source)) => (level, source, None),
-            Err(why) => (Level::Full, "unreadable", Some(why)),
+            Err(why) => (Level::Enforce, "unreadable", Some(why)),
         };
         // At `off` nothing is written, so the state root is located without being created.
         let (state_dir, state_location) = match read_only {
@@ -329,7 +329,7 @@ pub fn handle(payload: &Value, env: &mut Env) -> Decision {
     JOURNAL.set(Journal::StateUnproven);
     match env.level.level {
         Level::Off => protection(payload, env).unwrap_or(Decision::None),
-        Level::Lite => match protection(payload, env) {
+        Level::Audit => match protection(payload, env) {
             Some(denied) => journal_refusal(payload, env, denied),
             None => {
                 let decision = judge(payload, env);
@@ -339,7 +339,7 @@ pub fn handle(payload: &Value, env: &mut Env) -> Decision {
                 }
             }
         },
-        Level::Full | Level::Ultra => {
+        Level::Enforce | Level::Strict => {
             let decision = judge(payload, env);
             journal_refusal(payload, env, decision)
         }
@@ -791,10 +791,10 @@ fn process(
         return Ok(no_contract(payload, event));
     };
     if event == "PreToolUse"
-        && env.level.level == Level::Ultra
+        && env.level.level == Level::Strict
         && let Some(denial) = out_of_scope(payload, &contract.scope)
     {
-        reasons.push("level ultra: write outside the contract scope".to_owned());
+        reasons.push("level strict: write outside the contract scope".to_owned());
         return Ok(denial);
     }
     trace.state_before = stored.as_ref().map(|g| g.checkpoint.state);
@@ -843,13 +843,13 @@ fn process(
         }
         _ => Decision::None,
     };
-    if env.level.level == Level::Lite && matches!(decision, Decision::Block(_) | Decision::Deny(_))
+    if env.level.level == Level::Audit && matches!(decision, Decision::Block(_) | Decision::Deny(_))
     {
         // Lite never blocks, so a stop refusal it only reports must not count toward the caps.
         if matches!(decision, Decision::Block(_)) {
             (session.gate.continuations, session.gate.handback_refusals) = refusals;
         }
-        reasons.push("level lite: reported, not blocked".to_owned());
+        reasons.push("level audit: reported, not blocked".to_owned());
     }
     session.gate.checkpoint = session.task.checkpoint();
     trace.state_after = Some(session.task.state());
@@ -876,7 +876,7 @@ fn out_of_scope(payload: &Value, scope: &[String]) -> Option<Decision> {
     );
     (!inside).then(|| {
         Decision::Deny(format!(
-            "GATE: {tool} refused: {path} is outside the task's contract scope (level ultra)"
+            "GATE: {tool} refused: {path} is outside the task's contract scope (level strict)"
         ))
     })
 }
