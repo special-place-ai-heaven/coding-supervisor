@@ -223,15 +223,37 @@ fn reset_rounds_needs_a_reason_and_an_exhausted_task() {
 #[test]
 fn a_person_can_start_a_task_after_a_prompt_was_registered() {
     let f = Fixture::new("start-after-prompt");
-    let git = Command::new("git").arg("init").arg("-q").arg(&f.project).status().unwrap();
+    let git = Command::new("git")
+        .arg("init")
+        .arg("-q")
+        .arg(&f.project)
+        .status()
+        .unwrap();
     assert!(git.success());
     let payload = json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":f.project,"prompt":"fix the parser"});
-    let mut hook = f.command().arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
-    hook.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+    let mut hook = f
+        .command()
+        .arg("hook")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    hook.stdin
+        .take()
+        .unwrap()
+        .write_all(payload.to_string().as_bytes())
+        .unwrap();
     assert!(hook.wait_with_output().unwrap().status.success());
-    assert!(f.state_root().join("intents.json").exists(), "prompt not registered");
+    assert!(
+        f.state_root().join("intents.json").exists(),
+        "prompt not registered"
+    );
     let started = f.task("start", &["--contract", f.contract.to_str().unwrap()]);
-    assert!(started.status.success(), "{}", String::from_utf8_lossy(&started.stderr));
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
     assert!(value(started)["task_id"].is_string());
 }
 
@@ -239,11 +261,20 @@ fn a_person_can_start_a_task_after_a_prompt_was_registered() {
 #[test]
 fn a_pending_prompt_can_be_classified_from_the_shell() {
     let f = Fixture::new("intent-cli");
-    assert!(Command::new("git").arg("init").arg("-q").arg(&f.project).status().unwrap().success());
+    assert!(
+        Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .arg(&f.project)
+            .status()
+            .unwrap()
+            .success()
+    );
     let context = f.hook(json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":f.project,"prompt":"what does this do?"}));
     assert!(context.contains("supervisor intent apply"), "{context}");
     let store: Value =
-        serde_json::from_str(&fs::read_to_string(f.state_root().join("intents.json")).unwrap()).unwrap();
+        serde_json::from_str(&fs::read_to_string(f.state_root().join("intents.json")).unwrap())
+            .unwrap();
     let (id, event) = store["events"].as_object().unwrap().iter().next().unwrap();
     let proposal = json!({"event_id":id,"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],"action":"discussion"});
     let command = format!("supervisor intent apply --proposal '{proposal}'");
@@ -251,12 +282,60 @@ fn a_pending_prompt_can_be_classified_from_the_shell() {
         f.hook(json!({"hook_event_name":"PreToolUse","session_id":"s1","cwd":f.project,"tool_use_id":tool_use,
             "tool_name":"Bash","tool_input":{"command":command}}))
     };
-    assert!(!pre(&command, "t1").contains("deny"), "the proposal command was refused");
+    assert!(
+        !pre(&command, "t1").contains("deny"),
+        "the proposal command was refused"
+    );
     assert!(pre(&format!("{command}; touch x"), "t2").contains("deny"));
-    let applied = f.command().args(["intent", "apply", "--project"]).arg(&f.project)
-        .args(["--proposal", &proposal.to_string()]).output().unwrap();
-    assert!(applied.status.success(), "{}", String::from_utf8_lossy(&applied.stderr));
+    let applied = f
+        .command()
+        .args(["intent", "apply", "--project"])
+        .arg(&f.project)
+        .args(["--proposal", &proposal.to_string()])
+        .output()
+        .unwrap();
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
     assert_eq!(value(applied)["action"], "discussion");
     let stop = f.hook(json!({"hook_event_name":"Stop","session_id":"s1","cwd":f.project,"stop_hook_active":false}));
     assert!(!stop.contains("intent_apply"), "{stop}");
+}
+
+/// F11e: refusals before any task exists are journaled with their reason.
+#[test]
+fn prompt_gate_refusals_are_journaled() {
+    let f = Fixture::new("journal-refusals");
+    assert!(
+        Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .arg(&f.project)
+            .status()
+            .unwrap()
+            .success()
+    );
+    f.hook(json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":f.project,"prompt":"edit things"}));
+    let denied = f.hook(
+        json!({"hook_event_name":"PreToolUse","session_id":"s1","cwd":f.project,"tool_use_id":"w1",
+        "tool_name":"Bash","tool_input":{"command":"touch x"}}),
+    );
+    assert!(denied.contains("deny"), "{denied}");
+    let blocked = f.hook(json!({"hook_event_name":"Stop","session_id":"s1","cwd":f.project,"stop_hook_active":false}));
+    assert!(blocked.contains("block"), "{blocked}");
+    let journal = fs::read_to_string(f.state_root().join("events.jsonl")).unwrap_or_default();
+    let lines: Vec<Value> = journal
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    for (event, kind) in [("PreToolUse", "deny"), ("Stop", "block")] {
+        assert!(
+            lines.iter().any(|l| l["event"] == event
+                && l["decision"]["kind"] == kind
+                && l["reason"].as_str().is_some_and(|r| r.contains("GATE"))),
+            "no journaled {event} {kind} in {journal}"
+        );
+    }
 }

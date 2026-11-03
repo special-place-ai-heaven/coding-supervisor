@@ -326,14 +326,74 @@ fn unclassified_stop(payload: &Value, reason: &str) -> Decision {
 }
 
 pub fn handle(payload: &Value, env: &mut Env) -> Decision {
+    JOURNAL.set(Journal::StateUnproven);
     match env.level.level {
         Level::Off => protection(payload, env).unwrap_or(Decision::None),
-        Level::Lite => protection(payload, env).unwrap_or_else(|| match judge(payload, env) {
-            Decision::Block(text) | Decision::Deny(text) => Decision::System(text),
-            other => other,
-        }),
-        Level::Full | Level::Ultra => judge(payload, env),
+        Level::Lite => match protection(payload, env) {
+            Some(denied) => journal_refusal(payload, env, denied),
+            None => {
+                let decision = judge(payload, env);
+                match journal_refusal(payload, env, decision) {
+                    Decision::Block(text) | Decision::Deny(text) => Decision::System(text),
+                    other => other,
+                }
+            }
+        },
+        Level::Full | Level::Ultra => {
+            let decision = judge(payload, env);
+            journal_refusal(payload, env, decision)
+        }
     }
+}
+
+/// Where this hook call stands with its events.jsonl line.
+#[derive(Clone, Copy, PartialEq)]
+enum Journal {
+    /// The state root is not yet proven to belong to this project: write nothing.
+    StateUnproven,
+    /// The state root was prepared for this project and has the current layout: a refusal
+    /// may be journaled.
+    StateReady,
+    /// `handle_inner` already wrote this call's line.
+    Written,
+}
+
+thread_local! {
+    static JOURNAL: std::cell::Cell<Journal> = const { std::cell::Cell::new(Journal::StateUnproven) };
+}
+
+/// F11e: a refusal decided before the task gate (prompt gate, guard, policy) still gets its
+/// events.jsonl line, written only under a free state lock: a busy state stays untouched, and a
+/// lost line keeps the refusal, because it must not open the gate.
+fn journal_refusal(payload: &Value, env: &Env, decision: Decision) -> Decision {
+    if JOURNAL.get() != Journal::StateReady
+        || !matches!(decision, Decision::Deny(_) | Decision::Block(_))
+    {
+        return decision;
+    }
+    let trace = Trace {
+        level: Some(env.level.level),
+        level_source: Some(env.level.source),
+        ..Trace::default()
+    };
+    let line = journal::line(
+        payload,
+        env.state_location,
+        (env.clock)(),
+        decision.to_json(),
+        &[],
+        &trace,
+    );
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(env.state_dir.join("state.lock"));
+    if let Ok(lock) = lock
+        && lock.try_lock().is_ok()
+    {
+        let _ = state::append_line(&env.state_dir.join("events.jsonl"), &line);
+    }
+    decision
 }
 
 /// The PreToolUse refusals that hold at every level: the gate's own state and the configured
@@ -367,6 +427,10 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
             "Stop" | "SubagentStop" => Decision::Block(format!("GATE: state unavailable: {what}")),
             _ => fail_open(&what),
         };
+    }
+    // Only a current-layout root takes refusal lines; legacy state stays untouched until migrated.
+    if root.join("active.json").exists() || root.join("intents.json").exists() {
+        JOURNAL.set(Journal::StateReady);
     }
     // Legacy/import fixtures with an explicit root contract keep their original hook
     // lifecycle. Any task pointer or intent state opts into prompt-bound activation.
@@ -684,6 +748,7 @@ fn handle_inner(payload: &Value, env: &mut Env, observed: Result<Candidate, Stri
         &reasons,
         &trace,
     );
+    JOURNAL.set(Journal::Written);
     match state::append_line(&env.state_dir.join("events.jsonl"), &line) {
         Ok(()) => decision,
         Err(what) => fail_open(&format!("events journal not written: {what}")),

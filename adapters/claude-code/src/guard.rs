@@ -81,8 +81,8 @@ fn level_command(payload: &Value) -> Option<String> {
         let program = program.strip_suffix(".exe").unwrap_or(program);
         let sets_level = w[1] == "level" && Level::parse(w[2]).is_some();
         // A person's escapes and contracts; an agent could reset its own budget or skip the floor.
-        let operator = w[1] == "task"
-            && matches!(w[2], "reset-rounds" | "amend-floor" | "start" | "next");
+        let operator =
+            w[1] == "task" && matches!(w[2], "reset-rounds" | "amend-floor" | "start" | "next");
         (program.ends_with("supervisor") && (sets_level || operator))
             .then(|| format!("supervisor {} {}", w[1], w[2]))
     })
