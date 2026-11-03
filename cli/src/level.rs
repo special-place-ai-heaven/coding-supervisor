@@ -13,7 +13,9 @@ fn env(name: &str) -> Option<String> {
 }
 
 pub fn run(args: &[String]) -> Result<(), Failure> {
+    // `status` shows the mode like the bare command (M3: the plugin's /supervisor status).
     let (word, rest) = match args.split_first() {
+        Some((word, rest)) if word == "status" => (None, rest),
         Some((word, rest)) if !word.starts_with("--") => (Some(word.as_str()), rest),
         _ => (None, args),
     };

@@ -718,3 +718,15 @@ fn modes_have_new_names_and_old_names_still_work() {
     fs::write(f.state_root().join("level"), "ultra\n").unwrap();
     assert_eq!(stdout(&f.level(&[])), "level: strict (project)\n");
 }
+
+/// M3: `supervisor level status` shows the mode like the bare command, so the plugin's
+/// `/supervisor status` can pass its argument straight through.
+#[test]
+fn level_status_shows_the_mode() {
+    let f = Fixture::new("level-status");
+    let out = f.level(&["status"]);
+    assert_eq!(
+        (out.status.code(), stdout(&out)),
+        (Some(0), "level: enforce (default)\n")
+    );
+}

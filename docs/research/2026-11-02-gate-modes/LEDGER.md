@@ -82,12 +82,12 @@ configs hold a versioned binary path; unverified here, see X4).
 
 | ID | Item | Crit | Depends on | Status |
 |---|---|---|---|---|
-| M1 | Modes `off`, `audit`, `enforce`, `strict`; `lite`, `full`, `ultra` stay accepted as aliases; journals and status print the new names. | P1 | Wave 2 (Stop code settles first) | todo |
-| M2 | Requested vs effective mode: a mode the harness cannot enforce runs as `audit` and says so in status and every journal line. Absorbs F15 (MCP answers say `answer_authority`, task says its enforcement). | P1 | M1 | todo |
-| M3 | `/supervisor <mode>` and `/supervisor status` in the plugin, user-invoked only. | P1 | M1 | todo |
-| M4 | One-step plugin setup: the plugin also starts the MCP server. First find why `1ea1aad` left it out ("F1"); drop this row if the reason holds. | P2 | M3 | todo |
+| M1 | Modes `off`, `audit`, `enforce`, `strict`; `lite`, `full`, `ultra` stay accepted as aliases; journals and status print the new names. | P1 | Wave 2 (Stop code settles first) | done (wave 4, PR feat/modes) |
+| M2 | Requested vs effective mode: a mode the harness cannot enforce runs as `audit` and says so in status and every journal line. Absorbs F15 (MCP answers say `answer_authority`, task says its enforcement). | P1 | M1 | done (wave 4, PR feat/modes) |
+| M3 | `/supervisor <mode>` and `/supervisor status` in the plugin, user-invoked only. | P1 | M1 | done (wave 4, PR feat/modes) |
+| M4 | One-step plugin setup: the plugin also starts the MCP server. First find why `1ea1aad` left it out ("F1"); drop this row if the reason holds. | P2 | M3 | dropped (the reason holds: Claude Code names a plugin server's tools `mcp__plugin_coding-supervisor_supervisor__<tool>`, but the gate's pre-registration allowlist, the skills and install's permission rule expect `mcp__supervisor__<tool>`; a plugin-served server would bring back the F19 lock-out. One-step setup needs name-agnostic tool matching first) |
 | F13b | `task start` warns that `forbidden_effects` are not enforced (owner's ruling: LINUS checks them in review until M5). | P2 | – | done (wave 3b, PR fix/field-followups) |
-| K2 | MCP `accept_try` and `verdict` must not disagree: asserted-only receipts cannot reach `ready_for_review` where `verdict` would fail. | P1 | M2 | todo |
+| K2 | MCP `accept_try` and `verdict` must not disagree: asserted-only receipts cannot reach `ready_for_review` where `verdict` would fail. | P1 | M2 | done (wave 4, PR feat/modes) |
 
 ## Wave 5: minor 0.7.0, what `strict` adds
 
