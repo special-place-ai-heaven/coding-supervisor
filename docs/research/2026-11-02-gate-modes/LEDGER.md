@@ -93,11 +93,11 @@ configs hold a versioned binary path; unverified here, see X4).
 
 | ID | Item | Crit | Depends on | Status |
 |---|---|---|---|---|
-| K6 | A failing-before-fix receipt binds to the task's starting candidate and stays valid after the fix is committed. | P1 | – | todo |
-| M5 | `strict`: typed `forbidden_effects` (`deny_paths`, `deny_git`, `deny_argv_prefix`) compiled into PreToolUse denials for the active task (F13a). | P1 | M1, F13b | todo |
-| M6 | `strict`: optional per-criterion `min_tests`; a run satisfies it only when the parsed jest/cargo/pytest summary shows enough passed tests (F14). Owner: LINUS confirms counts until then. | P1 | M1 | todo |
-| M7 | `strict`: a bug fix needs the reported failure observed failing on the starting candidate, then passing on the current one (C1 then C2). How a task is marked as a bug fix is open. | P1 | M1, K6 | todo |
-| M8 | Live Claude Code run of every mode with only the plugin installed. | P1 | M1–M7 | todo |
+| K6 | A failing-before-fix receipt binds to the task's starting candidate and stays valid after the fix is committed. | P1 | – | done (wave 5, PR feat/strict) |
+| M5 | `strict`: typed `forbidden_effects` (`deny_paths`, `deny_git`, `deny_argv_prefix`) compiled into PreToolUse denials for the active task (F13a). | P1 | M1, F13b | done (wave 5, PR feat/strict) |
+| M6 | `strict`: optional per-criterion `min_tests`; a run satisfies it only when the parsed jest/cargo/pytest summary shows enough passed tests (F14). Owner: LINUS confirms counts until then. | P1 | M1 | done (wave 5, PR feat/strict) |
+| M7 | `strict`: a bug fix needs the reported failure observed failing on the starting candidate, then passing on the current one (C1 then C2). How a task is marked as a bug fix is open. | P1 | M1, K6 | done (wave 5, PR feat/strict); waiting (owner: confirm the default that a task is a bug fix when its contract has a mandatory `baseline_reproduces_reported_failure` criterion; the alternative is a contract or proposal field such as `"kind": "bug_fix"`) |
+| M8 | Live Claude Code run of every mode with only the plugin installed. | P1 | M1–M7 | waiting (owner: a live Claude Code run of every mode with only the plugin installed spends your Claude quota; it also settles whether the plugin command's `!` lines pass through the PreToolUse hooks. Proposed: run it when you say so, one short scripted task per mode) |
 
 ## Unscheduled (P2 and P3)
 
