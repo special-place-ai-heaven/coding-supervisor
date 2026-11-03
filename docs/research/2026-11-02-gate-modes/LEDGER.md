@@ -13,6 +13,25 @@ Criticality:
 
 Status: `todo`, `doing`, `done (<commit>)`, `dropped (<why>)`.
 
+## Work loop (owner, 2026-11-03: "orchestrate the remaining work in the correct order until all is complete")
+
+The remaining rows run as a self-paced `/loop` in this session, dogfooded: 0.5.5 is installed globally and
+into this checkout (`supervisor install --harness claude-code --project .`; `.claude/` and `.mcp.json` stay
+untracked), so the gate supervises its own development.
+
+- **Row loop** (one row per pass): read the code the row touches; write the test and watch it fail
+  (Terminal Commander, `CARGO_TARGET_DIR=C:\Target\coding-supervisor\main\target`); smallest change; watch
+  it pass; commit with a conventional subject; set the row to `done (<commit>)`.
+- **Wave loop** (one release per wave): fmt, clippy and the workspace tests once on the branch; PR; CI green;
+  merge; release-please PR merges; watch `release.yml` and npm `latest`; `npm install -g` the new version
+  and keep dogfooding on it.
+- **Stop rule**: a row that needs an owner decision is set to `waiting (owner: <question>)` with a
+  proposed default and the loop moves on; the loop stops when every row is done, dropped or waiting.
+
+Order: wave 3b (K13, K14, F19, F11e, F13b, K4 with the P2/P3 rows and H2, released together as
+0.6.0 because it adds features), wave 4 (0.7.0: M1, M2, K2, M3, M4), wave 5 (0.8.0: K6, M5, M6,
+M7, M8).
+
 ## Wave 1: patch 0.5.2, unblock the pre-intent gate (F11)
 
 | ID | Item | Crit | Depends on | Status |
@@ -21,7 +40,7 @@ Status: `todo`, `doing`, `done (<commit>)`, `dropped (<why>)`.
 | F11b | Before the prompt is classified, allow `ToolSearch` and a narrow set of single read-only commands (`git status/log/diff/show/rev-parse`, `git branch --show-current`, `ls`, `pwd`, `supervisor status`, `supervisor --help`; no pipes, redirects, chaining or substitution; no `--output`). Guard and policy still apply. | P0 | – | done (e8132b3) |
 | F11c | An unknown `intent_apply` action is refused as unknown, with the seven valid actions, before any other check. | P1 | – | done (e8132b3) |
 | F11d | The UserPromptSubmit context names the valid actions and gives the ready-to-copy next call (`continue` with the task id when a task is active; `start` with a contract, or `discussion`, when not). | P1 | – | done (e8132b3) |
-| F11e | Every PreToolUse denial and Stop block is journaled to `events.jsonl` with its reason. | P2 | – | todo |
+| F11e | Every PreToolUse denial and Stop block is journaled to `events.jsonl` with its reason. | P2 | – | done (wave 3b, PR fix/field-followups) |
 
 ## Wave 2: patch 0.5.3, repair rounds and background runs (F12, F16)
 
@@ -51,9 +70,13 @@ configs hold a versioned binary path; unverified here, see X4).
 | ID | Item | Crit | Depends on | Status |
 |---|---|---|---|---|
 | F10a | Discover npm checks in direct subfolders (skip `node_modules` and hidden folders) when the root has no package.json, as `npm --prefix <dir> run <script>` with ids like `AUTO_NPM_TEST_BACKEND`; `npm_definitions` (`<dir>/<script>`) and entry points learn the `--prefix` form. Owner, 2026-11-02: discovered commands are amendable by a person through `task amend-floor` (stored as `floor_overrides`), so a heavy suite can carry `--maxWorkers=2`. Workspace globs and deeper folders are not read yet. | P1 | – | done (wave 3 commit) |
-| F18 | A check kept from a cancelled task's contract (stored floor or active contract) is added to the floor only when the discovered floor has no check with that id. Before, a repo whose discovery found only `AUTO_DIFF` got two `AUTO_DIFF` entries with different check labels, so no proposal could start a task. The floor refusal now names every field that differs (command, check label, mandatory) instead of only the commands. Field report on 0.5.3, `tp-sched-01`, 2026-11-02. | P0 | – | done (wave 3 commit) |
+| F18 | A check kept from a cancelled task's contract (stored floor or active contract) is added to the floor only when the discovered floor has no check with that id. Before, a repo whose discovery found only `AUTO_DIFF` got two `AUTO_DIFF` entries with different check labels, so no proposal could start a task. The floor refusal now names every field that differs (command, check label, mandatory) instead of only the commands. Field report on 0.5.3, `tp-sched-01`, 2026-11-02. | P0 | – | done (a5fbc3a, 0.5.5; owner confirmed fixed in the field 2026-11-03) |
 | F10b | "No checks found" becomes final: the error says `not retryable` and tells the model to stop and tell the user. It does not name the operator-contract path, because `task start` is refused once a prompt has been registered (see K13). | P1 | F11c (same error style) | done (wave 3 commit) |
-| K4 | `init` drafts checks from the same discovery, not a Rust draft in an npm repo. | P2 | F10a | todo |
+| F19 | Installing the hooks into a running Claude Code session locks it: UserPromptSubmit demands `intent_apply`, but Claude Code connects a project's `.mcp.json` server only at session start, so no proposal, no write and no uninstall is possible; a person must run `supervisor level off` from outside. Found dogfooding 0.5.5 on this repository, 2026-11-03. Fix: the same proposal through the CLI (`supervisor intent apply`), allowed from the agent's shell while a prompt is pending, and named in the prompt context. | P0 | – | done (wave 3b, PR fix/field-followups) |
+| F20 | A check whose command has a `|` inside quotes (a search pattern such as `'xdescribe|fdescribe'`) was treated as a shell pipeline whose exit code cannot be trusted: the gate saw it start and never recorded its finish, so the check never cleared. Same for a `|` inside one argv element of a program that is not a shell. Now only a `|` outside quotes counts (a line with an escaped quote or a backtick keeps the old any-`|` rule, since Bash and PowerShell escape differently), and argv counts only for a shell's script argument. Field report on 0.5.5 from JEZ, TestPilot schedule rework check C7, 2026-11-03; the run there split C7 into four checks without `|` as a workaround. | P1 | – | done (wave 3b, PR fix/field-followups) |
+| K15 | The person-only command guard matches the words anywhere in a shell command, including inside a quoted script or commit message, so an agent's edit script that mentions the command is refused. Conservative; keep unless it blocks real work. | P3 | – | dropped (kept as is: refusing too much here only costs an agent a script file, refusing too little would let it reset its own budget) |
+| K16 | `status` coverage still says `harness cap 8` (F16 removed it from refusals only). | P3 | – | done (wave 3b, PR fix/field-followups) |
+| K4 | `init` drafts checks from the same discovery, not a Rust draft in an npm repo. | P2 | F10a | done (wave 3b, PR fix/field-followups) |
 
 ## Wave 4: minor 0.6.0, modes (from PROPOSAL.md)
 
@@ -63,7 +86,7 @@ configs hold a versioned binary path; unverified here, see X4).
 | M2 | Requested vs effective mode: a mode the harness cannot enforce runs as `audit` and says so in status and every journal line. Absorbs F15 (MCP answers say `answer_authority`, task says its enforcement). | P1 | M1 | todo |
 | M3 | `/supervisor <mode>` and `/supervisor status` in the plugin, user-invoked only. | P1 | M1 | todo |
 | M4 | One-step plugin setup: the plugin also starts the MCP server. First find why `1ea1aad` left it out ("F1"); drop this row if the reason holds. | P2 | M3 | todo |
-| F13b | `task start` warns that `forbidden_effects` are not enforced (owner's ruling: LINUS checks them in review until M5). | P2 | – | todo |
+| F13b | `task start` warns that `forbidden_effects` are not enforced (owner's ruling: LINUS checks them in review until M5). | P2 | – | done (wave 3b, PR fix/field-followups) |
 | K2 | MCP `accept_try` and `verdict` must not disagree: asserted-only receipts cannot reach `ready_for_review` where `verdict` would fail. | P1 | M2 | todo |
 
 ## Wave 5: minor 0.7.0, what `strict` adds
@@ -80,22 +103,22 @@ configs hold a versioned binary path; unverified here, see X4).
 
 | ID | Item | Crit | Depends on | Status |
 |---|---|---|---|---|
-| X4 | Generated configs hold absolute binary paths; check whether an npm upgrade leaves hooks on the old binary. `install.rs:189` records `current_exe()`. | P2 | – (needed for gate R1) | todo |
-| K13 | `supervisor task start` is refused once `intents.json` exists, so a person cannot supply an operator contract after the first prompt. Found while writing F10b. | P1 | – | todo |
-| K14 | `intent_apply` takes the contract inline only, so the model must retype every command from a contract file; accept a contract path, read through the same validation. Field report, 2026-11-02. | P2 | – | todo |
-| K3 | `install --dry-run` reports writes into the checkout, including a tracked file. | P2 | – | todo |
-| K9 | State location differs with and without `SUPERVISOR_STATE_DIR` (`env` vs `home` rule), so agents see different task namespaces. | P2 | – | todo |
-| K7 | `task start` prints `queued` while `task_state` says `preparing`. | P3 | – | todo |
-| K8 | `recorded_at` truncated to seconds; README promises milliseconds. | P3 | – | todo |
-| K5 | `init` without `--output` writes into the repo root. | P3 | – | todo |
-| K11 | `supervisor --help` does not mention the MCP tools or the receipt sequence. | P3 | – | todo |
-| K12 | README Install still says 0.1.1; also says the autonomous workflow is unreleased (shipped in 0.2.0). | P3 | – | todo |
-| X1 | `supervisor --version`. | P3 | – | todo |
-| X2 | Alias bin `coding-supervisor` or a clearer install message. | P3 | – | todo |
-| X3 | `verdict` outside a git repo prints a git error for `no_active_task`. | P3 | – | todo |
-| X5 | Codex trust step ignores `CODEX_HOME`. | P3 | – | todo |
-| X6 | README: criteria design advice from the report's environment note (no parallel heavy checks, cgroup over `prlimit --as`, `jest <files> -t`). | P3 | – | todo |
-| X7 | State backup before upgrade. | P3 | – | todo |
+| X4 | Generated configs hold absolute binary paths; check whether an npm upgrade leaves hooks on the old binary. `install.rs:189` records `current_exe()`. | P2 | – (needed for gate R1) | done (no change: the recorded path `…/node_modules/coding-supervisor-windows-x64/bin/supervisor.exe` carries no version; `npm install -g coding-supervisor@0.5.5` over 0.5.2 replaced the binary in place and `status` reported 0.5.5 from that path, 2026-11-03; owner confirmed 0.5.5 behaviour in the field) |
+| K13 | `supervisor task start` is refused once `intents.json` exists, so a person cannot supply an operator contract after the first prompt. Found while writing F10b. | P1 | – | done (wave 3b, PR fix/field-followups) |
+| K14 | `intent_apply` takes the contract inline only, so the model must retype every command from a contract file; accept a contract path, read through the same validation. Field report, 2026-11-02. | P2 | – | done (wave 3b, PR fix/field-followups) |
+| K3 | `install --dry-run` reports writes into the checkout, including a tracked file. | P2 | – | done (wave 3b, PR fix/field-followups) |
+| K9 | State location differs with and without `SUPERVISOR_STATE_DIR` (`env` vs `home` rule), so agents see different task namespaces. | P2 | – | done (wave 3b, PR fix/field-followups) |
+| K7 | `task start` prints `queued` while `task_state` says `preparing`. | P3 | – | dropped (not a bug: a task is `queued` until the gate first opens it, and `task_state` is what opens it, so it then reads `preparing`; the core moves Queued to Preparing on purpose) |
+| K8 | `recorded_at` truncated to seconds; README promises milliseconds. | P3 | – | done (wave 3b, PR fix/field-followups) |
+| K5 | `init` without `--output` writes into the repo root. | P3 | – | dropped (documented: the draft must be editable by the person and readable by the agent, and the state directory is closed to agents; `--output` chooses another path) |
+| K11 | `supervisor --help` does not mention the MCP tools or the receipt sequence. | P3 | – | done (wave 3b, PR fix/field-followups) |
+| K12 | README Install still says 0.1.1; also says the autonomous workflow is unreleased (shipped in 0.2.0). | P3 | – | done (wave 3b, PR fix/field-followups) |
+| X1 | `supervisor --version`. | P3 | – | done (wave 3b, PR fix/field-followups) |
+| X2 | Alias bin `coding-supervisor` or a clearer install message. | P3 | – | done (wave 3b, PR fix/field-followups) |
+| X3 | `verdict` outside a git repo prints a git error for `no_active_task`. | P3 | – | done (wave 3b, PR fix/field-followups) |
+| X5 | Codex trust step ignores `CODEX_HOME`. | P3 | – | done (wave 3b, PR fix/field-followups) |
+| X6 | README: criteria design advice from the report's environment note (no parallel heavy checks, cgroup over `prlimit --as`, `jest <files> -t`). | P3 | – | done (wave 3b, PR fix/field-followups) |
+| X7 | State backup before upgrade. | P3 | – | waiting (owner: snapshot state on upgrade? npm upgrades never run our code, so it would need a postinstall script, which many setups disable; proposed default: drop, since state formats migrate in place through `task migrate`) |
 | K1 | No non-Claude path yields an observed receipt. Design limit of MCP; recorded, no fix planned. | – | – | dropped (by design) |
 
 ## Housekeeping
@@ -103,4 +126,4 @@ configs hold a versioned binary path; unverified here, see X4).
 | ID | Item | Depends on | Status |
 |---|---|---|---|
 | H1 | Archive PR #2 (`feat/autonomous-gate`, head `120a0ed`): push tag `archive/autonomous-gate`, close with a note pointing here. Owner approved 2026-11-02. | – | done (tag pushed, #2 closed) |
-| H2 | Refresh stale lines in `CLAUDE.md` (branch `phase-a-installable`, "uncommitted" work now on main). | Wave 1 | todo |
+| H2 | Refresh stale lines in `CLAUDE.md` (branch `phase-a-installable`, "uncommitted" work now on main). | Wave 1 | done (wave 3b, PR fix/field-followups) |

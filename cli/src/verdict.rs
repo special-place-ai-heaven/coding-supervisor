@@ -350,15 +350,15 @@ fn is_lower_hex(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// The live candidate, or why it is unknown; the free-text cause goes to stderr.
-fn observe_head(project: &Path) -> Head {
+/// The live candidate, or why it is unknown with the free-text cause for stderr.
+fn observe_head(project: &Path) -> (Head, Option<String>) {
     let (reason, why) = match (GitCandidate {
         cwd: project.to_path_buf(),
     })
     .observe_git()
     {
         Ok(c) if is_lower_hex(&c.id.base_commit, 40) && is_lower_hex(&c.id.dirty_digest, 64) => {
-            return Head::Known(c.id);
+            return (Head::Known(c.id), None);
         }
         Ok(c) => (
             HeadReason::HeadUnparseable,
@@ -373,8 +373,7 @@ fn observe_head(project: &Path) -> Head {
             (HeadReason::WorktreeUnreadable, e.to_string())
         }
     };
-    let _ = writeln!(io::stderr(), "verdict: head unknown: {why}");
-    Head::Unknown(reason)
+    (Head::Unknown(reason), Some(why))
 }
 
 fn short(sha: &str) -> &str {
@@ -436,9 +435,18 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         .map_err(|e| Failure::Error(format!("verdict: project state not readable: {e}")))?;
     let stamp = level::in_effect(&root, level::config_dir(&env).as_deref());
     // One HEAD snapshot, taken before any receipt is read, is what every receipt is judged by.
-    let head = observe_head(&project);
+    let (head, why) = observe_head(&project);
     let task = lifecycle::active_task(&root)
         .map_err(|e| Failure::Error(format!("verdict: active task pointer invalid: {e}")))?;
+    // X3: with no active task that is the answer; the unknown head is only a side note.
+    if let Some(why) = why {
+        let lead = if task.is_some() {
+            "verdict: head unknown"
+        } else {
+            "verdict: no active task (head also unknown)"
+        };
+        let _ = writeln!(io::stderr(), "{lead}: {why}");
+    }
     if let Some(wanted) = flags.value("--task")
         && task.as_ref().is_none_or(|t| t.task_id != wanted)
     {

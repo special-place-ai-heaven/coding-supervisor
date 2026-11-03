@@ -29,6 +29,11 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         println!("{report}");
     } else {
         println!("{}", human(&report));
+        if let Some(other) = report["other_state"].as_str() {
+            println!(
+                "warning: another state directory for this project exists at {other}; a hook, MCP server or command started without SUPERVISOR_STATE_DIR uses it and sees different tasks"
+            );
+        }
     }
     Ok(())
 }
@@ -304,13 +309,10 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
     };
     let completion: Vec<&str> = [
         ("PreToolUse", "PreToolUse denial"),
-        (
-            "Stop",
-            "Stop refusal (adapter 3 refusal cap; harness cap 8)",
-        ),
+        ("Stop", "Stop refusal (at most 3 per turn, then released)"),
         (
             "SubagentStop",
-            "SubagentStop refusal (adapter 3 refusal cap; harness cap 8)",
+            "SubagentStop refusal (at most 3 per turn, then released)",
         ),
     ]
     .into_iter()
@@ -327,6 +329,7 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
     );
     json!({
         "schema_version":1,"harness":harness,"project":project,"project_state":root,"location_rule":rule,
+        "other_state":supervisor_claude_code::location::shadow_state_dir(project, &|key| std::env::var(key).ok()),
         "reporting_binary":{"path":std::env::current_exe().ok(),"version":env!("CARGO_PKG_VERSION"),"running":true},
         "registration":configuration(project,harness),"hooks":hooks,
         "connection":connection(root,harness),

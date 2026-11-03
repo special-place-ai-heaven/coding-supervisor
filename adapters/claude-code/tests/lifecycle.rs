@@ -529,3 +529,20 @@ fn reset_rounds_reopens_only_an_exhausted_task_and_journals_the_reason() {
     assert_eq!(last["reason"], "agent looped on a flaky check");
     assert_eq!(last["rounds_before"], 2);
 }
+
+/// F13b: forbidden effects are recorded but not enforced, and starting a task says so.
+#[test]
+fn start_warns_that_forbidden_effects_are_not_enforced() {
+    let d = dir();
+    let plain = lifecycle::start(&d.0, &contract(), false, None, None).unwrap();
+    assert!(plain.get("warnings").is_none(), "{plain}");
+    let id = plain["task_id"].as_str().unwrap().to_owned();
+    let mut with_effects = contract();
+    with_effects["forbidden_effects"] = json!(["push to main"]);
+    let next = lifecycle::start(&d.0, &with_effects, true, Some("cancelled"), Some(&id)).unwrap();
+    let warning = next["warnings"][0].as_str().unwrap_or_default();
+    assert!(
+        warning.contains("forbidden_effects") && warning.contains("not enforced"),
+        "{next}"
+    );
+}

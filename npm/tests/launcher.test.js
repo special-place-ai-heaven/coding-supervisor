@@ -211,3 +211,9 @@ test("launcher maps spawn failures to process-style error codes", () => {
   assert.equal(launcher.main([]), 126);
   assert.match(errors.join("\n"), /failed to spawn/);
 });
+
+// X2: `coding-supervisor` is the package name, so it is also a command for the same launcher.
+test("the package name is an alias for the supervisor command", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+  assert.equal(pkg.bin["coding-supervisor"], pkg.bin.supervisor);
+});

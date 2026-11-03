@@ -121,9 +121,13 @@ pub fn start(
     requested: Option<&str>,
     expected: Option<&str>,
 ) -> Result<Value, String> {
+    // A person's contract may start a task after prompts were registered (K13); the guard keeps
+    // agents from running this command, so they still go through a floor-checked proposal.
     let tx = Transaction::open(root)?;
-    if root.join("intents.json").exists() {
-        return Err("prompt-managed lifecycle requires an event-bound proposal".to_owned());
+    if let Some(active) = active_task(root)?
+        && crate::autonomy::is_autonomous_task(&active.dir)?
+    {
+        return Err("autonomous tasks require a prompt-bound cancellation proposal".to_owned());
     }
     let (response, writes) = plan_start(root, contract, next, requested, expected)?;
     tx.commit(writes)?;
@@ -221,10 +225,14 @@ pub(crate) fn plan_start(
         PathBuf::from("active.json"),
         format!("{}\n", json!({"schema":2,"task_id":id})),
     ));
-    Ok((
-        json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"state":"queued","recovery_of":recovery_of}),
-        writes,
-    ))
+    let mut response = json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"state":"queued","recovery_of":recovery_of});
+    if !parsed.forbidden_effects.is_empty() {
+        // F13b: until strict mode compiles them into denials, a reviewer checks them.
+        response["warnings"] = json!([
+            "forbidden_effects are recorded but not enforced: no tool call is refused for them; a reviewer must check them"
+        ]);
+    }
+    Ok((response, writes))
 }
 
 pub fn deactivate(root: &Path, expected: &str, requested: Option<&str>) -> Result<Value, String> {

@@ -685,6 +685,11 @@ fn agents_cannot_reset_rounds_or_amend_the_floor() {
             "mcp__terminal_commander__run_and_watch",
             json!({"argv":["supervisor","task","reset-rounds","--task","t","--reason","x"]}),
         ),
+        // A person's contract skips the prompt's floor; an agent must propose instead.
+        (
+            "Bash",
+            json!({"command":"supervisor task start --contract c.json"}),
+        ),
     ];
     for (i, (tool, input)) in attempts.into_iter().enumerate() {
         let decision = f.tool(&format!("op{i}"), tool, input.clone());

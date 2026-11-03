@@ -23,7 +23,8 @@
         "prompt_hash": {"type": "string"},
         "action": {"type": "string", "enum": ["discussion", "start", "continue", "revise", "pause", "resume", "cancel"]},
         "task_id": {"type": "string"},
-        "contract": {"type": "object", "description": "Required for start and revise; uses the standard task contract shape."}
+        "contract": {"type": "object", "description": "Required for start and revise (or contract_file); uses the standard task contract shape."},
+        "contract_file": {"type": "string", "description": "Instead of contract: a JSON contract file, relative to the project, read and validated as if sent inline."}
       },
       "required": ["event_id", "nonce", "prompt_hash", "action"]
     }

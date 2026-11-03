@@ -95,3 +95,67 @@ fn help_prints_the_usage_to_stdout_and_exits_zero() {
         Some(2)
     );
 }
+
+/// K4: the draft carries the checks the gate would discover, not a Rust draft in an npm repo.
+#[test]
+fn init_drafts_the_discovered_checks() {
+    let root = std::env::temp_dir().join(format!("sup-cli-init-npm-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let (project, state) = (root.join("proj"), root.join("state"));
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("package.json"),
+        r#"{"scripts":{"test":"jest","lint":"eslint ."}}"#,
+    )
+    .unwrap();
+    init(&project, &state);
+    let v: Value = serde_json::from_str(
+        &fs::read_to_string(project.join("supervisor-contract.json")).unwrap(),
+    )
+    .unwrap();
+    let commands: Vec<&str> = v["criteria"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["command"].as_str().unwrap())
+        .collect();
+    assert_eq!(commands, ["npm run test", "npm run lint"]);
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// X1: `--version` names the binary and its version; K11: help names the MCP tools and the order
+/// of a supervised task.
+#[test]
+fn version_and_help_say_what_runs() {
+    let out = Command::new(BIN).arg("--version").output().unwrap();
+    assert!(out.status.success(), "{:?}", out.status);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        format!("supervisor {}", env!("CARGO_PKG_VERSION"))
+    );
+    let help = Command::new(BIN).arg("--help").output().unwrap();
+    let help = String::from_utf8_lossy(&help.stdout);
+    for part in ["intent_apply", "task_state", "receipt"] {
+        assert!(help.contains(part), "{part} missing from help");
+    }
+}
+
+/// X3: with no active task, stderr leads with that answer, not with a git error.
+#[test]
+fn verdict_without_a_task_leads_with_no_active_task() {
+    let root = std::env::temp_dir().join(format!("sup-cli-verdict-nogit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let (project, state) = (root.join("proj"), root.join("state"));
+    fs::create_dir_all(&project).unwrap();
+    let out = Command::new(BIN)
+        .args(["verdict", "--json", "--project"])
+        .arg(&project)
+        .env("SUPERVISOR_STATE_DIR", &state)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("no_active_task"), "{stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.starts_with("verdict: no active task"), "{stderr}");
+    let _ = fs::remove_dir_all(&root);
+}

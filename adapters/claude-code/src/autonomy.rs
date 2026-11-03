@@ -180,6 +180,26 @@ fn npm_packages(project: &Path) -> Result<Vec<(Option<String>, Value)>, String> 
     Ok(packages)
 }
 
+/// K14: read `contract_file` (relative to the project) into `contract`, so the proposal is
+/// validated and replayed exactly as if the contract had been sent inline.
+fn with_contract_file(project: &Path, proposal: &Value, file: &Value) -> Result<Value, String> {
+    let name = file.as_str().ok_or("contract_file must be a string")?;
+    if proposal.get("contract").is_some() {
+        return Err("send contract or contract_file, not both".into());
+    }
+    let path = project.join(name);
+    let text = fs::read_to_string(&path).map_err(|e| format!("contract_file {name}: {e}"))?;
+    let contract: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("contract_file {name} is not valid JSON: {e}"))?;
+    let mut proposal = proposal.clone();
+    let fields = proposal
+        .as_object_mut()
+        .ok_or("proposal must be an object")?;
+    fields.remove("contract_file");
+    fields.insert("contract".into(), contract);
+    Ok(proposal)
+}
+
 /// Add kept criteria to the floor, skipping ids it already has: a discovered check (such as
 /// AUTO_DIFF) stays the only entry under its id, or no proposal could match both.
 fn extend_floor(floor: &mut Vec<Value>, extra: Vec<Value>) {
@@ -192,7 +212,7 @@ fn extend_floor(floor: &mut Vec<Value>, extra: Vec<Value>) {
 
 /// A conservative floor discovered before edits. Unsupported repositories need an explicit
 /// preexisting contract; arbitrary model-selected commands are not a trusted check floor.
-fn repository_floor(project: &Path) -> Result<Vec<Value>, String> {
+pub fn repository_floor(project: &Path) -> Result<Vec<Value>, String> {
     let project = PathBuf::from(project_identity(project)?);
     let mut checks = Vec::new();
     if project.join("Cargo.toml").is_file() {
@@ -1064,6 +1084,14 @@ fn observed_completion(dir: &Path, task_id: &str, project: &Path) -> Result<(), 
 /// Apply once under the existing OS lock and write-ahead transaction. Replayed applications
 /// return their historical response and never reactivate or rebind an archived task.
 pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, String> {
+    let resolved;
+    let proposal = match proposal.get("contract_file") {
+        None => proposal,
+        Some(file) => {
+            resolved = with_contract_file(project, proposal, file)?;
+            &resolved
+        }
+    };
     let id = text(proposal, "event_id")?;
     let tx = Transaction::open(root)?;
     let mut store = load(root)?;

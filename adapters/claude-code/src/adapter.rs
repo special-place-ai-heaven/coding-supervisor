@@ -275,9 +275,37 @@ fn read_only_command(payload: &Value) -> bool {
     )
 }
 
+/// `supervisor intent apply ...` run alone from Bash: the MCP proposal for a session that has no
+/// supervisor MCP server (F19). Shell syntax is allowed only inside single quotes, where Bash
+/// expands nothing; double quotes and backslashes outside them are refused.
+fn proposal_command(payload: &Value) -> bool {
+    if text(payload, "tool_name") != Some("Bash") {
+        return false;
+    }
+    let command = payload["tool_input"]["command"]
+        .as_str()
+        .unwrap_or_default()
+        .trim();
+    let Some(rest) = command.strip_prefix("supervisor intent apply ") else {
+        return false;
+    };
+    let mut quoted = false;
+    for c in rest.chars() {
+        match c {
+            '\'' => quoted = !quoted,
+            _ if quoted => {}
+            ';' | '&' | '|' | '<' | '>' | '$' | '`' | '(' | ')' | '"' | '\\' | '\n' | '\r' => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    !quoted
+}
+
 /// What the pre-intent gate lets through while the current prompt is unclassified.
 fn inspection(payload: &Value) -> bool {
-    read_only_tool(payload) || read_only_command(payload)
+    read_only_tool(payload) || read_only_command(payload) || proposal_command(payload)
 }
 
 /// A pending prompt blocks a stop once; while the harness is already continuing, release it
@@ -298,14 +326,74 @@ fn unclassified_stop(payload: &Value, reason: &str) -> Decision {
 }
 
 pub fn handle(payload: &Value, env: &mut Env) -> Decision {
+    JOURNAL.set(Journal::StateUnproven);
     match env.level.level {
         Level::Off => protection(payload, env).unwrap_or(Decision::None),
-        Level::Lite => protection(payload, env).unwrap_or_else(|| match judge(payload, env) {
-            Decision::Block(text) | Decision::Deny(text) => Decision::System(text),
-            other => other,
-        }),
-        Level::Full | Level::Ultra => judge(payload, env),
+        Level::Lite => match protection(payload, env) {
+            Some(denied) => journal_refusal(payload, env, denied),
+            None => {
+                let decision = judge(payload, env);
+                match journal_refusal(payload, env, decision) {
+                    Decision::Block(text) | Decision::Deny(text) => Decision::System(text),
+                    other => other,
+                }
+            }
+        },
+        Level::Full | Level::Ultra => {
+            let decision = judge(payload, env);
+            journal_refusal(payload, env, decision)
+        }
     }
+}
+
+/// Where this hook call stands with its events.jsonl line.
+#[derive(Clone, Copy, PartialEq)]
+enum Journal {
+    /// The state root is not yet proven to belong to this project: write nothing.
+    StateUnproven,
+    /// The state root was prepared for this project and has the current layout: a refusal
+    /// may be journaled.
+    StateReady,
+    /// `handle_inner` already wrote this call's line.
+    Written,
+}
+
+thread_local! {
+    static JOURNAL: std::cell::Cell<Journal> = const { std::cell::Cell::new(Journal::StateUnproven) };
+}
+
+/// F11e: a refusal decided before the task gate (prompt gate, guard, policy) still gets its
+/// events.jsonl line, written only under a free state lock: a busy state stays untouched, and a
+/// lost line keeps the refusal, because it must not open the gate.
+fn journal_refusal(payload: &Value, env: &Env, decision: Decision) -> Decision {
+    if JOURNAL.get() != Journal::StateReady
+        || !matches!(decision, Decision::Deny(_) | Decision::Block(_))
+    {
+        return decision;
+    }
+    let trace = Trace {
+        level: Some(env.level.level),
+        level_source: Some(env.level.source),
+        ..Trace::default()
+    };
+    let line = journal::line(
+        payload,
+        env.state_location,
+        (env.clock)(),
+        decision.to_json(),
+        &[],
+        &trace,
+    );
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(env.state_dir.join("state.lock"));
+    if let Ok(lock) = lock
+        && lock.try_lock().is_ok()
+    {
+        let _ = state::append_line(&env.state_dir.join("events.jsonl"), &line);
+    }
+    decision
 }
 
 /// The PreToolUse refusals that hold at every level: the gate's own state and the configured
@@ -340,6 +428,10 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
             _ => fail_open(&what),
         };
     }
+    // Only a current-layout root takes refusal lines; legacy state stays untouched until migrated.
+    if root.join("active.json").exists() || root.join("intents.json").exists() {
+        JOURNAL.set(Journal::StateReady);
+    }
     // Legacy/import fixtures with an explicit root contract keep their original hook
     // lifecycle. Any task pointer or intent state opts into prompt-bound activation.
     let legacy_contract = root.join("contract.json").is_file()
@@ -364,7 +456,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                 Decision::Context {
                     event: "UserPromptSubmit",
                     text: format!(
-                        "SUPERVISOR: current prompt requires an intent proposal before mutations. Read-only investigation is available. Call intent_apply with the event identity and a scoped contract or discussion/follow-up intent. Valid actions: discussion|start|continue|revise|pause|resume|cancel. {next} {intent}"
+                        "SUPERVISOR: current prompt requires an intent proposal before mutations. Read-only investigation is available. Call intent_apply with the event identity and a scoped contract or discussion/follow-up intent. Valid actions: discussion|start|continue|revise|pause|resume|cancel. {next} Without the supervisor MCP tools, run the same call from the Bash tool, alone: supervisor intent apply --proposal '<the call as JSON>' (a contract may also be named as \"contract_file\": a JSON file in the project). {intent}"
                     ),
                 }
             }
@@ -431,6 +523,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
         // Inspection and proposal routes do not need to open or advance the task gate.
         if root.join("intents.json").exists()
             && (read_only_tool(payload)
+                || proposal_command(payload)
                 || (read_only_command(payload)
                     && matches!(lifecycle::active_task(&root), Ok(None))))
         {
@@ -655,6 +748,7 @@ fn handle_inner(payload: &Value, env: &mut Env, observed: Result<Candidate, Stri
         &reasons,
         &trace,
     );
+    JOURNAL.set(Journal::Written);
     match state::append_line(&env.state_dir.join("events.jsonl"), &line) {
         Ok(()) => decision,
         Err(what) => fail_open(&format!("events journal not written: {what}")),

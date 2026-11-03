@@ -13,7 +13,7 @@ npm install -g coding-supervisor
 supervisor --help
 ```
 
-Alternatively, download the archive for your platform and its checksums from the [Releases page](https://github.com/special-place-ai-heaven/coding-supervisor/releases), or build from source below. Keep the executable at a stable path: the installer records its path in the harness configuration. Version 0.1.1 is published; see the [release workflow](https://github.com/special-place-ai-heaven/coding-supervisor/actions/runs/41041057353). The later [main CI run](https://github.com/special-place-ai-heaven/coding-supervisor/actions/runs/41041987970) passed on Linux and Windows; it includes a test-fixture fix after the release.
+Alternatively, download the archive for your platform and its checksums from the [Releases page](https://github.com/special-place-ai-heaven/coding-supervisor/releases), or build from source below. Keep the executable at a stable path: the installer records its path in the harness configuration. With npm that path carries no version, so `npm install -g coding-supervisor@<version>` upgrades the binary the hooks already run; `supervisor status --json` shows the running version in `reporting_binary.version`. Releases and their notes are on the [Releases page](https://github.com/special-place-ai-heaven/coding-supervisor/releases) and in `CHANGELOG.md`.
 
 From the project you want to supervise, register your harness:
 
@@ -23,7 +23,7 @@ supervisor install --harness claude-code --project <project>
 supervisor status --project <project> --harness claude-code
 ```
 
-Replace `claude-code` with `codex`, `cursor`, `omp` or `grok` for installation. Follow the manual trust or approval steps printed by the installer. Installation registers the MCP server and two skills; only Claude Code receives supervisor hooks. It does not activate a task. The installer does not stop other processes; if a file is held open, close the harness session and retry. A malformed configuration is not rewritten.
+Replace `claude-code` with `codex`, `cursor`, `omp` or `grok` for installation. Follow the manual trust or approval steps printed by the installer. Claude Code connects a project's MCP server only when a session starts: install before starting the session, or restart it. A session that has the hooks but not the server classifies its prompt from the Bash tool with `supervisor intent apply --proposal '<json>'`. Installation registers the MCP server and two skills; only Claude Code receives supervisor hooks. It does not activate a task. The installer does not stop other processes; if a file is held open, close the harness session and retry. A malformed configuration is not rewritten.
 
 ### Claude Code plugin
 
@@ -62,11 +62,10 @@ One test runs on Windows only (cmd.exe never takes the shim's `node` from the cu
 node --test --test-name-pattern="Windows shim" hooks/supervisor-hook.test.js
 ```
 
-## Ordinary tasks (development candidate)
+## Ordinary tasks
 
-The autonomous workflow in this checkout is not yet a published npm release.
-After installing the candidate integration and reloading the harness, give
-ordinary tasks. The agent interprets the request and proposes a scoped contract;
+The autonomous workflow ships in every release since 0.2.0. After installing
+and starting a new harness session, give ordinary tasks. The agent interprets the request and proposes a scoped contract;
 the supervisor validates it before covered edits. Discussion stays inactive.
 Users do not prepare contracts, choose supervisor commands or write CHECK headers.
 
@@ -138,6 +137,22 @@ supervisor task migrate --project <project> --legacy <old-state-directory>
 
 Migration preserves the source. Each physical worktree has its own state namespace; keep `SUPERVISOR_STATE_DIR` consistent across cooperating processes. For recovery and state locations, see the [operations guide](docs/research/2026-10-30-dogfood-rollout/OPERATIONS.md). Retain evidence when state is corrupt or tampered; rollover is not a tamper reset.
 
+## Designing checks
+
+Each required check runs alone, in the foreground, on the code as it is. Checks that run
+slowly or use a lot of memory decide whether a task can finish at all, so design them for the
+machine they run on:
+
+- Do not require two heavy checks that the agent will run at the same time; a test suite and a
+  browser build together can exhaust memory where either alone passes.
+- Cap a test runner's workers in the command itself (`jest --maxWorkers=2`,
+  `cargo test -- --test-threads=2`); a person can amend a discovered command with `supervisor task amend-floor`.
+- To limit memory, prefer a cgroup limit (`systemd-run --user --scope -p MemoryMax=…`) over
+  `prlimit --as`: an address-space limit is inherited by every child, and Node and Chrome
+  reserve far more address space than they use, so they fail long before memory runs out.
+- A focused check (`jest <files> -t <name>`) is a fine per-task criterion; keep the full suite
+  for the repository floor.
+
 ## Evidence and completion
 
 The development adapter derives chair and worker receipts directly from observed
@@ -201,7 +216,7 @@ none:
 | `head.sha`, `head.dirty_digest` | 40 and 64 lower-case hex, or both `null` with `head.reason` one of `git_unavailable`, `git_failed`, `worktree_unreadable`, `head_unparseable` (the cause goes to stderr) |
 | `criteria[]` | contract order; `state` as above, `provenance` `hook`, `tc`, `mcp`, `unverified` or `null` when missing |
 | `criteria[].reason` | `failed`: `exit_nonzero`, `no_exit_code` or `claim_unsupported`; `unverified`: `no_observation_record`; `stale`: `receipt_at_other_head`, `worktree_changed` or `head_unknown`; otherwise `null` |
-| `criteria[].receipt` | the deciding receipt, `null` when missing; `recorded_at` is RFC 3339 UTC with milliseconds |
+| `criteria[].receipt` | the deciding receipt, `null` when missing; `recorded_at` is RFC 3339 UTC; the gate records whole seconds, so the millisecond field is always `.000` |
 | `unmet`, `flags` | mandatory criteria not satisfied, and every `asserted_not_observed` criterion, in contract order |
 | `effective_level`, `level_source` | the hook's level and its source, read when the verdict runs; see [Levels](#levels) |
 
