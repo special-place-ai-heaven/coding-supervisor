@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.8.1...v0.9.0) (2026-11-03)
+
+
+### Features
+
+* **cli:** let a person cancel a stuck task without a session ([7390fd1](https://github.com/special-place-ai-heaven/coding-supervisor/commit/7390fd19a4372e801d6f9a681c4f5b853dbd22c6))
+* **cli:** let a person cancel a stuck task without a session ([2ab11e7](https://github.com/special-place-ai-heaven/coding-supervisor/commit/2ab11e71859b81db89c155b618a38b8bfbb71863))
+
 ## [0.8.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.8.0...v0.8.1) (2026-11-03)
 
 
