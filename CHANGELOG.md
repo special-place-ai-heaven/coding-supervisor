@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.8.0...v0.8.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **claude-code:** check a remembered worktree root before using it ([45d429d](https://github.com/special-place-ai-heaven/coding-supervisor/commit/45d429d0b0c0ff4e1334ba19a694b9084641e247))
+
+
+### Performance Improvements
+
+* **claude-code:** start 3 git processes per hook call instead of up to 19 ([0464b10](https://github.com/special-place-ai-heaven/coding-supervisor/commit/0464b10435f9bd84bf17cd32b1f1f23077b66fc0))
+* start 3 git processes per hook call instead of up to 19 ([748e505](https://github.com/special-place-ai-heaven/coding-supervisor/commit/748e50592eaff1972afbda3259ed38d1dc35d992))
+
 ## [0.8.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.7.0...v0.8.0) (2026-11-03)
 
 
