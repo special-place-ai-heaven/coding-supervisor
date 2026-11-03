@@ -8,6 +8,7 @@
     "url": "https://github.com/special-place-ai-heaven/coding-supervisor"
   },
   "bin": {
+    "coding-supervisor": "bin/supervisor.js",
     "supervisor": "bin/supervisor.js"
   },
   "scripts": {
