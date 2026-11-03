@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.5.5...v0.6.0) (2026-11-03)
+
+
+### Features
+
+* **cli:** version flag, discovered init draft, clearer verdict and status ([55dce75](https://github.com/special-place-ai-heaven/coding-supervisor/commit/55dce7570b26c7e994aee9e1ed2a571b35ca3d43))
+* **npm:** add coding-supervisor as a second command name ([ad4e1c9](https://github.com/special-place-ai-heaven/coding-supervisor/commit/ad4e1c968bc25a045925f924697c16a9f9abd4f5))
+
+
+### Bug Fixes
+
+* **claude-code:** classify a prompt from the shell when the MCP server is absent ([eeb713b](https://github.com/special-place-ai-heaven/coding-supervisor/commit/eeb713bdccaa604dddadca4d632638d654e58bdb))
+* **claude-code:** journal early refusals and warn about unenforced effects ([949b768](https://github.com/special-place-ai-heaven/coding-supervisor/commit/949b768aca7539864d1c2f4eae01b6001f55ef51))
+* **claude-code:** let a person start a task after prompts were registered ([f033bd6](https://github.com/special-place-ai-heaven/coding-supervisor/commit/f033bd62911cd4bc85051b7b6595d0b81c731989))
+* **claude-code:** record checks whose quoted pattern contains a pipe ([9d33a6a](https://github.com/special-place-ai-heaven/coding-supervisor/commit/9d33a6ac186d6b6684645d198fee7c8eee99f730))
+* field follow-ups from 0.5.5 and the dogfood lock-out ([68ad718](https://github.com/special-place-ai-heaven/coding-supervisor/commit/68ad718cfe7a921256be11330c42efd039b7728b))
+* **install:** follow CODEX_HOME and name files git tracks ([0f9682d](https://github.com/special-place-ai-heaven/coding-supervisor/commit/0f9682d16a1bff207861424adc9a309dd0dc368b))
+
 ## [0.5.5](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.5.4...v0.5.5) (2026-11-02)
 
 
