@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.9.0...v0.9.1) (2026-11-04)
+
+
+### Bug Fixes
+
+* **autonomy:** roll over a completed task after its check was rerun ([6969873](https://github.com/special-place-ai-heaven/coding-supervisor/commit/696987358b49d30ec5d6418a5b7208f98e05d583))
+* **autonomy:** roll over a completed task after its check was rerun ([a58ab57](https://github.com/special-place-ai-heaven/coding-supervisor/commit/a58ab571ffcd05c75082609b61de24906fb01b37))
+
 ## [0.9.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.8.1...v0.9.0) (2026-11-03)
 
 
