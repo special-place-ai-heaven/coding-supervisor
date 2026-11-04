@@ -776,8 +776,10 @@ fn keep_floor(store: &mut Value, project: &Value, floor: Vec<Value>) {
 
 /// A person's end to the active task without a supervised session (K17), for a prompt-managed
 /// task that `task deactivate` refuses: archived as cancelled with the reason and journaled; its
-/// checks are kept as the project floor, as a cancel prompt keeps them. The PreToolUse guard
-/// refuses this command to agents.
+/// checks are kept as the project floor, as a cancel prompt keeps them. A completed task whose
+/// rollover cannot be verified would otherwise be stuck (start refuses it, a prompt cannot
+/// cancel it), so a person can retire it too: it stays archived as completed, marked
+/// `person_retired`. The PreToolUse guard refuses this command to agents.
 pub fn cancel(root: &Path, expected: &str, reason: &str) -> Result<Value, String> {
     let reason = reason.trim();
     if reason.is_empty() {
@@ -788,9 +790,8 @@ pub fn cancel(root: &Path, expected: &str, reason: &str) -> Result<Value, String
     if active.task_id != expected {
         return Err("active task changed".into());
     }
-    if gate_state(&active.dir)? == "completed" {
-        return Err("completed task is immutable; start a new task".into());
-    }
+    let completed = gate_state(&active.dir)? == "completed";
+    let disposition = if completed { "completed" } else { "cancelled" };
     let floor = cancelled_floor(&active.dir)?;
     let mut writes = Vec::new();
     if let Some(project) = read(&active.dir.join("autonomy.json"))?
@@ -813,6 +814,10 @@ pub fn cancel(root: &Path, expected: &str, reason: &str) -> Result<Value, String
         "{}\n",
         json!({"t":t,"event":"person_cancel","task_id":active.task_id,"reason":reason})
     ));
+    let mut archive = json!({"schema":2,"task_id":active.task_id,"disposition":disposition,"successor":null,"reason":reason});
+    if completed {
+        archive["person_retired"] = true.into();
+    }
     writes.extend([
         (
             PathBuf::from("tasks")
@@ -822,10 +827,7 @@ pub fn cancel(root: &Path, expected: &str, reason: &str) -> Result<Value, String
         ),
         (
             PathBuf::from("archives").join(format!("{}.json", active.task_id)),
-            format!(
-                "{}\n",
-                json!({"schema":2,"task_id":active.task_id,"disposition":"cancelled","successor":null,"reason":reason})
-            ),
+            format!("{archive}\n"),
         ),
         (
             PathBuf::from("active.json"),
@@ -833,7 +835,7 @@ pub fn cancel(root: &Path, expected: &str, reason: &str) -> Result<Value, String
         ),
     ]);
     tx.commit(writes)?;
-    Ok(json!({"inactive":true,"archived_task_id":active.task_id,"disposition":"cancelled"}))
+    Ok(json!({"inactive":true,"archived_task_id":active.task_id,"disposition":disposition}))
 }
 
 pub fn is_paused(dir: &Path) -> Result<bool, String> {
@@ -1129,37 +1131,41 @@ fn observed_completion(dir: &Path, task_id: &str, project: &Path) -> Result<(), 
         .collect::<Result<_, _>>()?;
     let execution_root = crate::location::canonical_project(project);
     for criterion in contract.criteria.iter().filter(|c| c.mandatory) {
-        let latest = rows.iter().rev().find(|row| {
-            row["kind"] == "dispatch"
-                && row["cwd"].as_str() == Some(execution_root.as_str())
-                && row["task_id"] == task_id
-                && row.get("candidate").is_some_and(|c| {
-                    c["base_commit"] == candidate.base_commit
-                        && c["dirty_digest"] == candidate.dirty_digest
+        // A completed task rests on its latest receipt for the criterion: on the completed
+        // candidate, and citing a project-root run of an accepted command. A dispatch journaled
+        // after completion (a rerun of the check) is never judged again, so it never gets a
+        // receipt and is not evidence; keying on the latest dispatch let one such rerun block
+        // every rollover.
+        let backing = gate.receipts.iter().rev().find_map(|receipt| {
+            if receipt.criterion != criterion.id || receipt.candidate != *candidate {
+                return None;
+            }
+            let dispatch = crate::adapter::cited_dispatch(task_id, &receipt.output_ref)?;
+            rows.iter()
+                .any(|row| {
+                    row["kind"] == "dispatch"
+                        && row["dispatch_id"].as_str() == Some(dispatch)
+                        && row["cwd"].as_str() == Some(execution_root.as_str())
+                        && row["task_id"] == task_id
+                        && row.get("candidate").is_some_and(|c| {
+                            c["base_commit"] == candidate.base_commit
+                                && c["dirty_digest"] == candidate.dirty_digest
+                        })
+                        && row
+                            .get("command")
+                            .and_then(Value::as_str)
+                            .is_some_and(|command| criterion.accepts(command))
                 })
-                && row
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .is_some_and(|command| criterion.accepts(command))
+                .then_some((receipt, dispatch))
         });
-        let dispatch = latest
-            .and_then(|row| row.get("dispatch_id"))
-            .and_then(Value::as_str)
-            .ok_or("completed requirement has no observed dispatch")?;
+        let (receipt, dispatch) =
+            backing.ok_or("completed requirement has no observed dispatch")?;
         if !dispatch_is_current(dir, dispatch)? {
             return Err("completed requirement dispatch predates a contract revision".into());
         }
-        let observed = format!("observed:{task_id}:{dispatch}");
-        let reconstructed = format!("tc-reconstructed:{task_id}:{dispatch}");
-        let receipt = gate.receipts.iter().rev().find(|receipt| {
-            receipt.criterion == criterion.id
-                && receipt.candidate == *candidate
-                && (receipt.output_ref == observed || receipt.output_ref == reconstructed)
-        });
-        if !receipt.is_some_and(|receipt| {
-            receipt.exit_code == Some(0)
-                && crate::adapter::receipt_is_observed(dir, task_id, receipt)
-        }) {
+        if !(receipt.exit_code == Some(0)
+            && crate::adapter::receipt_is_observed(dir, task_id, receipt))
+        {
             return Err(
                 "completed requirement lacks its latest successful hook-observed receipt".into(),
             );

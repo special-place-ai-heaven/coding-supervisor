@@ -71,7 +71,7 @@ fn current_dispatch_reference(dir: &Path, task: &str, reference: &str) -> Result
 }
 
 /// The dispatch an `observed:` or `tc-reconstructed:` reference of `task` cites.
-fn cited_dispatch<'r>(task: &str, reference: &'r str) -> Option<&'r str> {
+pub(crate) fn cited_dispatch<'r>(task: &str, reference: &'r str) -> Option<&'r str> {
     [
         format!("observed:{task}:"),
         format!("tc-reconstructed:{task}:"),
