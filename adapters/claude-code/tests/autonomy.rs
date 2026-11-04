@@ -1792,3 +1792,190 @@ fn prompt_context_names_the_actions_and_the_next_call() {
     assert!(text.contains(r#""action":"continue""#), "{text}");
     assert!(text.contains(&format!(r#""task_id":"{task}""#)), "{text}");
 }
+
+// A task driven to `completed` through the real hook handlers, as the rollover test does.
+struct FixedCandidate;
+impl supervisor_claude_code::candidate::CandidateProvider for FixedCandidate {
+    fn observe(&self) -> Result<coding_supervisor::Candidate, String> {
+        Ok(coding_supervisor::Candidate {
+            id: coding_supervisor::CandidateId {
+                base_commit: "base".into(),
+                dirty_digest: "candidate".into(),
+            },
+            provenance: "completed task fixture".into(),
+            changed_paths: vec![],
+        })
+    }
+}
+
+fn run_process(program: &str, args: &[&str], cwd: &std::path::Path) -> std::process::Output {
+    let mut command = std::process::Command::new(program);
+    command.args(args).current_dir(cwd);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command.output().unwrap()
+}
+
+struct CompletedTask {
+    f: Fixture,
+    approved: Value,
+    task: String,
+}
+
+fn completed_task() -> CompletedTask {
+    use supervisor_claude_code::adapter::{Decision, Env, handle};
+    let f = Fixture::new();
+    fs::remove_file(f.project.join("Cargo.toml")).unwrap();
+    assert!(
+        run_process("git", &["init", "--quiet"], &f.project)
+            .status
+            .success()
+    );
+    fs::write(f.project.join("check.py"), "print('ok')\n").unwrap();
+    assert!(
+        run_process("git", &["add", "check.py"], &f.project)
+            .status
+            .success()
+    );
+    assert!(
+        run_process(
+            "git",
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture"
+            ],
+            &f.project
+        )
+        .status
+        .success()
+    );
+    let mut approved = contract();
+    approved["criteria"][0]["command"] = "python check.py".into();
+    let first = lifecycle::start(&f.root, &approved, false, None, None).unwrap();
+    let task = first["task_id"].as_str().unwrap().to_owned();
+    f.apply(
+        &f.prompt("adopt", "Continue implementing the requested behavior"),
+        "continue",
+        Some(&task),
+        None,
+    )
+    .unwrap();
+    let mut env = Env {
+        state_dir: f.root.clone(),
+        state_location: "test",
+        candidate: Box::new(FixedCandidate),
+        clock: || 100,
+        level: Default::default(),
+    };
+    let mut event = json!({"hook_event_name":"PreToolUse","cwd":f.project,"session_id":"session","agent_id":"main","tool_use_id":"root",
+        "tool_name":"mcp__terminal_commander__run_and_watch","tool_input":{"argv":["python","check.py"],"cwd":f.project}});
+    assert_eq!(handle(&event, &mut env), Decision::None);
+    let actual = run_process(python_cmd(), &["check.py"], &f.project);
+    assert!(actual.status.success());
+    event["hook_event_name"] = "PostToolUse".into();
+    event["tool_response"] = json!({"job_id":"job-root","bucket_id":"bucket","state":"exited","exit_code":actual.status.code(),"complete":true,"outcome_trust":"observed","degraded":false,"pipeline_exit_masked":false});
+    assert_eq!(handle(&event, &mut env), Decision::None);
+    assert_eq!(
+        handle(
+            &json!({"hook_event_name":"Stop","cwd":f.project,"session_id":"session","agent_id":"main","last_assistant_message":"Done."}),
+            &mut env
+        ),
+        Decision::None
+    );
+    let active = lifecycle::active_task(&f.root).unwrap().unwrap();
+    let gate: Value =
+        serde_json::from_slice(&fs::read(active.dir.join("gate.json")).unwrap()).unwrap();
+    assert_eq!(gate["state"], "completed");
+    CompletedTask { f, approved, task }
+}
+
+/// A rerun of a contract command after completion leaves a dispatch with no completed row.
+/// A completed task never derives receipts again, so that dispatch can never get one. It must
+/// not decide the rollover: the task rests on the receipt that completed it.
+#[test]
+fn a_dispatch_journaled_after_completion_does_not_block_rollover() {
+    let CompletedTask { f, approved, task } = completed_task();
+    let journal = f.root.join("tasks").join(&task).join("runs.jsonl");
+    let rows = fs::read_to_string(&journal).unwrap();
+    let mut rerun: Value = rows
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .rfind(|row| row["kind"] == "dispatch")
+        .unwrap();
+    rerun["dispatch_id"] = "rerun-after-completion".into();
+    rerun["t"] = 200.into();
+    let mut text = rows;
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!("{rerun}\n"));
+    fs::write(&journal, text).unwrap();
+
+    let next = f
+        .apply(
+            &f.prompt("successor", "Implement the next ordinary task"),
+            "start",
+            None,
+            Some(approved),
+        )
+        .unwrap();
+    assert_ne!(next["task_id"], task);
+    assert!(
+        f.root
+            .join("archives")
+            .join(format!("{task}.json"))
+            .is_file()
+    );
+}
+
+/// A completed task whose rollover cannot be verified must not strand the project: a person
+/// can retire it with `supervisor task cancel`. A prompt still cannot touch a completed task.
+#[test]
+fn a_person_can_retire_a_completed_task_that_cannot_roll_over() {
+    let CompletedTask { f, approved, task } = completed_task();
+    fs::remove_file(f.root.join("tasks").join(&task).join("runs.jsonl")).unwrap();
+
+    let cancel = f.prompt("cancel", "cancel task");
+    let refused = f.apply(&cancel, "cancel", Some(&task), None).unwrap_err();
+    assert!(refused.contains("immutable"), "{refused}");
+    let stuck = f
+        .apply(
+            &f.prompt("successor", "Implement the next ordinary task"),
+            "start",
+            None,
+            Some(approved.clone()),
+        )
+        .unwrap_err();
+    assert!(stuck.contains("command journal"), "{stuck}");
+
+    let out = autonomy::cancel(&f.root, &task, "completed task cannot roll over").unwrap();
+
+    assert_eq!(out["archived_task_id"], task);
+    assert_eq!(out["disposition"], "completed");
+    assert!(lifecycle::active_task(&f.root).unwrap().is_none());
+    let archive: Value = serde_json::from_slice(
+        &fs::read(f.root.join("archives").join(format!("{task}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(archive["disposition"], "completed");
+    assert_eq!(archive["person_retired"], true);
+    assert_eq!(archive["reason"], "completed task cannot roll over");
+    let events = fs::read_to_string(f.root.join("tasks").join(&task).join("events.jsonl")).unwrap();
+    assert!(events.contains("\"event\":\"person_cancel\""), "{events}");
+    f.apply(
+        &f.prompt("successor-after-retire", "Implement the next ordinary task"),
+        "start",
+        None,
+        Some(approved),
+    )
+    .unwrap();
+}
