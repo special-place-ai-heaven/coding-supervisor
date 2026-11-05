@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.2](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.9.1...v0.9.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* **gate:** stop dead-ending agents on discussion, foreign tasks and bad --project ([e927dff](https://github.com/special-place-ai-heaven/coding-supervisor/commit/e927dff6459f69d4db64f09df388158d402d0f35))
+* **gate:** stop dead-ending agents on discussion, foreign tasks and bad --project ([279471f](https://github.com/special-place-ai-heaven/coding-supervisor/commit/279471fab948dd4ec3e5f1e05655a771956024c4))
+
 ## [0.9.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.9.0...v0.9.1) (2026-11-04)
 
 
