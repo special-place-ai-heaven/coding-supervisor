@@ -99,9 +99,10 @@ fn prompt(env: &mut Env, id: &str, message: &str) -> Value {
         env,
     );
     assert!(matches!(result, Decision::Context { .. }));
-    supervisor_claude_code::autonomy::pending(&env.state_dir, "session")
-        .unwrap()
-        .unwrap()
+    // G18: a follow-up on the session's own task is no longer pending, so read the event.
+    let store: Value =
+        serde_json::from_slice(&fs::read(env.state_dir.join("intents.json")).unwrap()).unwrap();
+    store["events"][store["latest"]["session"].as_str().unwrap()].clone()
 }
 
 fn propose(

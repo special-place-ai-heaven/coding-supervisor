@@ -223,7 +223,14 @@ fn read_only_tool(payload: &Value) -> bool {
     let tool = text(payload, "tool_name").unwrap_or_default();
     if matches!(
         tool,
-        "Read" | "Glob" | "Grep" | "LS" | "TaskGet" | "TaskList" | "ToolSearch"
+        "Read"
+            | "Glob"
+            | "Grep"
+            | "LS"
+            | "TaskGet"
+            | "TaskList"
+            | "ToolSearch"
+            | "StructuredOutput"
     ) {
         return true;
     }
@@ -349,6 +356,12 @@ fn unclassified_stop(payload: &Value, reason: &str) -> Decision {
 }
 
 pub fn handle(payload: &Value, env: &mut Env) -> Decision {
+    let decision = handle_at_level(payload, env);
+    note_agent_effects(payload, env, &decision);
+    decision
+}
+
+fn handle_at_level(payload: &Value, env: &mut Env) -> Decision {
     JOURNAL.set(Journal::StateUnproven);
     match env.level.level {
         Level::Off => protection(payload, env).unwrap_or(Decision::None),
@@ -366,6 +379,42 @@ pub fn handle(payload: &Value, env: &mut Env) -> Decision {
             let decision = judge(payload, env);
             journal_refusal(payload, env, decision)
         }
+    }
+}
+
+/// G16/G21, from the decision the harness will actually see: a SubagentStop that does not
+/// refuse the handback ends its worker, so its background delegation closes (on every route,
+/// including the early ones in `judge`); a PreToolUse that lets a tool run, which is not
+/// read-only, marks its agent as a mutator, whatever the level did to a denial.
+fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) {
+    if matches!(decision, Decision::Block(_) | Decision::Deny(_))
+        || env.level.level == Level::Off
+        || JOURNAL.get() == Journal::StateUnproven
+    {
+        return;
+    }
+    let now = (env.clock)();
+    match text(payload, "hook_event_name") {
+        Some("SubagentStop") => observation::close_delegation(&env.state_dir, payload, now),
+        Some("PreToolUse") if !inspection(payload) => {
+            let session = text(payload, "session_id").unwrap_or_default();
+            let dir = match lifecycle::active_task(&env.state_dir) {
+                Ok(Some(active)) => active.dir,
+                _ => env.state_dir.clone(),
+            };
+            // Another session's task is not this agent's to journal into.
+            if !crate::autonomy::owns_session(&dir, session).unwrap_or(false) {
+                return;
+            }
+            let task = state::read_contract(&dir)
+                .ok()
+                .and_then(|(contract, _)| contract)
+                .and_then(|c| lifecycle::task_identity(&dir, &c.id.0).ok())
+                .unwrap_or_default();
+            let agent = text(payload, "agent_id").unwrap_or("main");
+            let _ = observation::record_mutation(&dir, payload, &task, agent, now);
+        }
+        _ => {}
     }
 }
 
@@ -501,6 +550,17 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
         return match crate::autonomy::record_prompt(&root, &project, payload) {
             Ok(intent) => {
                 let mut call = serde_json::json!({"event_id":intent["event_id"],"nonce":intent["nonce"],"prompt_hash":intent["prompt_hash"],"task_id":intent["task_id"]});
+                // G18: the session's own unfinished task already took this prompt as `continue`.
+                if intent["default_action"] == "continue" {
+                    call["action"] = "<action>".into();
+                    return Decision::Context {
+                        event: "UserPromptSubmit",
+                        text: format!(
+                            "SUPERVISOR: this prompt continues the active task {} by default (recorded as continue, source default); edits and checks proceed without an intent_apply call. Call intent_apply only for another action: start|revise|pause|resume|cancel, or discussion for a question that needs no work. Call shape: intent_apply {call}; without the supervisor MCP tools, run it alone from the Bash tool: supervisor intent apply --proposal '<the call as JSON>'. {intent}",
+                            intent["task_id"].as_str().unwrap_or_default()
+                        ),
+                    };
+                }
                 let next = if intent["task_id"].is_null() {
                     call["action"] = "start".into();
                     format!(
@@ -610,7 +670,22 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
     }
     if event == "Stop" {
         match crate::autonomy::pending(&root, text(payload, "session_id").unwrap_or_default()) {
-            Ok(Some(_)) => {
+            Ok(Some(event)) => {
+                // G17: nothing could have been changed under an unclassified prompt (every
+                // mutation or delegation is refused until it is classified), so a stop with no
+                // task to judge is a discussion turn; a control prompt (cancel, pause, resume)
+                // is never silently dropped this way.
+                let project = crate::binding::state_project(
+                    &root,
+                    Path::new(text(payload, "cwd").unwrap_or(".")),
+                );
+                let discussion = serde_json::json!({"event_id":event["event_id"],"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],"action":"discussion","task_id":event["task_id"]});
+                if event["control"].is_null()
+                    && event.get("control_hint").is_none()
+                    && crate::autonomy::propose(&root, &project, &discussion).is_ok()
+                {
+                    return Decision::None;
+                }
                 return unclassified_stop(
                     payload,
                     "GATE: classify the current prompt with intent_apply before stopping; discussion needs no task",
@@ -708,6 +783,16 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                         IntentAuthority::Pending => {
                             Some(if event == "PreToolUse" {
                                 Decision::Deny("GATE: propose the current prompt intent before mutation or delegation".to_owned())
+                            } else if event == "SubagentStop"
+                                && !observation::made_mutation(
+                                    dir,
+                                    text(payload, "agent_id").unwrap_or("main"),
+                                )?
+                            {
+                                // G21: a worker that mutated nothing hands back a read-only
+                                // report; one that mutated under an earlier prompt keeps the
+                                // verification rule (the Pending refusal below).
+                                Decision::None
                             } else {
                                 unclassified_stop(
                                     payload,
@@ -781,8 +866,14 @@ fn decision_from_json(v: &Value) -> Decision {
                     .to_owned(),
             );
         }
+        // The event name rides in the cached JSON; keep it (a PreToolUse advisory stays one).
+        let event = match text(output, "hookEventName") {
+            Some("PreToolUse") => "PreToolUse",
+            Some("UserPromptSubmit") => "UserPromptSubmit",
+            _ => "PostToolUse",
+        };
         return Decision::Context {
-            event: "PostToolUse",
+            event,
             text: text(output, "additionalContext")
                 .unwrap_or_default()
                 .to_owned(),
@@ -909,6 +1000,27 @@ fn process(
         &contract.criteria,
     )? {
         reasons.push("command observation journaled".to_owned());
+    }
+    // G16: background work is journaled when launched and closed at its SubagentStop; a chair
+    // Stop while any is outstanding is not judged, consumes no refusal and accepts nothing.
+    match event {
+        "PostToolUse" if text(payload, "tool_name") == Some("Agent") => {
+            observation::record_delegation(&env.state_dir, payload, &task_id, now)?;
+        }
+        "Stop" if agent == "main" => {
+            let session = text(payload, "session_id").unwrap_or_default();
+            let waiting = observation::outstanding_background(&env.state_dir, session, now)?;
+            if !waiting.is_empty() {
+                let waiting = waiting.join(", ");
+                reasons.push(format!(
+                    "not judged: background work outstanding: {waiting}"
+                ));
+                return Ok(Decision::System(format!(
+                    "GATE: not judged: background work outstanding: {waiting}"
+                )));
+            }
+        }
+        _ => {}
     }
     let mut session = Session::open_with_observed(
         contract,
@@ -1707,6 +1819,13 @@ impl Session {
         now: u64,
         reasons: &mut Vec<String>,
     ) -> Result<Decision, String> {
+        // G21: an agent that changed nothing hands back a read-only report. Nothing is
+        // consumed or accepted; the line is journaled, not printed, because any output on
+        // SubagentStop keeps the worker running.
+        if !observation::made_mutation(dir, agent)? {
+            reasons.push("read-only handback: not judged".to_owned());
+            return Ok(Decision::None);
+        }
         let message = text(payload, "last_assistant_message").unwrap_or_default();
         let active = payload
             .get("stop_hook_active")
@@ -1982,6 +2101,16 @@ impl Session {
         match result {
             Ok(()) => {
                 reasons.push("completed".to_owned());
+                // G15: the completed task keeps the candidate it completed on; say so when the
+                // tree has since moved on. A warning, never a refusal.
+                if self.task.state() == TaskState::Completed
+                    && self.tree_changed_since_completion(dir)?
+                {
+                    reasons.push("tree changed since completion".to_owned());
+                    return Ok(Decision::System(
+                        "GATE: tree changed since completion; the completed task still stands on the candidate it completed on".to_owned(),
+                    ));
+                }
                 Ok(Decision::None)
             }
             Err(why) => {
@@ -2074,6 +2203,21 @@ impl Session {
                 criterion.id.0
             ));
         }
+        // G19: a required check behind a pipe runs, but its exit code is the pipe's, so the
+        // gate never counts it; say so before the run, not after.
+        if matches!(tool, "Bash" | "PowerShell")
+            && let Some(command) = text(input, "command")
+            && let Some(head) = observation::before_pipe(command)
+            && let Some(criterion) = self.criteria.iter().find(|c| c.accepts(head))
+        {
+            return Decision::Context {
+                event: "PreToolUse",
+                text: format!(
+                    "GATE: {} will not count: run `{head}` without a pipe",
+                    criterion.id.0
+                ),
+            };
+        }
         if !matches!(tool, "Write" | "Edit" | "Agent") {
             return Decision::None;
         }
@@ -2124,6 +2268,24 @@ impl Session {
                 ));
             }
         }
+    }
+
+    /// Whether the worktree content differs from the tree the task completed on. Unknown trees (no
+    /// run recorded one) never count as a change.
+    fn tree_changed_since_completion(&self, dir: &Path) -> Result<bool, String> {
+        let (Some(done), Ok(now)) = (self.task.candidate(), &self.observed) else {
+            return Ok(false);
+        };
+        if *done == now.id {
+            return Ok(false);
+        }
+        let runs = observation::read_runs(dir, &self.task_id)?;
+        let trees: Vec<&str> = runs
+            .iter()
+            .filter(|run| &run.candidate == done)
+            .filter_map(|run| run.tree.as_deref())
+            .collect();
+        Ok(!trees.is_empty() && !trees.iter().any(|t| self.tree.get() == Some(*t)))
     }
 
     /// The core does not judge a task again once it is completed, and a task completed through
@@ -2359,7 +2521,16 @@ fn restore(
             "replay: {restored} receipts restored, {rejected} rejected"
         ));
     }
-    task.observe_candidate(current.clone())?;
+    // G15: a terminal task keeps the candidate it ended on; moving it made the completed
+    // evidence look stale and refused the next task's start after any new commit.
+    match previous.clone().filter(|_| task.state().is_terminal()) {
+        Some(id) => task.observe_candidate(Candidate {
+            id,
+            provenance: "journal".to_owned(),
+            changed_paths: current.changed_paths.clone(),
+        })?,
+        None => task.observe_candidate(current.clone())?,
+    }
     if previous.as_ref() != Some(&current.id) {
         reasons.push("candidate changed since the checkpoint".to_owned());
     } else if gate.checkpoint.state == TaskState::ReadyForReview

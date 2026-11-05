@@ -656,10 +656,157 @@ pub(crate) fn pending_jobs(dir: &Path, task: &str) -> Result<Value, String> {
                 .filter(same_dispatch)
                 .any(|other| text(other, "kind") == Some("invalidated"));
         let candidate = row.get("candidate");
-        jobs.push(json!({"job_id":job,"bucket_id":text(row,"bucket_id"),"dispatch_id":dispatch,"candidate":{"base_commit":candidate.and_then(|c| text(c,"base_commit")),"dirty_digest":candidate.and_then(|c| text(c,"dirty_digest"))},"session_id":text(row,"session_id"),"agent_id":text(row,"agent_id"),"task_id":task,"cwd":workdir,"command":command,"criteria":criteria,"status":"pending","validity":if invalidated { "invalidated" } else { "current" }}));
+        jobs.push(json!({"job_id":job,"bucket_id":text(row,"bucket_id"),"dispatch_id":dispatch,"candidate":{"base_commit":candidate.and_then(|c| text(c,"base_commit")),"dirty_digest":candidate.and_then(|c| text(c,"dirty_digest"))},"session_id":text(row,"session_id"),"agent_id":text(row,"agent_id"),"task_id":task,"t":row.get("t"),"cwd":workdir,"command":command,"criteria":criteria,"status":"pending","validity":if invalidated { "invalidated" } else { "current" }}));
     }
     jobs.reverse();
     Ok(jobs.into())
+}
+
+/// G16: a delegation older than this no longer counts as outstanding, so a lost SubagentStop
+/// cannot hold Stop back forever.
+/// ponytail: fixed two hours; make it configurable if a real worker runs longer.
+const OUTSTANDING_TTL_SECS: u64 = 2 * 3600;
+
+/// The parseable rows of `delegations.jsonl`, and whether any line was not parseable. A bad
+/// line is skipped, never an error: it counts as "this agent mutated" for handbacks and as
+/// "not outstanding" for Stop (`made_mutation`, `outstanding_background`).
+fn delegation_rows(dir: &Path) -> Result<(Vec<Value>, bool), String> {
+    match std::fs::read_to_string(dir.join("delegations.jsonl")) {
+        Ok(rows) => {
+            let mut malformed = false;
+            let parsed = rows
+                .lines()
+                .filter_map(|line| {
+                    let row = serde_json::from_str(line).ok();
+                    malformed |= row.is_none();
+                    row
+                })
+                .collect();
+            Ok((parsed, malformed))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((Vec::new(), false)),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// G16: journal a background Agent launch (PostToolUse `async_launched` names its `agentId`).
+pub(crate) fn record_delegation(
+    dir: &Path,
+    payload: &Value,
+    task: &str,
+    now: u64,
+) -> Result<(), String> {
+    let launched = payload
+        .pointer("/tool_response/status")
+        .and_then(Value::as_str)
+        == Some("async_launched");
+    let Some(agent) = payload
+        .pointer("/tool_response/agentId")
+        .and_then(Value::as_str)
+    else {
+        return Ok(());
+    };
+    if !launched {
+        return Ok(());
+    }
+    state::append_line(
+        &dir.join("delegations.jsonl"),
+        &json!({"kind":"delegation","task_id":task,"session_id":text(payload,"session_id"),
+            "agent_id":agent,"tool_use_id":text(payload,"tool_use_id"),"t":now}),
+    )
+}
+
+/// G16: the worker named by this SubagentStop has ended, so close its open delegation (the
+/// caller only asks when the handback was not refused). Best effort: a write failure leaves the
+/// delegation to expire. `root` is the state root; the delegation lives in the active task.
+pub(crate) fn close_delegation(root: &Path, payload: &Value, now: u64) {
+    let (Some(agent), Some(session)) = (text(payload, "agent_id"), text(payload, "session_id"))
+    else {
+        return;
+    };
+    let dir = match crate::lifecycle::active_task(root) {
+        Ok(Some(active)) => active.dir,
+        _ => root.to_path_buf(),
+    };
+    let Ok((rows, _)) = delegation_rows(&dir) else {
+        return;
+    };
+    let ours =
+        |r: &Value| text(r, "agent_id") == Some(agent) && text(r, "session_id") == Some(session);
+    let open = rows
+        .iter()
+        .any(|r| text(r, "kind") == Some("delegation") && ours(r))
+        && !rows
+            .iter()
+            .any(|r| text(r, "kind") == Some("delegation_closed") && ours(r));
+    if open {
+        let _ = state::append_line(
+            &dir.join("delegations.jsonl"),
+            &json!({"kind":"delegation_closed","agent_id":agent,"session_id":session,"t":now}),
+        );
+    }
+}
+
+/// G21: journal, once per agent, that `agent` was allowed a tool that is not read-only.
+pub(crate) fn record_mutation(
+    dir: &Path,
+    payload: &Value,
+    task: &str,
+    agent: &str,
+    now: u64,
+) -> Result<(), String> {
+    let (rows, _) = delegation_rows(dir)?;
+    if rows
+        .iter()
+        .any(|r| text(r, "kind") == Some("mutation") && text(r, "agent_id") == Some(agent))
+    {
+        return Ok(());
+    }
+    state::append_line(
+        &dir.join("delegations.jsonl"),
+        &json!({"kind":"mutation","task_id":task,"session_id":text(payload,"session_id"),
+            "agent_id":agent,"tool":text(payload,"tool_name"),"t":now}),
+    )
+}
+
+/// G21: whether `agent` was ever allowed a tool that is not read-only.
+pub(crate) fn made_mutation(dir: &Path, agent: &str) -> Result<bool, String> {
+    let (rows, malformed) = delegation_rows(dir)?;
+    Ok(malformed
+        || rows
+            .iter()
+            .any(|r| text(r, "kind") == Some("mutation") && text(r, "agent_id") == Some(agent)))
+}
+
+/// G16: agent ids of `session`'s background Agents that have not reached SubagentStop. Pending
+/// Terminal Commander jobs are not included: an unfetched job keeps the G7 refusal.
+pub(crate) fn outstanding_background(
+    dir: &Path,
+    session: &str,
+    now: u64,
+) -> Result<Vec<String>, String> {
+    let (rows, _) = delegation_rows(dir)?;
+    let mut waiting: Vec<String> = Vec::new();
+    for row in rows
+        .iter()
+        .filter(|r| text(r, "kind") == Some("delegation") && text(r, "session_id") == Some(session))
+    {
+        let Some(agent) = text(row, "agent_id") else {
+            continue;
+        };
+        let closed = rows.iter().any(|r| {
+            text(r, "kind") == Some("delegation_closed")
+                && text(r, "agent_id") == Some(agent)
+                && text(r, "session_id") == Some(session)
+        });
+        let fresh = row["t"]
+            .as_u64()
+            .is_none_or(|t| t.saturating_add(OUTSTANDING_TTL_SECS) > now);
+        if !closed && fresh && !waiting.iter().any(|w| w == agent) {
+            waiting.push(agent.to_owned());
+        }
+    }
+    Ok(waiting)
 }
 
 /// The candidates the adapter recorded as having the same tree as `run`'s dispatch (G9).
@@ -823,19 +970,29 @@ pub(crate) fn passed_tests(output: &str) -> Option<u64> {
 /// escape differently (`\` and a backtick), so a line with an escaped quote or a backtick keeps
 /// the old rule: any `|` is a pipe.
 fn unquoted_pipe(line: &str) -> bool {
+    unquoted_pipe_at(line).is_some()
+}
+
+/// Byte offset of the first pipe `unquoted_pipe` recognises.
+fn unquoted_pipe_at(line: &str) -> Option<usize> {
     if line.contains("\\'") || line.contains("\\\"") || line.contains('`') {
-        return line.contains('|');
+        return line.find('|');
     }
     let (mut single, mut double) = (false, false);
-    for c in line.chars() {
+    for (at, c) in line.char_indices() {
         match c {
             '\'' if !double => single = !single,
             '"' if !single => double = !double,
-            '|' if !single && !double => return true,
+            '|' if !single && !double => return Some(at),
             _ => {}
         }
     }
-    false
+    None
+}
+
+/// G19: what a shell line runs before its first pipe, when it has one.
+pub(crate) fn before_pipe(line: &str) -> Option<&str> {
+    unquoted_pipe_at(line).map(|at| line[..at].trim())
 }
 
 /// An argv element reaches a program literally, so its `|` pipes only when the program is a

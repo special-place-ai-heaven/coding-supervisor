@@ -1000,13 +1000,20 @@ fn asserted_completed_state_cannot_authorize_hook_task_rollover() {
         Ok(Value::Null)
     })
     .unwrap();
+    // G22: the rollover is never refused, but an asserted completion is archived as
+    // `completed-unverified`, never as plain `completed`.
     let next = f.prompt("next", "Implement another request");
-    assert!(f.apply(&next, "start", None, Some(contract())).is_err());
-    assert_eq!(
-        lifecycle::active_task(&f.root).unwrap().unwrap().task_id,
-        id
+    let started = f.apply(&next, "start", None, Some(contract())).unwrap();
+    assert_ne!(started["task_id"], id);
+    let archive: Value = serde_json::from_slice(
+        &fs::read(f.root.join("archives").join(format!("{id}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(archive["disposition"], "completed-unverified");
+    assert!(
+        archive["reason"].as_str().is_some_and(|r| !r.is_empty()),
+        "{archive}"
     );
-    assert!(!f.root.join("archives").join(format!("{id}.json")).exists());
 }
 
 #[test]
@@ -1563,7 +1570,8 @@ fn pending_prompt_keeps_inflight_tc_job_and_accepts_its_later_observation() {
     };
     let mut dispatch = json!({"hook_event_name":"PreToolUse","cwd":f.project,"session_id":"session","agent_id":"main","tool_use_id":"inflight","tool_name":"mcp__terminal_commander__run_and_watch","tool_input":{"argv":["cargo","test","-p","fixture"],"cwd":f.project}});
     assert_eq!(handle(&dispatch, &mut env), Decision::None);
-    f.prompt("pending-during-job", "Explain the current implementation");
+    // G18: only a control prompt stays pending on the owner's own task.
+    f.prompt("pending-during-job", "cancel");
     dispatch["hook_event_name"] = "PostToolUse".into();
     dispatch["tool_response"] = json!({"job_id":"job-inflight","bucket_id":"bucket-inflight","state":"running","complete":false});
     assert_eq!(handle(&dispatch, &mut env), Decision::None);
@@ -1638,17 +1646,29 @@ fn pending_prompt_allows_tool_search_and_single_read_only_commands() {
     use supervisor_claude_code::adapter::{Decision, handle};
     let f = Fixture::new();
     let task = f.start();
-    f.prompt("second", "Continue the change");
+    // G18: the owner's follow-up continues by default, so the pending gate is exercised from
+    // another session, whose prompt stays unclassified.
+    autonomy::record_prompt(
+        &f.root,
+        &f.project,
+        &json!({"session_id":"other","prompt_id":"second","prompt":"Continue the change"}),
+    )
+    .unwrap();
     let mut env = hook_env(&f);
-    let bash = |id: &str, command: &str| pre_tool(&f, id, "Bash", json!({ "command": command }));
+    let as_other = |mut payload: Value| {
+        payload["session_id"] = "other".into();
+        payload
+    };
+    let bash =
+        |id: &str, command: &str| as_other(pre_tool(&f, id, "Bash", json!({ "command": command })));
     assert_eq!(
         handle(
-            &pre_tool(
+            &as_other(pre_tool(
                 &f,
                 "ts",
                 "ToolSearch",
                 json!({"query":"select:mcp__supervisor__intent_apply"})
-            ),
+            )),
             &mut env
         ),
         Decision::None
@@ -1682,17 +1702,17 @@ fn pending_prompt_allows_tool_search_and_single_read_only_commands() {
     }
     assert!(matches!(
         handle(
-            &pre_tool(
+            &as_other(pre_tool(
                 &f,
                 "w",
                 "Write",
                 json!({"file_path":"src/x.rs","content":""})
-            ),
+            )),
             &mut env
         ),
         Decision::Deny(_)
     ));
-    assert!(autonomy::pending(&f.root, "session").unwrap().is_some());
+    assert!(autonomy::pending(&f.root, "other").unwrap().is_some());
     assert_eq!(
         lifecycle::active_task(&f.root).unwrap().unwrap().task_id,
         task
@@ -1731,8 +1751,10 @@ fn unknown_intent_action_is_refused_with_the_valid_actions() {
 #[test]
 fn pending_prompt_stop_releases_once_the_harness_is_already_continuing() {
     use supervisor_claude_code::adapter::{Decision, handle};
+    // G17: an unclassified prompt with nothing to judge is recorded as discussion at Stop, so
+    // the prompt that still blocks is a control prompt, which must not be dropped silently.
     let f = Fixture::new();
-    f.prompt("first", "Implement a small change");
+    f.prompt("first", "Cancel");
     let mut env = hook_env(&f);
     let stop = |event: &str, continuing: bool| {
         json!({"hook_event_name":event,"cwd":f.project,"session_id":"session","agent_id":"main",
@@ -1747,22 +1769,25 @@ fn pending_prompt_stop_releases_once_the_harness_is_already_continuing() {
     );
     let g = Fixture::new();
     g.start();
-    g.prompt("second", "Continue the change");
+    g.prompt("second", "Cancel");
     let mut env = hook_env(&g);
     let stop = |event: &str, continuing: bool| {
         json!({"hook_event_name":event,"cwd":g.project,"session_id":"session","agent_id":"main",
             "stop_hook_active":continuing,"last_assistant_message":"Done."})
     };
-    for event in ["Stop", "SubagentStop"] {
-        assert!(
-            matches!(handle(&stop(event, false), &mut env), Decision::Block(_)),
-            "{event}"
-        );
-        assert!(
-            matches!(handle(&stop(event, true), &mut env), Decision::System(m) if m.contains("unclassified")),
-            "{event}"
-        );
-    }
+    assert!(matches!(
+        handle(&stop("Stop", false), &mut env),
+        Decision::Block(_)
+    ));
+    assert!(
+        matches!(handle(&stop("Stop", true), &mut env), Decision::System(m) if m.contains("unclassified"))
+    );
+    // G21: nothing mutating runs under an unclassified prompt, so a worker's handback is a
+    // read-only report and is allowed.
+    assert_eq!(
+        handle(&stop("SubagentStop", false), &mut env),
+        Decision::None
+    );
     assert!(autonomy::pending(&g.root, "session").unwrap().is_some());
 }
 
@@ -1789,7 +1814,8 @@ fn prompt_context_names_the_actions_and_the_next_call() {
     let Decision::Context { text, .. } = handle(&submit(&g, "second"), &mut env) else {
         panic!("expected context");
     };
-    assert!(text.contains(r#""action":"continue""#), "{text}");
+    // G18: the owner's follow-up is already a `continue`; the advice says so.
+    assert!(text.contains("continues the active task"), "{text}");
     assert!(text.contains(&format!(r#""task_id":"{task}""#)), "{text}");
 }
 
@@ -1937,8 +1963,38 @@ fn a_dispatch_journaled_after_completion_does_not_block_rollover() {
     );
 }
 
+/// G22: a completed task whose completion cannot be re-verified still rolls over; it is
+/// archived as `completed-unverified` with the reason, and its bytes are kept.
+#[test]
+fn an_unverifiable_completed_task_rolls_over_as_completed_unverified() {
+    let CompletedTask { f, approved, task } = completed_task();
+    fs::remove_file(f.root.join("tasks").join(&task).join("runs.jsonl")).unwrap();
+    let next = f
+        .apply(
+            &f.prompt("successor", "Implement the next ordinary task"),
+            "start",
+            None,
+            Some(approved),
+        )
+        .unwrap();
+    assert_ne!(next["task_id"], task);
+    let archive: Value = serde_json::from_slice(
+        &fs::read(f.root.join("archives").join(format!("{task}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(archive["disposition"], "completed-unverified");
+    assert_eq!(archive["successor"], next["task_id"]);
+    assert!(
+        archive["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("command journal")),
+        "{archive}"
+    );
+    assert!(f.root.join("tasks").join(&task).join("gate.json").is_file());
+}
+
 /// A completed task whose rollover cannot be verified must not strand the project: a person
-/// can retire it with `supervisor task cancel`. A prompt still cannot touch a completed task.
+/// can also retire it with `supervisor task cancel`. A prompt still cannot cancel a completed task.
 #[test]
 fn a_person_can_retire_a_completed_task_that_cannot_roll_over() {
     let CompletedTask { f, approved, task } = completed_task();
@@ -1947,16 +2003,6 @@ fn a_person_can_retire_a_completed_task_that_cannot_roll_over() {
     let cancel = f.prompt("cancel", "cancel task");
     let refused = f.apply(&cancel, "cancel", Some(&task), None).unwrap_err();
     assert!(refused.contains("immutable"), "{refused}");
-    let stuck = f
-        .apply(
-            &f.prompt("successor", "Implement the next ordinary task"),
-            "start",
-            None,
-            Some(approved.clone()),
-        )
-        .unwrap_err();
-    assert!(stuck.contains("command journal"), "{stuck}");
-
     let out = autonomy::cancel(&f.root, &task, "completed task cannot roll over").unwrap();
 
     assert_eq!(out["archived_task_id"], task);
@@ -2031,7 +2077,7 @@ fn prompt_advice_for_a_task_owned_by_another_session_names_the_person_cancel_com
         "{text}"
     );
     let text = advice("session", "own", &mut env);
-    assert!(text.contains("\"action\":\"continue\""), "{text}");
+    assert!(text.contains("continues the active task"), "{text}");
 }
 
 /// The refusals that leave an agent with no permitted call name the person-only way out.

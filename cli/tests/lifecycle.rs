@@ -317,7 +317,9 @@ fn prompt_gate_refusals_are_journaled() {
             .unwrap()
             .success()
     );
-    f.hook(json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":f.project,"prompt":"edit things"}));
+    // G17: Stop records an ordinary unclassified prompt as discussion, so the Stop that still
+    // blocks (and is journaled) is the one after a control prompt.
+    f.hook(json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":f.project,"prompt":"cancel"}));
     let denied = f.hook(
         json!({"hook_event_name":"PreToolUse","session_id":"s1","cwd":f.project,"tool_use_id":"w1",
         "tool_name":"Bash","tool_input":{"command":"touch x"}}),

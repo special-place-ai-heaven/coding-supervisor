@@ -487,8 +487,9 @@ fn completed_legacy_nested_task_can_be_explicitly_archived_without_rewriting_his
                 .into_owned()
                 .into();
             fs::write(path, serde_json::to_vec(&metadata).unwrap()).unwrap();
-            let next = prompt(&root, &project, "premature");
-            assert!(autonomy::propose(&root, &project, &proposal(&next, "start")).is_err());
+            // G22: a start here would no longer be refused; it would archive the task as
+            // `completed-unverified` (covered in autonomy.rs). This test keeps the explicit
+            // legacy cancel path, so it does not start a successor first.
         }
         let before = snapshot(&active.dir);
         let cancel = autonomy::record_prompt(
