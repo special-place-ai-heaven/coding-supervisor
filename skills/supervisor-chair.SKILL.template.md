@@ -42,6 +42,12 @@ task through another interface. Preserve task/session identity and pending
 jobs across restart; do not rerun a pending job merely because a tool call
 or supervisor process restarted.
 
+A prompt applied as `discussion` can still be applied as `start`, `continue`
+or `revise` with the same event; applied work cannot become a discussion. A
+task bound to another session refuses `continue`, `start` and `cancel` from
+yours: follow the prompt hook's advice, which names the person's
+`supervisor task cancel` command to pass on to the user.
+
 After restart, read `task_state.pending_jobs` and query those exact job IDs.
 Retain their original dispatch/candidate/session linkage. A scope revision can
 leave a recoverable job invalidated; its result does not satisfy the revised

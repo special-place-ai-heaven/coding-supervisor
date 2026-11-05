@@ -913,3 +913,38 @@ fn strict_needs_the_minimum_number_of_passing_tests() {
         }
     }
 }
+
+/// A Windows path whose backslashes a POSIX shell stripped (`C:AI_STUFFPROGRAMMING...`) names
+/// no directory. The CLI refuses it with the path it resolved and writes nothing, instead of
+/// reporting success for a state root the hooks never read.
+#[test]
+fn missing_project_directory_is_refused_and_writes_no_state() {
+    let f = Fixture::new("missing-project");
+    let missing = f.root.join("no-such-project");
+    let missing = missing.to_str().unwrap();
+    for args in [
+        &["level", "off", "--project", missing][..],
+        &["level", "--project", missing],
+        &[
+            "task",
+            "cancel",
+            "--project",
+            missing,
+            "--task",
+            "t",
+            "--reason",
+            "r",
+        ],
+    ] {
+        let out = f.supervisor(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");
+        assert!(out.stdout.is_empty(), "{args:?}: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("not a directory") && stderr.contains("no-such-project"),
+            "{args:?}: {stderr}"
+        );
+    }
+    assert!(!f.state.exists(), "a refused --project created state");
+    f.set(&["off"]);
+}

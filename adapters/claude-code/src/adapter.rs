@@ -415,6 +415,16 @@ fn protection(payload: &Value, env: &Env) -> Option<Decision> {
     }
 }
 
+/// The active task is bound to a different session than this prompt's. Unknown ownership is
+/// not reported as foreign, so the ordinary advice stays.
+fn foreign_task(root: &Path, payload: &Value) -> bool {
+    let session = text(payload, "session_id").unwrap_or_default();
+    lifecycle::active_task(root)
+        .ok()
+        .flatten()
+        .is_some_and(|active| crate::autonomy::owns_session(&active.dir, session) == Ok(false))
+}
+
 fn judge(payload: &Value, env: &mut Env) -> Decision {
     let root = env.state_dir.clone();
     let event = text(payload, "hook_event_name").unwrap_or_default();
@@ -446,6 +456,18 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     call["action"] = "start".into();
                     format!(
                         "Next call for new work: intent_apply {call} plus \"contract\": a scoped contract; for a question, the same fields with \"action\":\"discussion\"."
+                    )
+                } else if foreign_task(&root, payload) {
+                    // `continue`, `start` and `cancel` are all refused for another session's
+                    // task; only a direct resume prompt or a person's cancel ends the block.
+                    call["action"] = "discussion".into();
+                    format!(
+                        "The active task {} belongs to another session; continue, start and cancel are refused from this one. If the user asked to resume that task, send \"action\":\"resume\". Otherwise call intent_apply {call} and tell the user that {}.",
+                        intent["task_id"].as_str().unwrap_or_default(),
+                        crate::autonomy::person_cancel(
+                            &intent,
+                            intent["task_id"].as_str().unwrap_or_default()
+                        )
                     )
                 } else {
                     call["action"] = "continue".into();
@@ -493,7 +515,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                 Ok(None) => {}
             }
             match crate::autonomy::discussion_turn(&root, text(payload, "session_id").unwrap_or_default()) {
-                Ok(true) => return Decision::Deny("GATE: this prompt is discussion only; a new user work prompt is required before mutation or delegation".to_owned()),
+                Ok(true) => return Decision::Deny("GATE: this prompt is classified as discussion; to work on it, apply start, continue or revise with the same event before mutation or delegation".to_owned()),
                 Err(_) => return Decision::Deny("GATE: prompt intent state unavailable".to_owned()),
                 Ok(false) => {}
             }
@@ -639,7 +661,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                         }
                         IntentAuthority::Discussion => {
                             Some(if event == "PreToolUse" {
-                                Decision::Deny("GATE: this prompt is discussion only; a new work prompt is required".to_owned())
+                                Decision::Deny("GATE: this prompt is classified as discussion; apply start, continue or revise with the same event to work on it".to_owned())
                             } else {
                                 Decision::None
                             })

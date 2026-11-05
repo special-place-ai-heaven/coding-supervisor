@@ -177,14 +177,24 @@ impl Flags {
     pub fn switch(&self, name: &str) -> bool {
         self.switches.iter().any(|s| s == name)
     }
-    /// `--project`, else the current directory, made absolute.
+    /// `--project`, else the current directory, made absolute. A `--project` that is not an
+    /// existing directory is refused: a shell that strips Windows backslashes would otherwise
+    /// select a state root the hooks never read.
     pub fn project(&self) -> Result<PathBuf, Failure> {
         let dir = match self.value("--project") {
             Some(dir) => PathBuf::from(dir),
             None => std::env::current_dir()
                 .map_err(|e| Failure::Error(format!("current directory: {e}")))?,
         };
-        std::path::absolute(&dir).map_err(|e| Failure::Error(format!("{}: {e}", dir.display())))
+        let dir = std::path::absolute(&dir)
+            .map_err(|e| Failure::Error(format!("{}: {e}", dir.display())))?;
+        if !dir.is_dir() {
+            return Err(Failure::Usage(format!(
+                "--project {}: not a directory (in a POSIX shell, quote Windows paths or use forward slashes)",
+                dir.display()
+            )));
+        }
+        Ok(dir)
     }
 }
 

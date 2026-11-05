@@ -608,8 +608,8 @@ fn require_registered(store: &Value, session: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A discussion turn consumes its prompt without cancelling any existing task. It does
-/// not authorize edits until another event is applied as actionable work.
+/// A discussion turn records its prompt without cancelling any existing task. It does
+/// not authorize edits until the same event or a later one is applied as actionable work.
 pub fn discussion_turn(root: &Path, session: &str) -> Result<bool, String> {
     let _tx = Transaction::open(root)?;
     let store = load(root)?;
@@ -1174,6 +1174,14 @@ fn observed_completion(dir: &Path, task_id: &str, project: &Path) -> Result<(), 
     Ok(())
 }
 
+/// The person-only command that ends a task no call from this prompt can end.
+pub fn person_cancel(event: &Value, task_id: &str) -> String {
+    let project = event["project"].as_str().unwrap_or("<project>");
+    format!(
+        "a person can end it with: supervisor task cancel --project \"{project}\" --task {task_id} --reason \"<why>\""
+    )
+}
+
 /// Apply once under the existing OS lock and write-ahead transaction. Replayed applications
 /// return their historical response and never reactivate or rebind an archived task.
 pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, String> {
@@ -1199,7 +1207,17 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
     }
     validate_discovery_context(&event["project"], project)?;
     let digest = crate::sha256::hex(crate::chain::canonical(proposal).as_bytes());
-    if let Some(applied) = event.get("applied") {
+    // A discussion changed no task, so the same prompt may still become work; the replaced
+    // discussion's digest stays in the record. Work is never turned back into a discussion.
+    let replaced_discussion = event
+        .get("applied")
+        .filter(|a| a["response"]["action"] == "discussion")
+        .filter(|_| proposal.get("action").and_then(Value::as_str) != Some("discussion"))
+        .map(|a| a["digest"].clone());
+    if let Some(applied) = event
+        .get("applied")
+        .filter(|_| replaced_discussion.is_none())
+    {
         if applied["digest"] != digest {
             return Err("prompt event already consumed by a different proposal".into());
         }
@@ -1240,10 +1258,10 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         if let Some(active) = &active
             && gate_state(&active.dir)? != "completed"
         {
-            return Err(
-                "unfinished task retained; continue it or explicitly cancel before a new task"
-                    .into(),
-            );
+            return Err(format!(
+                "unfinished task retained; continue it or explicitly cancel before a new task; {}",
+                person_cancel(&event, &active.task_id)
+            ));
         }
         if let Some(active) = &active
             && read(&active.dir.join("autonomy.json"))?.is_some_and(|m| m["source"] == "hook")
@@ -1313,7 +1331,10 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 && event["control"] == "resume"
                 && metadata["source"] == event["source"])
         {
-            return Err("proposal belongs to another task session".into());
+            return Err(format!(
+                "proposal belongs to another task session; a direct resume prompt from the user takes it over, or {}",
+                person_cancel(&event, &active.task_id)
+            ));
         }
         let task_state = gate_state(&active.dir)?;
         if matches!(action, "cancel" | "pause" | "resume") && event["control"] != action {
@@ -1476,6 +1497,9 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         writes.push(("sessions.json".into(), format!("{sessions}\n")));
     }
     store["events"][id]["applied"] = json!({"digest":digest,"response":response});
+    if let Some(old) = replaced_discussion {
+        store["events"][id]["applied"]["replaced_discussion"] = old;
+    }
     writes.push(("intents.json".into(), format!("{store}\n")));
     tx.commit(writes)?;
     Ok(response)
