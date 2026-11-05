@@ -83,8 +83,10 @@ fn a_hook_call_starts_few_git_processes() {
         "stop",
         json!({"hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done, all tests pass."}),
     );
-    // One root lookup, one rev-parse for HEAD and the prefix, one status.
-    assert!(pre <= 3, "PreToolUse started {pre} git processes");
+    // One root lookup, one rev-parse for HEAD and the prefix, one status. A PreToolUse of a
+    // criterion command adds the three gits of the worktree tree id (G9: index path, add,
+    // write-tree); Stop computes it only when an exact candidate match fails, so it adds none.
+    assert!(pre <= 6, "PreToolUse started {pre} git processes");
     assert!(stop <= 3, "Stop started {stop} git processes");
     let _ = fs::remove_dir_all(&root);
 }

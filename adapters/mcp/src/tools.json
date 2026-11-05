@@ -24,7 +24,8 @@
         "action": {"type": "string", "enum": ["discussion", "start", "continue", "revise", "pause", "resume", "cancel"]},
         "task_id": {"type": "string"},
         "contract": {"type": "object", "description": "Required for start and revise (or contract_file); uses the standard task contract shape."},
-        "contract_file": {"type": "string", "description": "Instead of contract: a JSON contract file, relative to the project, read and validated as if sent inline."}
+        "contract_file": {"type": "string", "description": "Instead of contract: a JSON contract file, relative to the project, read and validated as if sent inline."},
+        "worktree": {"type": "string", "description": "Optional, for start or revise: a linked git worktree of this repository (it may not exist yet) to bind the task to; edits, checks and the candidate are then taken from there."}
       },
       "required": ["event_id", "nonce", "prompt_hash", "action"]
     }

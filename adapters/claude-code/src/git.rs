@@ -20,6 +20,15 @@ pub enum Failure {
 
 /// `git -C cwd args`, killed and reaped if it is still running after the deadline.
 pub fn run(cwd: &Path, args: &[&str]) -> Result<Output, Failure> {
+    run_with_env(cwd, args, &[])
+}
+
+/// [`run`] with extra environment variables set on the child.
+pub fn run_with_env(
+    cwd: &Path,
+    args: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+) -> Result<Output, Failure> {
     let what = format!("git {}", args.join(" "));
     // Test seam: `SUPERVISOR_GIT_TRACE=<file>` appends each git's subcommand (no paths, no
     // output) so a test can pin how many processes a hook call starts.
@@ -40,6 +49,7 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<Output, Failure> {
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -82,6 +92,39 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<Output, Failure> {
         stdout: collect(stdout)?,
         stderr: collect(stderr)?,
     })
+}
+
+/// G9: git's id of the whole worktree content (a tree object), as a commit of everything would
+/// record it. Built in a scratch copy of the real index under `state_dir`, so the real index is
+/// untouched and git's stat cache is reused. `None` on any failure: callers then keep the exact
+/// candidate rule, so a tree that cannot be computed never causes a refusal. Writes unreachable
+/// loose objects. The tree is of the worktree whose top level is `cwd`'s.
+pub fn worktree_tree(cwd: &Path, state_dir: &Path) -> Option<String> {
+    let ok = |args: &[&str], env: &[(&str, &std::ffi::OsStr)]| {
+        run_with_env(cwd, args, env)
+            .ok()
+            .filter(|out| out.status.success())
+    };
+    let real = ok(&["rev-parse", "--git-path", "index"], &[])?;
+    let real = cwd.join(String::from_utf8_lossy(&real.stdout).trim());
+    // Per process: parallel hook calls must not share one scratch index.
+    let scratch = state_dir.join(format!("scratch-index-{}", std::process::id()));
+    let _ = std::fs::remove_file(&scratch);
+    // An absent index (nothing staged yet) starts the scratch one empty.
+    if real.is_file() {
+        std::fs::copy(&real, &scratch).ok()?;
+    }
+    let env = [("GIT_INDEX_FILE", scratch.as_os_str())];
+    // The gate's own fallback state directory inside the project is not content.
+    let tree = ok(
+        &["add", "-A", "--", ":/", ":(top,exclude).supervisor/"],
+        &env,
+    )
+    .and_then(|_| ok(&["write-tree"], &env))
+    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    .filter(|id| !id.is_empty());
+    let _ = std::fs::remove_file(&scratch);
+    tree
 }
 
 fn drain(pipe: Option<impl Read + Send + 'static>) -> Receiver<Vec<u8>> {

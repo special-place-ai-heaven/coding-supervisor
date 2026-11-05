@@ -372,7 +372,7 @@ impl Server {
         trace: &mut Trace,
     ) -> Result<String, String> {
         let dir = &self.state_dir;
-        let op = parse(tool, args, &self.project)?;
+        let op = parse(tool, args, &self.project, dir)?;
         if matches!(op, Op::Accept | Op::Complete) {
             supervisor_claude_code::autonomy::validate_entrypoints(dir, &self.project)?;
         }
@@ -458,6 +458,7 @@ impl Server {
             details["pending_jobs"] =
                 supervisor_claude_code::autonomy::pending_jobs(dir, &task_id)?;
             details["paused"] = supervisor_claude_code::autonomy::is_paused(dir)?.into();
+            details["worktree"] = supervisor_claude_code::binding::bound_root(dir).into();
         }
         Ok(details.to_string())
     }
@@ -704,12 +705,12 @@ fn describe(
     ])
 }
 
-fn parse(tool: &str, args: &Value, project: &Path) -> Result<Op, String> {
+fn parse(tool: &str, args: &Value, project: &Path, task_dir: &Path) -> Result<Op, String> {
     if !args.is_object() {
         return Err("field arguments is not an object".to_owned());
     }
     Ok(match tool {
-        "candidate_observe" => Op::Observe(candidate_from_args(args, project)?),
+        "candidate_observe" => Op::Observe(candidate_from_args(args, project, task_dir)?),
         "receipt_record" => Op::Receipt {
             criterion: string(args, "criterion")?,
             command: string(args, "command")?,
@@ -752,7 +753,7 @@ fn parse(tool: &str, args: &Value, project: &Path) -> Result<Op, String> {
 
 /// The caller's candidate, or, without `base_commit` and `dirty_digest`, the one the hooks
 /// derive from git in `project`; given `changed_paths` and `provenance` still apply.
-fn candidate_from_args(args: &Value, project: &Path) -> Result<Candidate, String> {
+fn candidate_from_args(args: &Value, project: &Path, task_dir: &Path) -> Result<Candidate, String> {
     let given = |key: &str| !matches!(args.get(key), None | Some(Value::Null));
     let mut candidate = match (given("base_commit"), given("dirty_digest")) {
         (true, true) => Candidate {
@@ -764,13 +765,13 @@ fn candidate_from_args(args: &Value, project: &Path) -> Result<Candidate, String
             changed_paths: strings(args, "changed_paths")?,
         },
         (false, false) => {
-            let mut derived = GitCandidate {
-                cwd: project.to_path_buf(),
-            }
-            .observe()
-            .map_err(|why| {
-                format!("candidate not derived from git ({why}); pass base_commit and dirty_digest")
-            })?;
+            let mut derived = supervisor_claude_code::binding::provider(Some(task_dir), project)
+                .observe()
+                .map_err(|why| {
+                    format!(
+                        "candidate not derived from git ({why}); pass base_commit and dirty_digest"
+                    )
+                })?;
             if given("changed_paths") {
                 derived.changed_paths = strings(args, "changed_paths")?;
             }

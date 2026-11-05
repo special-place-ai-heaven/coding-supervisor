@@ -15,6 +15,10 @@ pub(crate) struct Run {
     pub cwd: String,
     pub execution_root: String,
     pub candidate: CandidateId,
+    /// Git's id of the worktree content when the candidate was observed (schema 4, G9).
+    pub tree: Option<String>,
+    /// Candidates this run's evidence was transferred to because their tree is identical.
+    pub transferred_to: Vec<CandidateId>,
     pub exit_code: Option<i32>,
     pub reference: String,
     pub t: u64,
@@ -140,7 +144,11 @@ pub(crate) fn approved_context(record: &Value) -> bool {
 // Schema 3 binds command identity to an approved execution profile and root.
 // Older records stay on disk, but cannot authorize completion without a rerun.
 fn valid_identity(record: &Value) -> bool {
-    if record.get("identity_schema").and_then(Value::as_u64) != Some(3) {
+    // Schema 4 adds the optional `tree` (G9); a row without it keeps the exact candidate rule.
+    if !matches!(
+        record.get("identity_schema").and_then(Value::as_u64),
+        Some(3 | 4)
+    ) {
         return false;
     }
     let (Some(tool), Some(stored), Some(command)) = (
@@ -325,8 +333,14 @@ pub(crate) fn observe(
         if !shell && !Path::new(workdir).is_absolute() {
             return Ok(false);
         }
-        let project = crate::location::canonical_project(Path::new(base));
-        if crate::location::canonical_project(Path::new(workdir)) != project {
+        // G5: a task bound to a worktree counts only runs in it, wherever the hook runs.
+        let bound = crate::binding::bound_root(dir);
+        let project = crate::location::canonical_project(Path::new(workdir));
+        let hook_project = crate::location::canonical_project(Path::new(base));
+        if bound
+            .as_deref()
+            .map_or(project != hook_project, |b| project != b)
+        {
             return Ok(false);
         }
         if previous
@@ -335,10 +349,12 @@ pub(crate) fn observe(
         {
             return Ok(false);
         }
+        let tree =
+            crate::git::worktree_tree(Path::new(if bound.is_some() { workdir } else { base }), dir);
         append(&json!({"kind":"dispatch", "task_id":task, "agent_id":agent,
             "session_id":payload.get("session_id"), "dispatch_id":id, "tool":tool,
-            "identity_schema":3, "identity":identity, "command":command, "cwd":cwd(workdir, base),
-            "execution_project":project, "execution_root":project,
+            "identity_schema":4, "tree":tree, "identity":identity, "command":command, "cwd":cwd(workdir, base),
+            "execution_project":project, "execution_root":project, "bound_root":bound,
             "execution_profile":execution_profile(input),
             "candidate":{"base_commit":candidate.id.base_commit,"dirty_digest":candidate.id.dirty_digest},
             "target_id":input.get("target_id"), "t":now}))?;
@@ -646,6 +662,65 @@ pub(crate) fn pending_jobs(dir: &Path, task: &str) -> Result<Value, String> {
     Ok(jobs.into())
 }
 
+/// The candidates the adapter recorded as having the same tree as `run`'s dispatch (G9).
+fn transfers(rows: &[Value], task: &str, run: &Value) -> Vec<CandidateId> {
+    rows.iter()
+        .filter(|t| {
+            text(t, "kind") == Some("transfer")
+                && text(t, "task_id") == Some(task)
+                && text(t, "dispatch_id") == text(run, "dispatch_id")
+                && t.get("from") == run.get("candidate")
+        })
+        .filter_map(|t| {
+            let to = t.get("to")?;
+            Some(CandidateId {
+                base_commit: text(to, "base_commit")?.to_owned(),
+                dirty_digest: text(to, "dirty_digest")?.to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// True when the journal holds a tree transfer of `dispatch` to `candidate` (G9).
+pub(crate) fn transferred(
+    rows: &[Value],
+    task: &str,
+    dispatch: &str,
+    candidate: &CandidateId,
+) -> bool {
+    rows.iter().any(|t| {
+        text(t, "kind") == Some("transfer")
+            && text(t, "task_id") == Some(task)
+            && text(t, "dispatch_id") == Some(dispatch)
+            && t.pointer("/to/base_commit").and_then(Value::as_str) == Some(&candidate.base_commit)
+            && t.pointer("/to/dirty_digest").and_then(Value::as_str)
+                == Some(&candidate.dirty_digest)
+    })
+}
+
+/// Append the transfer of `run`'s evidence to `to`, once per dispatch and target (G9).
+pub(crate) fn record_transfer(
+    dir: &Path,
+    task: &str,
+    run: &Run,
+    to: &CandidateId,
+    tree: &str,
+    now: u64,
+) -> Result<(), String> {
+    let Some(dispatch) = crate::adapter::cited_dispatch(task, &run.reference) else {
+        return Ok(());
+    };
+    if run.transferred_to.contains(to) {
+        return Ok(());
+    }
+    let id = |c: &CandidateId| json!({"base_commit":c.base_commit,"dirty_digest":c.dirty_digest});
+    state::append_line(
+        &dir.join("runs.jsonl"),
+        &json!({"kind":"transfer","matched_by":"tree","task_id":task,"dispatch_id":dispatch,
+            "from":id(&run.candidate),"to":id(to),"tree":tree,"t":now}),
+    )
+}
+
 pub(crate) fn read_runs(dir: &Path, task: &str) -> Result<Vec<Run>, String> {
     let rows = records(dir)?;
     let mut recovered = std::collections::BTreeMap::new();
@@ -692,6 +767,8 @@ pub(crate) fn read_runs(dir: &Path, task: &str) -> Result<Vec<Run>, String> {
                     base_commit: text(v.get("candidate")?, "base_commit")?.to_owned(),
                     dirty_digest: text(v.get("candidate")?, "dirty_digest")?.to_owned(),
                 },
+                tree: text(v, "tree").map(str::to_owned),
+                transferred_to: transfers(&rows, task, v),
                 exit_code: v
                     .get("exit_code")
                     .and_then(Value::as_i64)

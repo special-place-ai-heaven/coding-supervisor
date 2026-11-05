@@ -288,6 +288,9 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
         ) {
             (Ok(autonomous), Ok(paused)) => {
                 active["autonomous"] = autonomous.into();
+                if let Some(worktree) = supervisor_claude_code::binding::bound_root(&task.dir) {
+                    active["worktree"] = worktree.into();
+                }
                 if paused {
                     active["lifecycle_state"] = "paused".into();
                 }
@@ -396,7 +399,7 @@ fn human(report: &Value) -> String {
                 .join(", ")
         })
         .unwrap_or_else(|| "unknown".to_owned());
-    format!(
+    let mut text = format!(
         "supervisor {} ({})\nharness: {}\nproject: {}\nregistration: {} (configured binary: {}; configured version: {})\nconnection: {}; model session loaded: {}\ntask: {} (gate: {}; id: {})\nmode: {}\nlevel: {} ({})\nreceipts: {} observed; {} reconstructed; {} asserted; {} unverified\ncompletion coverage: {}\nbasis: {}\naction policy: {}\ncoverage: {}; same-user security boundary: false",
         s("/reporting_binary/version"),
         s("/reporting_binary/path"),
@@ -424,7 +427,11 @@ fn human(report: &Value) -> String {
         s("/coverage/basis"),
         s("/action_policy/state"),
         s("/coverage/basis")
-    )
+    );
+    if let Some(worktree) = report.pointer("/task/worktree").and_then(Value::as_str) {
+        text.push_str(&format!("\nbound worktree: {worktree}"));
+    }
+    text
 }
 
 #[cfg(test)]

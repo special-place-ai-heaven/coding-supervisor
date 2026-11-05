@@ -857,7 +857,13 @@ pub fn validate_entrypoints(dir: &Path, project: &Path) -> Result<(), String> {
     let Some(metadata) = read(&dir.join("autonomy.json"))? else {
         return Ok(());
     };
-    if let Some(recorded) = metadata.get("project") {
+    // G5: the bound worktree is a place the task runs, not another project.
+    let in_bound_worktree = metadata["worktree"]
+        .as_str()
+        .is_some_and(|bound| crate::location::canonical_project(project) == bound);
+    if let Some(recorded) = metadata.get("project")
+        && !in_bound_worktree
+    {
         validate_discovery_context(recorded, project)?;
     }
     match metadata.get("npm_entrypoints") {
@@ -1134,7 +1140,7 @@ fn observed_completion(dir: &Path, task_id: &str, project: &Path) -> Result<(), 
             serde_json::from_str(line).map_err(|_| "invalid command journal during rollover")
         })
         .collect::<Result<_, _>>()?;
-    let execution_root = crate::location::canonical_project(project);
+    let execution_root = crate::binding::execution_root(dir, project);
     for criterion in contract.criteria.iter().filter(|c| c.mandatory) {
         // A completed task rests on its latest receipt for the criterion: on the completed
         // candidate, and citing a project-root run of an accepted command. A dispatch journaled
@@ -1152,10 +1158,12 @@ fn observed_completion(dir: &Path, task_id: &str, project: &Path) -> Result<(), 
                         && row["dispatch_id"].as_str() == Some(dispatch)
                         && row["cwd"].as_str() == Some(execution_root.as_str())
                         && row["task_id"] == task_id
-                        && row.get("candidate").is_some_and(|c| {
+                        && (row.get("candidate").is_some_and(|c| {
                             c["base_commit"] == candidate.base_commit
                                 && c["dirty_digest"] == candidate.dirty_digest
-                        })
+                        }) || crate::observation::transferred(
+                            &rows, task_id, dispatch, candidate,
+                        ))
                         && row
                             .get("command")
                             .and_then(Value::as_str)
@@ -1185,6 +1193,14 @@ pub fn person_cancel(event: &Value, task_id: &str) -> String {
     format!(
         "a person can end it with: supervisor task cancel --project \"{project}\" --task {task_id} --reason \"<why>\""
     )
+}
+
+/// G5: the validated linked worktree a `start` or `revise` binds its task to, if it asks for one.
+fn requested_worktree(project: &Path, proposal: &Value) -> Result<Option<String>, String> {
+    match proposal.get("worktree").and_then(Value::as_str) {
+        Some(requested) => crate::binding::resolve(project, requested),
+        None => Ok(None),
+    }
 }
 
 /// Apply once under the existing OS lock and write-ahead transaction. Replayed applications
@@ -1288,7 +1304,10 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
             event.get("npm_definitions").unwrap_or(&json!({})),
         )?;
         check_entrypoint_map(&npm_entrypoints, project)?;
-        let metadata = json!({"schema":1,"source":event["source"],"project":event["project"],"session_id":session,"initial_event":id,"requirement_floor":contract,"npm_entrypoints":npm_entrypoints,"paused":false,"revisions":[{"event_id":id,"action":"start","contract":contract}]});
+        let mut metadata = json!({"schema":1,"source":event["source"],"project":event["project"],"session_id":session,"initial_event":id,"requirement_floor":contract,"npm_entrypoints":npm_entrypoints,"paused":false,"revisions":[{"event_id":id,"action":"start","contract":contract}]});
+        if let Some(worktree) = requested_worktree(project, proposal)? {
+            metadata["worktree"] = worktree.into();
+        }
         writes.push((
             PathBuf::from("tasks").join(task_id).join("autonomy.json"),
             format!("{metadata}\n"),
@@ -1409,6 +1428,16 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                     .ok_or("invalid npm entrypoint selection")?
                 {
                     expected.entry(name).or_insert_with(|| digest.clone());
+                }
+                // A revise naming the project itself moves the task back: the binding is cleared.
+                match requested_worktree(project, proposal)? {
+                    Some(worktree) => metadata["worktree"] = worktree.into(),
+                    None if proposal.get("worktree").is_some() => {
+                        if let Some(fields) = metadata.as_object_mut() {
+                            fields.remove("worktree");
+                        }
+                    }
+                    None => {}
                 }
                 preserves(&old, &new, event["source"] == "hook")?;
                 if let Some(floor) = metadata.get("requirement_floor") {
