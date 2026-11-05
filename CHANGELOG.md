@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.11.0...v0.11.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **gate:** remove the dead ends and noise found dogfooding (G15-G22) ([0d23c6d](https://github.com/special-place-ai-heaven/coding-supervisor/commit/0d23c6d0aa8f5de712d773f3dfbce812a5170a5a))
+* **gate:** remove the dead ends and noise found dogfooding (G15-G22) ([d689b53](https://github.com/special-place-ai-heaven/coding-supervisor/commit/d689b53cb9470ea2d988263e06251422184132b4))
+
 ## [0.11.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.10.1...v0.11.0) (2026-11-05)
 
 
