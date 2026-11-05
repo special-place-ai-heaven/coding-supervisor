@@ -978,6 +978,14 @@ fn default_forbidden_effects_are_refused_from_enforce_up() {
         ("git -C . push origin main", true),
         ("npm publish --tag next", true),
         ("git status && git push origin main", true),
+        ("git push origin \"main\"", true),
+        ("git push -fu origin feature", true),
+        ("git push -uf origin feature", true),
+        ("git push --forc origin feature", true),
+        ("env GIT_TRACE=1 git push origin main", true),
+        ("command git push origin main", true),
+        ("echo git push --force origin main", false),
+        ("git push --tags", false),
         ("git push origin feature", false),
         ("git push -u origin feature", false),
         ("git push -o ci.skip origin feature", false),
@@ -1013,5 +1021,25 @@ fn default_forbidden_effects_are_refused_from_enforce_up() {
                 );
             }
         }
+    }
+    // Terminal Commander: only the argv is the command; its cwd is not a refspec, so a bare
+    // push there still targets the checked-out default branch.
+    f.set(&["enforce"]);
+    let project = f.project.to_str().unwrap();
+    for (id, argv, forbidden) in [
+        ("tc-bare", json!(["git", "push", "origin"]), true),
+        (
+            "tc-feature",
+            json!(["git", "push", "origin", "feature"]),
+            false,
+        ),
+    ] {
+        let decision = f.tool(
+            id,
+            "mcp__terminal_commander__run_and_watch",
+            json!({"argv": argv, "cwd": project}),
+        );
+        let refused = decision.to_string().contains("forbidden by default");
+        assert_eq!(refused, forbidden, "{id}: {decision}");
     }
 }

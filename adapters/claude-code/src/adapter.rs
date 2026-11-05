@@ -965,6 +965,12 @@ const DEFAULT_FORBIDDEN_EFFECTS: &[&str] = &[
 ];
 
 fn default_forbidden_effects(payload: &Value) -> Vec<String> {
+    // The defaults only concern commands; an edit tool needs no lookup.
+    let tool = text(payload, "tool_name").unwrap_or_default();
+    let input = payload.get("tool_input").unwrap_or(&Value::Null);
+    if crate::guard::command_text(tool, input).is_none() {
+        return Vec::new();
+    }
     let mut effects: Vec<String> = DEFAULT_FORBIDDEN_EFFECTS
         .iter()
         .map(|e| (*e).to_owned())
@@ -985,14 +991,23 @@ struct Push {
     targets: Vec<String>,
 }
 
-/// The `git push` in `words`, if any. A push without refspecs, or with `HEAD`, targets the
-/// checked-out branch, which `head` reads for the `-C` directory when one was given.
+/// Words a command line may start with before the program it runs.
+const COMMAND_WRAPPERS: &[&str] = &["command", "env", "sudo", "exec", "nohup", "time"];
+
+/// The `git push` that `words` runs, if any: `git` must be the program, after optional
+/// wrappers and `NAME=value` assignments, so prose such as `echo git push` is not a push. A
+/// push without refspecs, or with `HEAD`, targets the checked-out branch, which `head` reads
+/// for the `-C` directory when one was given.
+/// ponytail: aliases, `git -c alias.x=push x`, variables and globbed refspecs are not resolved.
 fn git_push(words: &[&str], head: &dyn Fn(Option<&str>) -> Option<String>) -> Option<Push> {
-    let at = words.iter().position(|w| {
-        w.rsplit(['/', '\\'])
-            .next()
-            .is_some_and(|p| p.eq_ignore_ascii_case("git") || p.eq_ignore_ascii_case("git.exe"))
-    })?;
+    let words: Vec<&str> = words.iter().map(|w| w.trim_matches(['"', '\''])).collect();
+    let at = words
+        .iter()
+        .position(|w| !COMMAND_WRAPPERS.contains(w) && (w.starts_with('-') || !w.contains('=')))?;
+    let program = words[at].rsplit(['/', '\\']).next()?;
+    if !(program.eq_ignore_ascii_case("git") || program.eq_ignore_ascii_case("git.exe")) {
+        return None;
+    }
     let mut dir = None;
     let mut rest = words[at + 1..].iter();
     loop {
@@ -1008,20 +1023,27 @@ fn git_push(words: &[&str], head: &dyn Fn(Option<&str>) -> Option<String>) -> Op
     }
     let mut push = Push::default();
     let mut positional = Vec::new();
+    let mut tags = false;
     while let Some(word) = rest.next() {
         match *word {
-            "--force" | "-f" | "--force-if-includes" => push.force = true,
-            word if word.starts_with("--force-with-lease") => push.force = true,
             "--all" | "--mirror" | "--branches" => push.all = true,
+            "--tags" => tags = true,
             "-o" | "--push-option" | "--repo" | "--receive-pack" | "--exec" => {
                 rest.next();
+            }
+            // --force, --force-with-lease[=...], --force-if-includes, and git's unambiguous
+            // abbreviations of --force (from --forc); short flags combine, as in -fu.
+            word if word.starts_with("--force") => push.force = true,
+            word if word.len() >= 6 && "--force".starts_with(word) => push.force = true,
+            word if !word.starts_with("--") && word.starts_with('-') && word.contains('f') => {
+                push.force = true;
             }
             word if word.starts_with('-') => {}
             word => positional.push(word),
         }
     }
     let refspecs = positional.get(1..).unwrap_or_default();
-    if refspecs.is_empty() && !push.all {
+    if refspecs.is_empty() && !push.all && !tags {
         push.targets.extend(head(dir));
     }
     for spec in refspecs {
@@ -1053,13 +1075,17 @@ fn forbidden_effect(payload: &Value, effects: &[String]) -> Option<String> {
     let tool = text(payload, "tool_name")?;
     let input = payload.get("tool_input")?;
     let edit = matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit");
-    let relative = edit
-        .then(|| text(input, "file_path").or_else(|| text(input, "notebook_path")))
-        .flatten()
-        .and_then(|path| {
-            let cwd = Path::new(text(payload, "cwd").unwrap_or("."));
-            project_relative(&location::canonical_project(cwd), &cwd.join(path))
-        });
+    // Resolving the project starts git, so only for an edit checked against a deny_path.
+    let relative = (edit
+        && effects
+            .iter()
+            .any(|e| e.trim_start().starts_with("deny_path")))
+    .then(|| text(input, "file_path").or_else(|| text(input, "notebook_path")))
+    .flatten()
+    .and_then(|path| {
+        let cwd = Path::new(text(payload, "cwd").unwrap_or("."));
+        project_relative(&location::canonical_project(cwd), &cwd.join(path))
+    });
     let raw = crate::guard::command_text(tool, input);
     let command = raw.as_deref().map(str::to_lowercase);
     let split = |c: &'_ str| -> Vec<Vec<String>> {
@@ -1082,7 +1108,27 @@ fn forbidden_effect(payload: &Value, effects: &[String]) -> Option<String> {
             .unwrap_or("."),
     );
     let head = |dir: Option<&str>| location::current_branch(&base.join(dir.unwrap_or(".")));
-    let pushes: Vec<Push> = raw
+    // Only the command itself: Terminal Commander's command text also carries cwd and path
+    // fields, which would read as refspecs.
+    let push_text = if tool.starts_with("mcp__terminal_commander__") {
+        input
+            .get("argv")
+            .and_then(Value::as_array)
+            .map(|argv| {
+                argv.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .or_else(|| {
+                ["shell_line", "line", "command"]
+                    .iter()
+                    .find_map(|field| text(input, field).map(str::to_owned))
+            })
+    } else {
+        raw.clone()
+    };
+    let pushes: Vec<Push> = push_text
         .as_deref()
         .map(split)
         .unwrap_or_default()
