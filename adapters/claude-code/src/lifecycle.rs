@@ -229,7 +229,7 @@ pub(crate) fn plan_start(
     if !parsed.forbidden_effects.is_empty() {
         // F13b: only typed entries in strict mode become refusals (M5); a reviewer checks the rest.
         response["warnings"] = json!([
-            "forbidden_effects are recorded but not enforced, except typed entries (deny_path:, deny_git:, deny_argv_prefix:) in strict mode; a reviewer must check the rest"
+            "forbidden_effects are recorded but not enforced, except typed entries (deny_path:, deny_git:, deny_argv_prefix:, deny_git_push_target:, deny_git_force_push) in strict mode; a reviewer must check the rest. Pushes to main, master or origin/HEAD, force-pushes and npm publish are refused by default from enforce up"
         ]);
     }
     Ok((response, writes))

@@ -849,12 +849,23 @@ fn process(
         reasons.push("level strict: write outside the contract scope".to_owned());
         return Ok(denial);
     }
-    if event == "PreToolUse"
-        && env.level.level == Level::Strict
-        && let Some(denial) = forbidden_effect(payload, &contract.forbidden_effects)
-    {
-        reasons.push("level strict: forbidden effect".to_owned());
-        return Ok(denial);
+    if event == "PreToolUse" {
+        let tool = text(payload, "tool_name").unwrap_or_default();
+        if let Some(effect) = forbidden_effect(payload, &default_forbidden_effects(payload)) {
+            reasons.push("default forbidden effect".to_owned());
+            return Ok(Decision::Deny(format!(
+                "GATE: {tool} refused: {effect} is forbidden by default (level {}); a person can lower the level with `supervisor level audit`",
+                env.level.level.name()
+            )));
+        }
+        if env.level.level == Level::Strict
+            && let Some(effect) = forbidden_effect(payload, &contract.forbidden_effects)
+        {
+            reasons.push("level strict: forbidden effect".to_owned());
+            return Ok(Decision::Deny(format!(
+                "GATE: {tool} refused: the task forbids {effect} (level strict)"
+            )));
+        }
     }
     trace.state_before = stored.as_ref().map(|g| g.checkpoint.state);
     trace.candidate = observed.as_ref().ok().map(|c| c.id.clone());
@@ -942,34 +953,193 @@ fn out_of_scope(payload: &Value, scope: &[String]) -> Option<Decision> {
     })
 }
 
-/// M5, strict: the typed forbidden effects of the contract are refused before they happen.
+/// Typed forbidden effects every task carries from `enforce` up, whatever its contract says;
+/// the checkout's `origin/HEAD` branch is added when git recorded one.
+/// ponytail: `main`/`master` plus `origin/HEAD`; a default branch known only to the server is
+/// not seen.
+const DEFAULT_FORBIDDEN_EFFECTS: &[&str] = &[
+    "deny_git_push_target:main",
+    "deny_git_push_target:master",
+    "deny_git_force_push",
+    "deny_argv_prefix:npm publish",
+];
+
+fn default_forbidden_effects(payload: &Value) -> Vec<String> {
+    // The defaults only concern commands; an edit tool needs no lookup.
+    let tool = text(payload, "tool_name").unwrap_or_default();
+    let input = payload.get("tool_input").unwrap_or(&Value::Null);
+    if crate::guard::command_text(tool, input).is_none() {
+        return Vec::new();
+    }
+    let mut effects: Vec<String> = DEFAULT_FORBIDDEN_EFFECTS
+        .iter()
+        .map(|e| (*e).to_owned())
+        .collect();
+    let cwd = Path::new(text(payload, "cwd").unwrap_or("."));
+    if let Some(branch) = location::origin_default_branch(cwd) {
+        effects.push(format!("deny_git_push_target:{branch}"));
+    }
+    effects
+}
+
+/// One `git push`: whether it forces, whether it pushes every branch, and the branches it
+/// updates or deletes (lowercased).
+#[derive(Default)]
+struct Push {
+    force: bool,
+    all: bool,
+    targets: Vec<String>,
+}
+
+/// Words a command line may start with before the program it runs.
+const COMMAND_WRAPPERS: &[&str] = &["command", "env", "sudo", "exec", "nohup", "time"];
+
+/// The `git push` that `words` runs, if any: `git` must be the program, after optional
+/// wrappers and `NAME=value` assignments, so prose such as `echo git push` is not a push. A
+/// push without refspecs, or with `HEAD`, targets the checked-out branch, which `head` reads
+/// for the `-C` directory when one was given.
+/// ponytail: aliases, `git -c alias.x=push x`, variables and globbed refspecs are not resolved.
+fn git_push(words: &[&str], head: &dyn Fn(Option<&str>) -> Option<String>) -> Option<Push> {
+    let words: Vec<&str> = words.iter().map(|w| w.trim_matches(['"', '\''])).collect();
+    let at = words
+        .iter()
+        .position(|w| !COMMAND_WRAPPERS.contains(w) && (w.starts_with('-') || !w.contains('=')))?;
+    let program = words[at].rsplit(['/', '\\']).next()?;
+    if !(program.eq_ignore_ascii_case("git") || program.eq_ignore_ascii_case("git.exe")) {
+        return None;
+    }
+    let mut dir = None;
+    let mut rest = words[at + 1..].iter();
+    loop {
+        match *rest.next()? {
+            "-c" => {
+                rest.next();
+            }
+            "-C" => dir = rest.next().copied(),
+            "push" => break,
+            word if word.starts_with('-') => {}
+            _ => return None,
+        }
+    }
+    let mut push = Push::default();
+    let mut positional = Vec::new();
+    let mut tags = false;
+    while let Some(word) = rest.next() {
+        match *word {
+            "--all" | "--mirror" | "--branches" => push.all = true,
+            "--tags" => tags = true,
+            "-o" | "--push-option" | "--repo" | "--receive-pack" | "--exec" => {
+                rest.next();
+            }
+            // --force, --force-with-lease[=...], --force-if-includes, and git's unambiguous
+            // abbreviations of --force (from --forc); short flags combine, as in -fu.
+            word if word.starts_with("--force") => push.force = true,
+            word if word.len() >= 6 && "--force".starts_with(word) => push.force = true,
+            word if !word.starts_with("--") && word.starts_with('-') && word.contains('f') => {
+                push.force = true;
+            }
+            word if word.starts_with('-') => {}
+            word => positional.push(word),
+        }
+    }
+    let refspecs = positional.get(1..).unwrap_or_default();
+    if refspecs.is_empty() && !push.all && !tags {
+        push.targets.extend(head(dir));
+    }
+    for spec in refspecs {
+        let spec = match spec.strip_prefix('+') {
+            Some(spec) => {
+                push.force = true;
+                spec
+            }
+            None => spec,
+        };
+        let dst = spec.rsplit_once(':').map_or(spec, |(_, dst)| dst);
+        let dst = dst.strip_prefix("refs/heads/").unwrap_or(dst);
+        if dst.eq_ignore_ascii_case("HEAD") {
+            push.targets.extend(head(dir));
+        } else if !dst.is_empty() {
+            push.targets.push(dst.to_lowercase());
+        }
+    }
+    Some(push)
+}
+
+/// M5: typed forbidden effects are refused before they happen; the effect found is returned.
 /// `deny_path:<dir>` refuses an edit tool under that project path; `deny_git:<subcommand>` a git
 /// command with that subcommand; `deny_argv_prefix:<words>` a command (or a part of one between
-/// `;`, `&`, `|` or a newline) that starts with those words. Other entries stay unenforced.
-fn forbidden_effect(payload: &Value, effects: &[String]) -> Option<Decision> {
+/// `;`, `&`, `|` or a newline) that starts with those words; `deny_git_push_target:<branch>` a
+/// push that updates or deletes that branch, or pushes every branch; `deny_git_force_push` any
+/// forced push. Other entries stay unenforced.
+fn forbidden_effect(payload: &Value, effects: &[String]) -> Option<String> {
     let tool = text(payload, "tool_name")?;
     let input = payload.get("tool_input")?;
     let edit = matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit");
-    let relative = edit
-        .then(|| text(input, "file_path").or_else(|| text(input, "notebook_path")))
-        .flatten()
-        .and_then(|path| {
-            let cwd = Path::new(text(payload, "cwd").unwrap_or("."));
-            project_relative(&location::canonical_project(cwd), &cwd.join(path))
-        });
-    let command = crate::guard::command_text(tool, input).map(|c| c.to_lowercase());
-    let segments: Vec<Vec<&str>> = command
+    // Resolving the project starts git, so only for an edit checked against a deny_path.
+    let relative = (edit
+        && effects
+            .iter()
+            .any(|e| e.trim_start().starts_with("deny_path")))
+    .then(|| text(input, "file_path").or_else(|| text(input, "notebook_path")))
+    .flatten()
+    .and_then(|path| {
+        let cwd = Path::new(text(payload, "cwd").unwrap_or("."));
+        project_relative(&location::canonical_project(cwd), &cwd.join(path))
+    });
+    let raw = crate::guard::command_text(tool, input);
+    let command = raw.as_deref().map(str::to_lowercase);
+    let split = |c: &'_ str| -> Vec<Vec<String>> {
+        c.split([';', '&', '|', '\n'])
+            .map(|part| part.split_whitespace().map(str::to_owned).collect())
+            .collect()
+    };
+    let lowered = command.as_deref().map(split).unwrap_or_default();
+    let segments: Vec<Vec<&str>> = lowered
+        .iter()
+        .map(|words| words.iter().map(String::as_str).collect())
+        .collect();
+    // Pushes keep their case: `-C <dir>` must not read as `-c`, and paths are case-sensitive.
+    // ponytail: a bare push reads HEAD from the `-C` path or the command's cwd; a `cd x &&` in
+    // an earlier segment is not followed, and an unreadable HEAD lets the bare push through.
+    let base = PathBuf::from(
+        text(input, "cwd")
+            .filter(|_| tool.starts_with("mcp__terminal_commander__"))
+            .or_else(|| text(payload, "cwd"))
+            .unwrap_or("."),
+    );
+    let head = |dir: Option<&str>| location::current_branch(&base.join(dir.unwrap_or(".")));
+    // Only the command itself: Terminal Commander's command text also carries cwd and path
+    // fields, which would read as refspecs.
+    let push_text = if tool.starts_with("mcp__terminal_commander__") {
+        input
+            .get("argv")
+            .and_then(Value::as_array)
+            .map(|argv| {
+                argv.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .or_else(|| {
+                ["shell_line", "line", "command"]
+                    .iter()
+                    .find_map(|field| text(input, field).map(str::to_owned))
+            })
+    } else {
+        raw.clone()
+    };
+    let pushes: Vec<Push> = push_text
         .as_deref()
-        .map(|c| {
-            c.split([';', '&', '|', '\n'])
-                .map(|part| part.split_whitespace().collect())
-                .collect()
+        .map(split)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|words| {
+            let words: Vec<&str> = words.iter().map(String::as_str).collect();
+            git_push(&words, &head)
         })
-        .unwrap_or_default();
+        .collect();
     let effect = effects.iter().find(|effect| {
-        let Some((kind, value)) = effect.split_once(':') else {
-            return false;
-        };
+        let (kind, value) = effect.split_once(':').unwrap_or((effect.as_str(), ""));
         let value = value.trim();
         match kind.trim() {
             "deny_path" => relative
@@ -986,12 +1156,17 @@ fn forbidden_effect(payload: &Value, effects: &[String]) -> Option<Decision> {
                             && words.iter().zip(&prefix).all(|(w, p)| *w == p.as_str())
                     })
             }
+            "deny_git_push_target" => {
+                let branch = value.to_lowercase();
+                pushes
+                    .iter()
+                    .any(|push| push.all || push.targets.contains(&branch))
+            }
+            "deny_git_force_push" => pushes.iter().any(|push| push.force),
             _ => false,
         }
     })?;
-    Some(Decision::Deny(format!(
-        "GATE: {tool} refused: the task forbids {effect} (level strict)"
-    )))
+    Some(effect.clone())
 }
 
 /// The subcommand of a `git` invocation in `words`, skipping global options and the values of
