@@ -28,6 +28,50 @@ pub fn linked_main_checkout(worktree: &Path) -> Option<PathBuf> {
     common.parent().map(Path::to_path_buf)
 }
 
+/// The git directory of the repository containing `dir`: `.git` itself, or the directory a
+/// linked worktree's `.git` file points to. File reads only, no git process.
+fn git_dir(dir: &Path) -> Option<PathBuf> {
+    let dot_git = dir
+        .ancestors()
+        .map(|d| d.join(".git"))
+        .find(|g| g.exists())?;
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let text = fs::read_to_string(&dot_git).ok()?;
+    let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
+    Some(if gitdir.is_absolute() {
+        gitdir
+    } else {
+        dot_git.parent()?.join(gitdir)
+    })
+}
+
+/// The branch checked out in the repository containing `dir`, from its `HEAD` file; `None`
+/// for a detached HEAD or no repository.
+pub fn current_branch(dir: &Path) -> Option<String> {
+    let head = fs::read_to_string(git_dir(dir)?.join("HEAD")).ok()?;
+    head.trim()
+        .strip_prefix("ref: refs/heads/")
+        .map(str::to_lowercase)
+}
+
+/// The remote's default branch as git recorded it at clone (`refs/remotes/origin/HEAD`), read
+/// from the common git directory so linked worktrees see it too.
+pub fn origin_default_branch(dir: &Path) -> Option<String> {
+    let git_dir = git_dir(dir)?;
+    let common = match git_dir.parent() {
+        Some(parent) if parent.file_name().is_some_and(|n| n == "worktrees") => {
+            parent.parent()?.to_path_buf()
+        }
+        _ => git_dir,
+    };
+    let head = fs::read_to_string(common.join("refs/remotes/origin/HEAD")).ok()?;
+    head.trim()
+        .strip_prefix("ref: refs/remotes/origin/")
+        .map(str::to_lowercase)
+}
+
 /// [`canonical_project`], or an error when git does not answer in time, for callers whose
 /// state namespace or gate decision must not silently follow a different identity.
 pub(crate) fn checked_project(cwd: &Path) -> Result<String, String> {

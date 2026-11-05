@@ -811,7 +811,7 @@ fn strict_refuses_typed_forbidden_effects() {
     fs::write(&contract, json!({"id":"forbidden","goal":"respect forbidden effects","criteria":[
         {"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test"}],
         "scope":["src/","docs/"],
-        "forbidden_effects":["deny_path:docs/private/","deny_git:push","deny_argv_prefix:npm publish","no network"],
+        "forbidden_effects":["deny_path:docs/private/","deny_git:push","deny_argv_prefix:npm version","no network"],
         "max_repair_rounds":2}).to_string()).unwrap();
     let out = f.supervisor(&[
         "task",
@@ -838,7 +838,9 @@ fn strict_refuses_typed_forbidden_effects() {
         (
             "b1",
             "Bash",
-            json!({"command":"git -C . push origin main"}),
+            // A feature branch: a push to the default branch is refused by default from
+            // enforce up (see default_forbidden_effects_are_refused_from_enforce_up).
+            json!({"command":"git -C . push origin feature"}),
             true,
         ),
         (
@@ -850,7 +852,7 @@ fn strict_refuses_typed_forbidden_effects() {
         (
             "b3",
             "Bash",
-            json!({"command":"cd npm && npm publish --tag next"}),
+            json!({"command":"cd npm && npm version patch"}),
             true,
         ),
         ("b4", "Bash", json!({"command":"npm pack"}), false),
@@ -947,4 +949,69 @@ fn missing_project_directory_is_refused_and_writes_no_state() {
     }
     assert!(!f.state.exists(), "a refused --project created state");
     f.set(&["off"]);
+}
+
+/// Guardrail layer 3 by default: with a task active, a push to the default branch, a force-push
+/// and `npm publish` are refused from enforce up, reported at audit, and untouched at off; the
+/// contract needs no forbidden_effects for it. Pushes elsewhere and `npm pack` pass. The
+/// fixture checkout sits on git's default initial branch, so a bare push targets it.
+#[test]
+fn default_forbidden_effects_are_refused_from_enforce_up() {
+    let f = Fixture::new("defaults");
+    f.start_task();
+    let cases = [
+        ("git push origin main", true),
+        ("git push origin master", true),
+        ("git push origin HEAD:main", true),
+        ("git push origin feature:refs/heads/main", true),
+        ("git push origin :main", true),
+        ("git push --delete origin main", true),
+        ("git push --all origin", true),
+        ("git push --mirror origin", true),
+        ("git push", true),
+        ("git push origin", true),
+        ("git push origin HEAD", true),
+        ("git push origin +feature", true),
+        ("git push --force origin feature", true),
+        ("git push -f origin feature", true),
+        ("git push --force-with-lease origin feature", true),
+        ("git -C . push origin main", true),
+        ("npm publish --tag next", true),
+        ("git status && git push origin main", true),
+        ("git push origin feature", false),
+        ("git push -u origin feature", false),
+        ("git push -o ci.skip origin feature", false),
+        ("git push origin feature:feature", false),
+        ("git push origin v1.2.3", false),
+        ("npm pack", false),
+        ("git log --grep push", false),
+    ];
+    for (level, kind) in [
+        ("enforce", "deny"),
+        ("strict", "deny"),
+        ("audit", "system"),
+        ("off", "none"),
+    ] {
+        f.set(&[level]);
+        for (index, (command, forbidden)) in cases.iter().enumerate() {
+            let decision = f.tool(
+                &format!("{level}-{index}"),
+                "Bash",
+                json!({ "command": command }),
+            );
+            let refused = decision.to_string().contains("forbidden by default");
+            assert_eq!(
+                refused,
+                *forbidden && level != "off",
+                "{level} {command}: {decision}"
+            );
+            if *forbidden && level != "off" {
+                assert_eq!(
+                    decision_kind(&decision),
+                    kind,
+                    "{level} {command}: {decision}"
+                );
+            }
+        }
+    }
 }
