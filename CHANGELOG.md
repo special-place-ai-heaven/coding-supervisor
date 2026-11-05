@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.9.3...v0.10.0) (2026-11-05)
+
+
+### Features
+
+* **gate:** refuse pushes to the default branch, force-pushes and npm publish by default ([#46](https://github.com/special-place-ai-heaven/coding-supervisor/issues/46)) ([c2bc72f](https://github.com/special-place-ai-heaven/coding-supervisor/commit/c2bc72fd01cebe2a08889743359454e9aaddfb62))
+
 ## [0.9.3](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.9.2...v0.9.3) (2026-11-05)
 
 
