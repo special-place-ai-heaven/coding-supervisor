@@ -84,7 +84,9 @@ impl Fixture {
     }
     fn hook(&self, cwd: &Path, mut payload: Value) -> Value {
         payload["cwd"] = cwd.to_str().unwrap().into();
-        payload["session_id"] = "worktree-session".into();
+        if payload.get("session_id").is_none() {
+            payload["session_id"] = "worktree-session".into();
+        }
         let mut child = self
             .command(BIN)
             .arg("hook")
@@ -144,4 +146,32 @@ fn a_prompt_registered_in_the_main_checkout_does_not_leave_a_linked_worktree_ung
         .as_str()
         .unwrap_or_default();
     assert!(reason.contains("worktree"), "{reason}");
+}
+
+/// The guard only covers a session registered in the main checkout: a prompt registered in the
+/// worktree itself is governed there, and a session with no prompt anywhere is untouched.
+#[test]
+fn the_linked_worktree_guard_leaves_worktree_and_unregistered_sessions_alone() {
+    let f = Fixture::new("scoped");
+    f.hook(
+        &f.linked,
+        json!({"hook_event_name":"UserPromptSubmit","prompt_id":"p1","prompt":"Implement a change"}),
+    );
+    let decision = f.write(&f.linked, "own-prompt");
+    let reason = decision["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        denied(&decision),
+        "the pending prompt still gates: {decision}"
+    );
+    assert!(!reason.contains("main checkout"), "{reason}");
+    let mut other = json!({"hook_event_name":"PreToolUse","tool_use_id":"other","tool_name":"Write",
+        "tool_input":{"file_path":f.linked.join("x.rs").to_str().unwrap(),"content":""}});
+    other["session_id"] = "unrelated-session".into();
+    let reason = f.hook(&f.linked, other)["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(!reason.contains("main checkout"), "{reason}");
 }
