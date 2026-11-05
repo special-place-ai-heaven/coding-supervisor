@@ -36,6 +36,13 @@ in a linked git worktree of the repository, pass its path as `worktree` on
 `start` or `revise`; the task is then judged on that worktree, and checks run
 elsewhere do not count.
 
+With Claude hooks, a prompt on your own session's unfinished, unpaused task is
+already recorded as `continue` by default (the prompt hook says so), so edits
+and checks need no `intent_apply`; call it only to `start`, `revise`, `pause`,
+`resume`, `cancel` or mark `discussion`. A prompt with no task of yours still
+needs `start` before edits, and a stop after a turn that changed nothing is
+recorded as discussion for you.
+
 Use `continue` for a follow-up to unfinished work. Use `start` for a new task
 after the previous task completed; the gate archives and rolls over. Never
 discard unfinished work to start a replacement. Pause and cancellation require

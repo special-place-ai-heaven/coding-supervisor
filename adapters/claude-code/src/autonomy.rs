@@ -110,6 +110,25 @@ fn control(prompt: &str) -> Option<&'static str> {
     }
 }
 
+/// Whether a prompt may be a control request even though it is not the exact control phrase:
+/// a short prompt (80 characters or fewer) with one of these words or "hold on". Such a prompt
+/// is never taken as a default `continue` and a Stop never records it as discussion; it still
+/// needs an explicit `intent_apply`. Longer prompts only count when they are exact.
+/// ponytail: word match; "stop using unwrap" in a short edit request also waits for intent_apply.
+fn control_hint(prompt: &str) -> bool {
+    if control(prompt).is_some() {
+        return true;
+    }
+    let lowered = prompt.trim().to_ascii_lowercase();
+    if lowered.chars().count() > 80 {
+        return false;
+    }
+    lowered.contains("hold on")
+        || lowered
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|w| matches!(w, "cancel" | "pause" | "stop" | "abort" | "resume"))
+}
+
 // Only the last user transcript record can identify the current prompt. An earlier
 // identical prompt is insufficient. Transcript contents are never persisted or reported.
 fn transcript_prompt_id(payload: &Value, prompt: &str) -> Option<String> {
@@ -216,13 +235,16 @@ pub fn repository_floor(project: &Path) -> Result<Vec<Value>, String> {
     let project = PathBuf::from(project_identity(project)?);
     let mut checks = Vec::new();
     if project.join("Cargo.toml").is_file() {
+        // G20: nextest runs the same tests faster; `cargo test` stays the advised first command.
+        let mut test = criterion("AUTO_TEST", "cargo test --workspace");
+        test["command"] = json!(["cargo test --workspace", "cargo nextest run --workspace"]);
         checks.extend([
             criterion("AUTO_FMT", "cargo fmt --all -- --check"),
             criterion(
                 "AUTO_LINT",
                 "cargo clippy --workspace --all-targets -- -D warnings",
             ),
-            criterion("AUTO_TEST", "cargo test --workspace"),
+            test,
         ]);
     }
     let packages = npm_packages(&project)?;
@@ -488,7 +510,21 @@ fn register(
         )
         .as_bytes(),
     );
-    let event = json!({"event_id":event_id,"nonce":nonce,"prompt_hash":prompt_hash,"source":source,"session_id":session,"project":identity,"required_criteria":floor,"npm_definitions":npm_definitions(project)?,"control":control(prompt),"task_id":active.map(|a| a.task_id)});
+    // G18: this session's own unfinished, unpaused task takes an unclassified prompt as
+    // `continue`. Control prompts and other sessions' tasks keep the explicit proposal.
+    let continues = match &active {
+        Some(active) if source == "hook" && !control_hint(prompt) => {
+            continues_by_default(&active.dir, session)?
+        }
+        _ => false,
+    };
+    let mut event = json!({"event_id":event_id,"nonce":nonce,"prompt_hash":prompt_hash,"source":source,"session_id":session,"project":identity,"required_criteria":floor,"npm_definitions":npm_definitions(project)?,"control":control(prompt),"task_id":active.map(|a| a.task_id)});
+    if continues {
+        event["default_action"] = "continue".into();
+    }
+    if control_hint(prompt) && control(prompt).is_none() {
+        event["control_hint"] = true.into();
+    }
     store["events"][&event_id] = event.clone();
     store["latest"][session] = event_id.into();
     if source == "hook" {
@@ -500,6 +536,26 @@ fn register(
     }
     tx.commit(vec![("intents.json".into(), format!("{store}\n"))])?;
     Ok(event)
+}
+
+/// Whether `session` owns the prompt-managed hook task in `dir` and it is neither paused nor
+/// finished.
+fn continues_by_default(dir: &Path, session: &str) -> Result<bool, String> {
+    let Some(metadata) = read(&dir.join("autonomy.json"))? else {
+        return Ok(false);
+    };
+    if metadata["source"] != "hook"
+        || metadata["paused"] == true
+        || metadata["session_id"] != session
+    {
+        return Ok(false);
+    }
+    let (_, digest) = state::read_contract(dir)?;
+    Ok(match state::load_gate(dir, &digest)? {
+        Stored::Valid(gate) => !gate.checkpoint.state.is_terminal(),
+        Stored::Absent => true,
+        Stored::Tampered(_) => false,
+    })
 }
 
 /// Called by UserPromptSubmit, before the model receives the prompt. No prompt text is stored.
@@ -594,7 +650,7 @@ pub fn pending(root: &Path, session: &str) -> Result<Option<Value>, String> {
         .get(session)
         .and_then(Value::as_str)
         .and_then(|id| store["events"].get(id))
-        .filter(|e| e.get("applied").is_none())
+        .filter(|e| e.get("applied").is_none() && e.get("default_action").is_none())
         .map(entry))
 }
 
@@ -644,7 +700,9 @@ pub(crate) fn locked_intent_authority(
         .and_then(Value::as_str)
         .and_then(|id| store["events"].get(id));
     let authority = match current {
-        Some(event) if event.get("applied").is_none() => IntentAuthority::Pending,
+        Some(event) if event.get("applied").is_none() && event.get("default_action").is_none() => {
+            IntentAuthority::Pending
+        }
         Some(event) if event["applied"]["response"]["action"] == "discussion" => {
             IntentAuthority::Discussion
         }
@@ -1070,9 +1128,13 @@ fn add_floor(contract: &Value, floor: &Value) -> Result<Value, String> {
     }
     for (required, expected) in floor.iter().zip(&required_contract.criteria) {
         if let Some(existing) = parsed.criteria.iter().find(|c| c.id == expected.id) {
-            if existing.check != expected.check
-                || existing.command != expected.command
-                || existing.mandatory != expected.mandatory
+            // G20: a proposal may keep any non-empty part of the floor's accepted commands.
+            let kept = !existing.command.is_empty()
+                && existing
+                    .command
+                    .iter()
+                    .all(|c| expected.command.contains(c));
+            if existing.check != expected.check || !kept || existing.mandatory != expected.mandatory
             {
                 let amend = format!(
                     " A person can change it with `supervisor task amend-floor --criterion {} --command <command> --reason <text>` while no task is active.",
@@ -1284,11 +1346,15 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 person_cancel(&event, &active.task_id)
             ));
         }
+        // G22: the rollover never dead-ends. A completion that cannot be re-verified is
+        // archived as `completed-unverified` with the reason; only a verified one is `completed`.
+        let mut unverified = None;
         if let Some(active) = &active
             && read(&active.dir.join("autonomy.json"))?.is_some_and(|m| m["source"] == "hook")
+            && let Err(why) = validate_entrypoints(&active.dir, project)
+                .and_then(|()| observed_completion(&active.dir, &active.task_id, project))
         {
-            validate_entrypoints(&active.dir, project)?;
-            observed_completion(&active.dir, &active.task_id, project)?;
+            unverified = Some(why);
         }
         let mut contract = add_floor(
             proposal.get("contract").ok_or("start needs a contract")?,
@@ -1298,6 +1364,17 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         let (mut response, task_writes) =
             lifecycle::plan_start(root, &contract, active.is_some(), None, current_id)?;
         writes.extend(task_writes);
+        if let (Some(why), Some(active)) = (unverified, &active) {
+            let path = PathBuf::from("archives").join(format!("{}.json", active.task_id));
+            let archive = writes
+                .iter_mut()
+                .find(|(p, _)| *p == path)
+                .ok_or("rollover wrote no archive for the previous task")?;
+            let mut record: Value = serde_json::from_str(&archive.1).map_err(|e| e.to_string())?;
+            record["disposition"] = "completed-unverified".into();
+            record["reason"] = why.into();
+            archive.1 = format!("{record}\n");
+        }
         let task_id = text(&response, "task_id")?;
         let npm_entrypoints = selected_entrypoints(
             &contract,

@@ -314,6 +314,14 @@ fn pre(tool: &str) -> Value {
     p
 }
 
+/// G21: a worker that changed nothing hands back a read-only report, which is not judged; these
+/// tests are about workers that did work, so the agent edits first.
+fn edits(env: &mut Env, agent: &str) {
+    let mut p = pre("Write");
+    p["agent_id"] = json!(agent);
+    assert_eq!(handle(&p, env), Decision::None);
+}
+
 /// Each line runs as a real command by `agent`, then the worker hands back citing all of them.
 fn worker(env: &mut Env, agent: &str, verdict: &str, lines: &[(&str, &str, i32)]) -> Decision {
     for (_, command, exit) in lines {
@@ -354,6 +362,7 @@ fn context(d: &Decision) -> &str {
 fn replay_a18_self_reported_checks_cannot_mark_ready() {
     let d = dir("a18");
     let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    edits(&mut env, "w1");
     let r = handle(
         &handback("w1", "VERDICT: PASS\nCHECKS RUN: 0", false),
         &mut env,
@@ -573,6 +582,7 @@ fn replay_r35_would_run_is_not_run() {
     let d = dir("r35");
     let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
     let message = "VERDICT: PASS\nCHECKS RUN: 0\nI would run cargo test.";
+    edits(&mut env, "w1");
     let r = handle(&handback("w1", message, false), &mut env);
     assert!(blocked(&r).contains("missing C1"), "{r:?}");
     let r = handle(&stop(message, false), &mut env);
@@ -603,6 +613,7 @@ fn replay_x2_run_by_another_agent_does_not_link() {
     let d = dir("x2");
     let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
     run_bash(&mut env, "A", "cargo test", 0);
+    edits(&mut env, "B");
     let r = handle(
         &handback(
             "B",
@@ -665,6 +676,7 @@ fn handback_refusals_release_after_three() {
     let d = dir("cap");
     let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
     let message = "VERDICT: PASS\nCHECKS RUN: 0";
+    edits(&mut env, "w1");
     for k in 1..=3 {
         let r = handle(&handback("w1", message, k > 1), &mut env);
         assert!(blocked(&r).contains(&format!("refusal {k} of 3")));
@@ -1002,6 +1014,7 @@ fn task_completed_through_mcp_does_not_pass_a_handback() {
         Some(contract(&[("C1", true)], &["src/"])),
         fake("one", &["src/lib.rs"]),
     );
+    edits(&mut env, "w1");
     with_asserted_receipt(&mut env, true);
     let r = handle(
         &handback(
