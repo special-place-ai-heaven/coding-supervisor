@@ -608,6 +608,11 @@ fn require_registered(store: &Value, session: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `session` has any prompt registered in this state root.
+pub fn registered(root: &Path, session: &str) -> Result<bool, String> {
+    Ok(load(root)?["latest"].get(session).is_some())
+}
+
 /// A discussion turn records its prompt without cancelling any existing task. It does
 /// not authorize edits until the same event or a later one is applied as actionable work.
 pub fn discussion_turn(root: &Path, session: &str) -> Result<bool, String> {

@@ -531,3 +531,41 @@ fn paused_task_can_report_pause_and_only_resume_releases_mutation() {
     );
     assert_eq!(result, Decision::None);
 }
+
+/// A Terminal Commander job whose exit was seen only through `bucket_wait` has no recorded
+/// completion. The refusal names the call that records it and the job, so the agent is not
+/// left guessing.
+#[test]
+fn a_tc_job_without_a_recorded_exit_names_command_status_and_the_job() {
+    let (_d, mut env, _task) = autonomous();
+    run_autonomous_checks(&mut env, "passing");
+    let cwd = env.state_dir.parent().unwrap().to_path_buf();
+    let active = supervisor_claude_code::lifecycle::active_task(&env.state_dir)
+        .unwrap()
+        .unwrap();
+    let (contract, _) = supervisor_claude_code::state::read_contract(&active.dir).unwrap();
+    let command = contract
+        .unwrap()
+        .criteria
+        .iter()
+        .find(|c| c.mandatory)
+        .unwrap()
+        .command[0]
+        .clone();
+    let argv: Vec<&str> = command.split_whitespace().collect();
+    let mut payload = json!({"hook_event_name":"PreToolUse","cwd":cwd,"session_id":"session",
+        "agent_id":"main","tool_use_id":"tc-rerun",
+        "tool_name":"mcp__terminal_commander__command_start_combed",
+        "tool_input":{"argv":argv,"cwd":cwd}});
+    assert_eq!(handle(&payload, &mut env), Decision::None);
+    payload["hook_event_name"] = "PostToolUse".into();
+    payload["tool_response"] = json!({"job_id":"job-unfetched","bucket_id":"bucket-1"});
+    handle(&payload, &mut env);
+    let Decision::Block(reason) = stop(&mut env, "Stop", "main") else {
+        panic!("an unrecorded rerun must refuse");
+    };
+    assert!(
+        reason.contains("command_status") && reason.contains("job-unfetched"),
+        "{reason}"
+    );
+}

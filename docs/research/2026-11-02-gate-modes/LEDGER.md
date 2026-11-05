@@ -133,3 +133,20 @@ configs hold a versioned binary path; unverified here, see X4).
 | H2 | Refresh stale lines in `CLAUDE.md` (branch `phase-a-installable`, "uncommitted" work now on main). | Wave 1 | done (wave 3b, PR #27, 0.6.0) |
 | H3 | CI waste (owner, 2026-11-03: "remove any and all waste"): every PR ran CI twice (push and pull_request), docs-only and release-please changes ran it too, Windows repeated fmt and clippy, tests ran one file at a time. | – | done (PR #33: one run per change, Linux-only fmt/clippy, `cargo nextest`; Linux 3m0s to 1m55s, Windows 8m40s–10m30s to 5m27s) |
 | H4 | One Stop started 19 git processes (16 the same root lookup), every tool call 8 to 10; tens of milliseconds each on Windows. | – | done (PR #34, 0.8.1: 3 per hook call, pinned by `cli/tests/git_calls.rs`; also nextest installs on the `fresh` runners without `sudo`; reusable write-up: `docs/research/2026-11-03-ci-speed/CI-SPEED-GUIDE.md`) |
+
+## Gate friction (2026-11-05)
+
+Two dogfood sessions (this repository and terminal-commander) hit gate dead ends with no permitted next call. Owner, 2026-11-05: "I want my coding supervisor to be usable and very robust, but not to the detriment of coding my projects." Symforge was moved to `audit` until these land.
+
+| ID | Item | Status |
+|---|---|---|
+| G1 | A prompt first applied as `discussion` could never become work ("prompt event already consumed"). | done (PR #42: same-event upgrade; work cannot be downgraded) |
+| G2 | A task bound to a dead session refused `start`, `continue` and `cancel`, and the prompt hook still advised `continue`; nothing named the way out. | done (PR #42: advice and refusals name the person-only cancel command) |
+| G3 | `supervisor level --project C:\...` from a POSIX shell lost its backslashes, reported success and wrote a state root the hooks never read. | done (PR #42: a `--project` that is not a directory is refused) |
+| G4 | A session whose prompt is registered in the main checkout could edit, ungated, in a linked worktree (`EnterWorktree` or a hook `cwd` that follows the agent): linked worktrees keep their own gate state and had no prompt for the session. | done (PR #44: such edits are denied for the standard `<main>/.git/worktrees/<name>` layout; a worktree with a separate git dir, or whose main state cannot be resolved, is not recognised and stays as before; regressions in `cli/tests/worktree.rs`) |
+| G5 | Work in a linked worktree cannot complete a task registered in the main checkout ("candidate identity not observed"); start the session in the worktree instead. Binding a task to a linked worktree of the same repository needs the candidate observed there, schema-4 run records and scope resolution against the bound root. | todo |
+| G6 | Runs with an injected `CARGO_TARGET_DIR` were refused as "unapproved" with no hint; the refusal now says to set it in the harness settings `env` or cargo's `[build] target-dir`. | done (message) |
+| G7 | A Terminal Commander job whose exit was seen only through `bucket_wait` stayed "no observed completion"; the refusal now names `command_status` and the job. Parsing `bucket_wait`'s free-text exit summary was rejected: it carries no structured exit state. | done (message; regression in `autonomous_completion.rs`) |
+| G8 | After the agent correctly reported "not complete", Stop refused twice more per turn. Kept: the refusals now name the next step, and accepting "not complete" wording would be the text judgment Stop avoids. | dropped (by design) |
+| G9 | Committing verified work changes the candidate (HEAD) and stales every receipt, so the full suite reruns after `git commit`. | todo |
+| G10 | The prompt floor adds the repository-wide checks to every contract, including changes that touch no Rust. By design (an agent cannot drop the repository's tests). | dropped (by design) |
