@@ -86,7 +86,8 @@ pub fn provider_for_root(root: &Path, project: &Path) -> Box<dyn CandidateProvid
 /// The main checkout whose state root holds this session's task when `cwd` lies in the linked
 /// worktree that task is bound to; `None` otherwise (unbound worktrees stay with G4).
 pub fn redirect(cwd: &Path, session: &str) -> Option<PathBuf> {
-    let worktree = PathBuf::from(canonical_project(cwd));
+    // File reads only: this runs on every hook call, before any git.
+    let worktree = crate::location::worktree_root(cwd)?;
     let main = linked_main_checkout(&worktree)?;
     let lookup = |name: &str| std::env::var(name).ok();
     let (root, _) = crate::location::resolve_state_dir_read_only(&main, &lookup).ok()?;
@@ -103,7 +104,9 @@ pub(crate) fn state_project(root: &Path, cwd: &Path) -> PathBuf {
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .and_then(|v| v["canonical_worktree"].as_str().map(str::to_owned));
-    let worktree = PathBuf::from(canonical_project(cwd));
+    let Some(worktree) = crate::location::worktree_root(cwd) else {
+        return cwd.to_path_buf();
+    };
     match (named, linked_main_checkout(&worktree)) {
         (Some(named), Some(main)) if normalize(&main) == named && normalize(&worktree) != named => {
             main

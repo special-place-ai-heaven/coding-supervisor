@@ -140,8 +140,33 @@ fn root_still_holds(dir: &str, root: &Path) -> bool {
     false
 }
 
+/// A path that does not exist yet, spelled through its nearest existing ancestor's canonical
+/// form, so a short (8.3) or aliased spelling matches the path once it exists.
+fn canonical_ancestor(path: &Path) -> std::io::Result<PathBuf> {
+    let absolute = std::path::absolute(path)?;
+    let existing = absolute
+        .ancestors()
+        .find(|a| a.exists())
+        .ok_or(std::io::ErrorKind::NotFound)?;
+    let rest = absolute
+        .strip_prefix(existing)
+        .map_err(|_| std::io::ErrorKind::NotFound)?;
+    Ok(fs::canonicalize(existing)?.join(rest))
+}
+
+/// The worktree root containing `dir`: the nearest ancestor holding `.git`. File reads only, no
+/// git process, so hook paths that only need it stay within their bound when git hangs.
+pub(crate) fn worktree_root(dir: &Path) -> Option<PathBuf> {
+    let absolute = std::path::absolute(dir).ok()?;
+    absolute
+        .ancestors()
+        .find(|d| d.join(".git").exists())
+        .map(Path::to_path_buf)
+}
+
 pub(crate) fn normalize(path: &Path) -> String {
     let absolute = fs::canonicalize(path)
+        .or_else(|_| canonical_ancestor(path))
         .or_else(|_| std::path::absolute(path))
         .unwrap_or_else(|_| path.to_path_buf());
     let text = absolute.to_string_lossy().replace('\\', "/");

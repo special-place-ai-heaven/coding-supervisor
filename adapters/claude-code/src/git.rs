@@ -9,8 +9,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const DEADLINE: Duration = Duration::from_secs(5);
-const HUNG_WINDOW: Duration = Duration::from_secs(60);
-static HUNG: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 
 /// Why git gave no exit status to read.
 pub enum Failure {
@@ -32,20 +30,6 @@ pub fn run_with_env(
     env: &[(&str, &std::ffi::OsStr)],
 ) -> Result<Output, Failure> {
     let what = format!("git {}", args.join(" "));
-    // Once git has not answered, the next gits of the same process fail at once: a hook makes
-    // several, and each waiting its own deadline would exceed the hook's bound.
-    // ponytail: process-wide 60 s window; a long-lived MCP server sees git as hung for that long.
-    if HUNG
-        .lock()
-        .ok()
-        .and_then(|at| *at)
-        .is_some_and(|at| at.elapsed() < HUNG_WINDOW)
-    {
-        return Err(Failure::TimedOut(format!(
-            "{what}: skipped, an earlier git gave no answer within {} s",
-            DEADLINE.as_secs()
-        )));
-    }
     // Test seam: `SUPERVISOR_GIT_TRACE=<file>` appends each git's subcommand (no paths, no
     // output) so a test can pin how many processes a hook call starts.
     if let Ok(trace) = std::env::var("SUPERVISOR_GIT_TRACE") {
@@ -80,12 +64,8 @@ pub fn run_with_env(
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
     let started = Instant::now();
-    let timed_out = || {
-        if let Ok(mut at) = HUNG.lock() {
-            *at = Some(Instant::now());
-        }
-        Failure::TimedOut(format!("{what}: no answer within {} s", DEADLINE.as_secs()))
-    };
+    let timed_out =
+        || Failure::TimedOut(format!("{what}: no answer within {} s", DEADLINE.as_secs()));
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
