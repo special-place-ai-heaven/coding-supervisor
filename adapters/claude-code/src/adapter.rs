@@ -271,6 +271,9 @@ fn read_only_command(payload: &Value) -> bool {
             | ["ls", ..]
             | ["pwd"]
             | ["supervisor", "status", ..]
+            | ["supervisor", "level"]
+            | ["supervisor", "level", "--project", _]
+            | ["supervisor", "level", "status", ..]
             | ["supervisor", "--help"]
     )
 }
@@ -1930,14 +1933,19 @@ impl Session {
                 _ => {}
             }
         }
+        // G14: the same read-only tools and commands an unclassified prompt may use stay open,
+        // and the refusal names the way on.
         if self.task.state().is_terminal()
-            && !read_only_tool(payload)
+            && !inspection(payload)
             && self
                 .evidence_dir
                 .as_ref()
                 .is_some_and(|dir| crate::autonomy::is_autonomous_task(dir).unwrap_or(true))
         {
-            return Decision::Deny(format!("GATE: task is {}", state_name(self.task.state())));
+            return Decision::Deny(format!(
+                "GATE: task is {}; read-only tools and commands still run, and a new work prompt starts the next task (intent_apply start)",
+                state_name(self.task.state())
+            ));
         }
         let tool = text(payload, "tool_name").unwrap_or_default();
         let input = &payload["tool_input"];

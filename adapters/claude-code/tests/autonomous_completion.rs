@@ -569,3 +569,36 @@ fn a_tc_job_without_a_recorded_exit_names_command_status_and_the_job() {
         "{reason}"
     );
 }
+
+/// G14: once an autonomous task is completed, read-only commands such as `supervisor status`
+/// still run, and the refusal of anything else names the next step.
+#[test]
+fn a_completed_task_still_allows_read_only_commands_and_names_the_next_step() {
+    let (_d, mut env, _task) = autonomous();
+    run_autonomous_checks(&mut env, "initial");
+    assert_eq!(stop(&mut env, "Stop", "main"), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+    let cwd = env.state_dir.parent().unwrap().to_path_buf();
+    let bash = |command: &str| {
+        json!({"hook_event_name":"PreToolUse","cwd":cwd,"session_id":"session","agent_id":"main",
+            "tool_use_id":command,"tool_name":"Bash","tool_input":{"command":command}})
+    };
+    for command in [
+        "supervisor status --json",
+        "supervisor level",
+        "git status --short",
+    ] {
+        assert_eq!(
+            handle(&bash(command), &mut env),
+            Decision::None,
+            "{command}"
+        );
+    }
+    let Decision::Deny(reason) = handle(&bash("touch x"), &mut env) else {
+        panic!("a mutation after completion must still be refused");
+    };
+    assert!(
+        reason.contains("task is completed") && reason.contains("new work prompt"),
+        "{reason}"
+    );
+}
