@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.11.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.10.1...v0.11.0) (2026-11-05)
+
+
+### Features
+
+* **gate:** bind a task to a linked worktree (G5) and keep evidence across a tree-identical commit (G9) ([0f3b40d](https://github.com/special-place-ai-heaven/coding-supervisor/commit/0f3b40d5e27aaeac79d0c5d60f51c9c36b245c0a))
+* **gate:** bind a task to a linked worktree and keep evidence across a tree-identical commit ([0bd8aa8](https://github.com/special-place-ai-heaven/coding-supervisor/commit/0bd8aa8b47a22f95c83fffce416a4799fb24e2b3))
+
+
+### Bug Fixes
+
+* **gate:** keep worktree lookups off git; canonicalize unborn paths ([c4b0cbd](https://github.com/special-place-ai-heaven/coding-supervisor/commit/c4b0cbdf9cdf3934cae50ff2226cdf34cca32b30))
+
 ## [0.10.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.10.0...v0.10.1) (2026-11-05)
 
 
