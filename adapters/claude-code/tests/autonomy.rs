@@ -1979,3 +1979,84 @@ fn a_person_can_retire_a_completed_task_that_cannot_roll_over() {
     )
     .unwrap();
 }
+
+/// A discussion changes no task, so the same prompt can still become work. Work already
+/// applied cannot be turned back into a discussion, and its replay stays stable.
+#[test]
+fn discussion_can_be_upgraded_to_work_on_the_same_prompt_but_work_cannot_be_downgraded() {
+    let f = Fixture::new();
+    let event = f.prompt("first", "Fix the parser bug");
+    f.apply(&event, "discussion", None, None).unwrap();
+    assert!(autonomy::discussion_turn(&f.root, "session").unwrap());
+    let started = f.apply(&event, "start", None, Some(contract())).unwrap();
+    let id = started["task_id"].as_str().unwrap();
+    assert_eq!(
+        lifecycle::active_task(&f.root).unwrap().unwrap().task_id,
+        id
+    );
+    assert!(!autonomy::discussion_turn(&f.root, "session").unwrap());
+    assert_eq!(
+        f.apply(&event, "start", None, Some(contract())).unwrap(),
+        started
+    );
+    let error = f.apply(&event, "discussion", None, None).unwrap_err();
+    assert!(error.contains("already consumed"), "{error}");
+}
+
+/// A task bound to another session cannot be continued from this one, so the prompt hook must
+/// not advise `continue`; it names the person-only cancel command instead. The owner still
+/// gets `continue` advice.
+#[test]
+fn prompt_advice_for_a_task_owned_by_another_session_names_the_person_cancel_command() {
+    use supervisor_claude_code::adapter::{Decision, handle};
+    let f = Fixture::new();
+    let task = f.start();
+    let mut env = hook_env(&f);
+    let advice =
+        |session: &str, prompt_id: &str, env: &mut supervisor_claude_code::adapter::Env| {
+            match handle(
+                &json!({"hook_event_name":"UserPromptSubmit","cwd":f.project,"session_id":session,
+                "prompt_id":prompt_id,"prompt":"Implement an unrelated change"}),
+                env,
+            ) {
+                Decision::Context { text, .. } => text,
+                other => panic!("{other:?}"),
+            }
+        };
+    let text = advice("replacement", "fresh", &mut env);
+    assert!(!text.contains("\"action\":\"continue\""), "{text}");
+    assert!(
+        text.contains("supervisor task cancel --project")
+            && text.contains(&format!("--task {task}")),
+        "{text}"
+    );
+    let text = advice("session", "own", &mut env);
+    assert!(text.contains("\"action\":\"continue\""), "{text}");
+}
+
+/// The refusals that leave an agent with no permitted call name the person-only way out.
+#[test]
+fn refusals_for_a_task_owned_by_another_session_name_the_person_cancel_command() {
+    let f = Fixture::new();
+    let task = f.start();
+    let other = autonomy::record_prompt(
+        &f.root,
+        &f.project,
+        &json!({"session_id":"replacement","prompt_id":"new","prompt":"Implement an unrelated change"}),
+    )
+    .unwrap();
+    for (action, task_id, proposed) in [
+        ("start", None, Some(contract())),
+        ("continue", Some(task.as_str()), None),
+    ] {
+        let error = f.apply(&other, action, task_id, proposed).unwrap_err();
+        assert!(
+            error.contains("supervisor task cancel --project") && error.contains(&task),
+            "{action}: {error}"
+        );
+    }
+    assert_eq!(
+        lifecycle::active_task(&f.root).unwrap().unwrap().task_id,
+        task
+    );
+}
