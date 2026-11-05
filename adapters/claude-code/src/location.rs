@@ -47,6 +47,17 @@ fn git_dir(dir: &Path) -> Option<PathBuf> {
     })
 }
 
+/// The common git directory of the repository containing `dir`, normalized: the same for a
+/// main checkout and each of its linked worktrees. File reads only, no git process.
+pub(crate) fn common_git_dir(dir: &Path) -> Option<String> {
+    let git_dir = git_dir(dir)?;
+    let common = match fs::read_to_string(git_dir.join("commondir")) {
+        Ok(text) => git_dir.join(text.trim()),
+        Err(_) => git_dir,
+    };
+    Some(normalize(&common))
+}
+
 /// The branch checked out in the repository containing `dir`, from its `HEAD` file; `None`
 /// for a detached HEAD or no repository.
 pub fn current_branch(dir: &Path) -> Option<String> {
@@ -129,7 +140,7 @@ fn root_still_holds(dir: &str, root: &Path) -> bool {
     false
 }
 
-fn normalize(path: &Path) -> String {
+pub(crate) fn normalize(path: &Path) -> String {
     let absolute = fs::canonicalize(path)
         .or_else(|_| std::path::absolute(path))
         .unwrap_or_else(|_| path.to_path_buf());

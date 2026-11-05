@@ -31,7 +31,10 @@ action: `discussion`, `start`, `continue`, `revise`, `pause`, `resume` or
 `cancel`. For `start` or `revise`, propose a contract with concrete goal,
 relative path scope, mandatory criteria and exact verification commands. Keep
 the repository verification floor returned by the gate. The model proposes;
-the deterministic validator decides whether the proposal is permitted.
+the deterministic validator decides whether the proposal is permitted. To work
+in a linked git worktree of the repository, pass its path as `worktree` on
+`start` or `revise`; the task is then judged on that worktree, and checks run
+elsewhere do not count.
 
 Use `continue` for a follow-up to unfinished work. Use `start` for a new task
 after the previous task completed; the gate archives and rolls over. Never

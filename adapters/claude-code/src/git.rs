@@ -9,6 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const DEADLINE: Duration = Duration::from_secs(5);
+const HUNG_WINDOW: Duration = Duration::from_secs(60);
+static HUNG: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 
 /// Why git gave no exit status to read.
 pub enum Failure {
@@ -20,7 +22,30 @@ pub enum Failure {
 
 /// `git -C cwd args`, killed and reaped if it is still running after the deadline.
 pub fn run(cwd: &Path, args: &[&str]) -> Result<Output, Failure> {
+    run_with_env(cwd, args, &[])
+}
+
+/// [`run`] with extra environment variables set on the child.
+pub fn run_with_env(
+    cwd: &Path,
+    args: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+) -> Result<Output, Failure> {
     let what = format!("git {}", args.join(" "));
+    // Once git has not answered, the next gits of the same process fail at once: a hook makes
+    // several, and each waiting its own deadline would exceed the hook's bound.
+    // ponytail: process-wide 60 s window; a long-lived MCP server sees git as hung for that long.
+    if HUNG
+        .lock()
+        .ok()
+        .and_then(|at| *at)
+        .is_some_and(|at| at.elapsed() < HUNG_WINDOW)
+    {
+        return Err(Failure::TimedOut(format!(
+            "{what}: skipped, an earlier git gave no answer within {} s",
+            DEADLINE.as_secs()
+        )));
+    }
     // Test seam: `SUPERVISOR_GIT_TRACE=<file>` appends each git's subcommand (no paths, no
     // output) so a test can pin how many processes a hook call starts.
     if let Ok(trace) = std::env::var("SUPERVISOR_GIT_TRACE") {
@@ -40,6 +65,7 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<Output, Failure> {
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -54,8 +80,12 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<Output, Failure> {
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
     let started = Instant::now();
-    let timed_out =
-        || Failure::TimedOut(format!("{what}: no answer within {} s", DEADLINE.as_secs()));
+    let timed_out = || {
+        if let Ok(mut at) = HUNG.lock() {
+            *at = Some(Instant::now());
+        }
+        Failure::TimedOut(format!("{what}: no answer within {} s", DEADLINE.as_secs()))
+    };
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -82,6 +112,39 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<Output, Failure> {
         stdout: collect(stdout)?,
         stderr: collect(stderr)?,
     })
+}
+
+/// G9: git's id of the whole worktree content (a tree object), as a commit of everything would
+/// record it. Built in a scratch copy of the real index under `state_dir`, so the real index is
+/// untouched and git's stat cache is reused. `None` on any failure: callers then keep the exact
+/// candidate rule, so a tree that cannot be computed never causes a refusal. Writes unreachable
+/// loose objects. The tree is of the worktree whose top level is `cwd`'s.
+pub fn worktree_tree(cwd: &Path, state_dir: &Path) -> Option<String> {
+    let ok = |args: &[&str], env: &[(&str, &std::ffi::OsStr)]| {
+        run_with_env(cwd, args, env)
+            .ok()
+            .filter(|out| out.status.success())
+    };
+    let real = ok(&["rev-parse", "--git-path", "index"], &[])?;
+    let real = cwd.join(String::from_utf8_lossy(&real.stdout).trim());
+    // Per process: parallel hook calls must not share one scratch index.
+    let scratch = state_dir.join(format!("scratch-index-{}", std::process::id()));
+    let _ = std::fs::remove_file(&scratch);
+    // An absent index (nothing staged yet) starts the scratch one empty.
+    if real.is_file() {
+        std::fs::copy(&real, &scratch).ok()?;
+    }
+    let env = [("GIT_INDEX_FILE", scratch.as_os_str())];
+    // The gate's own fallback state directory inside the project is not content.
+    let tree = ok(
+        &["add", "-A", "--", ":/", ":(top,exclude).supervisor/"],
+        &env,
+    )
+    .and_then(|_| ok(&["write-tree"], &env))
+    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    .filter(|id| !id.is_empty());
+    let _ = std::fs::remove_file(&scratch);
+    tree
 }
 
 fn drain(pipe: Option<impl Read + Send + 'static>) -> Receiver<Vec<u8>> {

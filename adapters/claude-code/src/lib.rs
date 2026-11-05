@@ -5,6 +5,7 @@
 
 pub mod adapter;
 pub mod autonomy;
+pub mod binding;
 pub mod candidate;
 mod chain;
 pub mod claim;

@@ -10,7 +10,7 @@ use coding_supervisor::{
 };
 use serde_json::Value;
 
-use crate::candidate::{CandidateProvider, GitCandidate};
+use crate::candidate::CandidateProvider;
 use crate::header::{self, Header, Verdict};
 use crate::journal::{self, Trace};
 use crate::level::{self, Level};
@@ -56,7 +56,8 @@ fn journaled(receipt: &VerificationReceipt, runs: &[observation::Run]) -> bool {
             && run.reference == receipt.output_ref
             && run.command == receipt.command
             && run.cwd == receipt.cwd
-            && run.candidate == receipt.candidate
+            && (run.candidate == receipt.candidate
+                || run.transferred_to.contains(&receipt.candidate))
             && run.exit_code == receipt.exit_code
             && run.t == receipt.started_at
             && run.finished == receipt.finished_at
@@ -94,9 +95,23 @@ pub struct Env {
 
 impl Env {
     pub fn real(cwd: &Path) -> Self {
+        Self::build(cwd, cwd)
+    }
+
+    /// [`Env::real`] for a hook payload: a call from the linked worktree its session's task is
+    /// bound to uses the main checkout's state, where that task lives.
+    pub fn for_hook(cwd: &Path, session: &str) -> Self {
+        Self::build(
+            &crate::binding::redirect(cwd, session).unwrap_or_else(|| cwd.to_path_buf()),
+            cwd,
+        )
+    }
+
+    /// State for `state_cwd`'s project, the candidate observed for `cwd`'s task.
+    fn build(state_cwd: &Path, cwd: &Path) -> Self {
         let lookup = |name: &str| std::env::var(name).ok();
         let config_dir = level::config_dir(&lookup);
-        let read_only = location::resolve_state_dir_read_only(cwd, &lookup);
+        let read_only = location::resolve_state_dir_read_only(state_cwd, &lookup);
         let (level, source, error) = match read_only
             .as_ref()
             .map_err(String::clone)
@@ -108,14 +123,13 @@ impl Env {
         // At `off` nothing is written, so the state root is located without being created.
         let (state_dir, state_location) = match read_only {
             Ok(selected) if level == Level::Off => selected,
-            _ => location::resolve_state_dir(cwd, &lookup),
+            _ => location::resolve_state_dir(state_cwd, &lookup),
         };
+        let candidate = crate::binding::provider_for_root(&state_dir, cwd);
         Self {
             state_dir,
             state_location,
-            candidate: Box::new(GitCandidate {
-                cwd: cwd.to_path_buf(),
-            }),
+            candidate,
             clock: now,
             level: level::Setting {
                 level,
@@ -187,7 +201,13 @@ pub fn run_hook(input: &str) -> Option<String> {
     let decision = match serde_json::from_str::<Value>(input) {
         Err(e) => fail_open(&format!("payload is not JSON ({e}); not journaled")),
         Ok(payload) => match payload.get("cwd").and_then(Value::as_str) {
-            Some(cwd) => handle(&payload, &mut Env::real(Path::new(cwd))),
+            Some(cwd) => handle(
+                &payload,
+                &mut Env::for_hook(
+                    Path::new(cwd),
+                    text(&payload, "session_id").unwrap_or_default(),
+                ),
+            ),
             None => fail_open("payload has no cwd; not journaled"),
         },
     };
@@ -455,8 +475,10 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
     let root = env.state_dir.clone();
     let event = text(payload, "hook_event_name").unwrap_or_default();
     if env.state_location != "test"
-        && let Err(what) =
-            location::prepare_state(&root, Path::new(text(payload, "cwd").unwrap_or(".")))
+        && let Err(what) = location::prepare_state(
+            &root,
+            &crate::binding::state_project(&root, Path::new(text(payload, "cwd").unwrap_or("."))),
+        )
     {
         return match event {
             "PreToolUse" => Decision::Deny(format!("GATE: state unavailable: {what}")),
@@ -474,8 +496,9 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
         && !root.join("active.json").exists()
         && !root.join("intents.json").exists();
     if event == "UserPromptSubmit" && text(payload, "prompt").is_some() && !legacy_contract {
-        let project = Path::new(text(payload, "cwd").unwrap_or("."));
-        return match crate::autonomy::record_prompt(&root, project, payload) {
+        let project =
+            crate::binding::state_project(&root, Path::new(text(payload, "cwd").unwrap_or(".")));
+        return match crate::autonomy::record_prompt(&root, &project, payload) {
             Ok(intent) => {
                 let mut call = serde_json::json!({"event_id":intent["event_id"],"nonce":intent["nonce"],"prompt_hash":intent["prompt_hash"],"task_id":intent["task_id"]});
                 let next = if intent["task_id"].is_null() {
@@ -847,7 +870,7 @@ fn process(
     };
     if event == "PreToolUse"
         && env.level.level == Level::Strict
-        && let Some(denial) = out_of_scope(payload, &contract.scope)
+        && let Some(denial) = out_of_scope(payload, &contract.scope, &env.state_dir)
     {
         reasons.push("level strict: write outside the contract scope".to_owned());
         return Ok(denial);
@@ -896,8 +919,12 @@ fn process(
         Some(&env.state_dir),
         env.level.level == Level::Strict,
     )?;
+    if let Some(cwd) = text(payload, "cwd") {
+        let tree_at = crate::binding::bound_root(&env.state_dir).unwrap_or_else(|| cwd.to_owned());
+        session.tree = CurrentTree::new(Path::new(&tree_at), &env.state_dir);
+    }
     if matches!(event, "Stop" | "SubagentStop") {
-        session.sync_observed_receipts(&env.state_dir, agent, reasons)?;
+        session.sync_observed_receipts(&env.state_dir, agent, now, reasons)?;
     }
     let refusals = (
         session.gate.continuations,
@@ -934,7 +961,7 @@ fn process(
 
 /// Ultra: a Write, Edit, MultiEdit or NotebookEdit outside `scope` is refused before it
 /// happens, under the rule completion applies to changed paths (`scope_contains`).
-fn out_of_scope(payload: &Value, scope: &[String]) -> Option<Decision> {
+fn out_of_scope(payload: &Value, scope: &[String], task_dir: &Path) -> Option<Decision> {
     let tool = text(payload, "tool_name")?;
     if !matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit") {
         return None;
@@ -942,13 +969,12 @@ fn out_of_scope(payload: &Value, scope: &[String]) -> Option<Decision> {
     let input = payload.get("tool_input")?;
     let path = text(input, "file_path").or_else(|| text(input, "notebook_path"))?;
     let cwd = Path::new(text(payload, "cwd").unwrap_or("."));
-    let inside = project_relative(&location::canonical_project(cwd), &cwd.join(path)).is_some_and(
-        |relative| {
-            scope
-                .iter()
-                .any(|s| coding_supervisor::scope_contains(s, &relative))
-        },
-    );
+    let root = crate::binding::execution_root(task_dir, cwd);
+    let inside = project_relative(&root, &cwd.join(path)).is_some_and(|relative| {
+        scope
+            .iter()
+            .any(|s| coding_supervisor::scope_contains(s, &relative))
+    });
     (!inside).then(|| {
         Decision::Deny(format!(
             "GATE: {tool} refused: {path} is outside the task's contract scope (level strict)"
@@ -1334,9 +1360,64 @@ pub struct Session {
     observed: Result<Candidate, String>,
     evidence_dir: Option<PathBuf>,
     task_id: String,
+    tree: CurrentTree,
+}
+
+/// G9: how a run or dispatch counts for the current candidate.
+#[derive(PartialEq)]
+enum Match {
+    Exact,
+    /// Another candidate, same tree: the content is identical, only HEAD moved.
+    Tree,
+}
+
+/// The current worktree tree, computed at most once per hook call and only when an exact
+/// candidate match has failed.
+#[derive(Default)]
+struct CurrentTree {
+    at: Option<(PathBuf, PathBuf)>,
+    cell: std::cell::OnceCell<Option<String>>,
+}
+
+impl CurrentTree {
+    fn new(project: &Path, state_dir: &Path) -> Self {
+        Self {
+            at: Some((project.to_owned(), state_dir.to_owned())),
+            cell: Default::default(),
+        }
+    }
+
+    fn get(&self) -> Option<&str> {
+        self.cell
+            .get_or_init(|| {
+                let (project, state_dir) = self.at.as_ref()?;
+                crate::git::worktree_tree(project, state_dir)
+            })
+            .as_deref()
+    }
 }
 
 impl Session {
+    /// Whether evidence made at `candidate` (in `tree`, when known; already `transferred` to
+    /// the current candidate, when so recorded) counts for the current candidate. Every Stop
+    /// comparison of past evidence with the current candidate goes through here; a worker's
+    /// SubagentStop handback keeps the exact rule (fails closed after a commit).
+    fn matches_current(
+        &self,
+        candidate: &coding_supervisor::CandidateId,
+        tree: Option<&str>,
+        transferred: bool,
+    ) -> Option<Match> {
+        let current = self.observed.as_ref().ok()?;
+        if *candidate == current.id {
+            Some(Match::Exact)
+        } else if transferred || tree.is_some_and(|tree| self.tree.get() == Some(tree)) {
+            Some(Match::Tree)
+        } else {
+            None
+        }
+    }
+
     /// `honour_asserted`: replay receipts whose `output_ref` starts with [`MCP_ASSERTED`].
     /// The hook adapter passes `false`; only the advisory MCP server passes `true`.
     pub fn open(
@@ -1427,6 +1508,7 @@ impl Session {
             observed,
             evidence_dir: evidence_dir.map(Path::to_path_buf),
             task_id,
+            tree: CurrentTree::default(),
         })
     }
 
@@ -1435,6 +1517,7 @@ impl Session {
         &mut self,
         dir: &Path,
         agent: &str,
+        now: u64,
         reasons: &mut Vec<String>,
     ) -> Result<(), String> {
         let Ok(current) = &self.observed else {
@@ -1447,27 +1530,45 @@ impl Session {
         let starting = self.task.starting_candidate().cloned();
         for run in runs.iter().filter(|run| {
             (run.agent_id == agent || run.recovered_by.as_deref() == Some(agent))
-                && (run.candidate == current.id || Some(&run.candidate) == starting.as_ref())
                 && run.cwd == run.execution_root
         }) {
+            let matched = self.matches_current(
+                &run.candidate,
+                run.tree.as_deref(),
+                run.transferred_to.contains(&current.id),
+            );
+            if matched.is_none() && Some(&run.candidate) != starting.as_ref() {
+                continue;
+            }
             if !current_dispatch_reference(dir, &self.task_id, &run.reference)? {
                 continue;
             }
+            // The receipt of a tree match is made on the current candidate; the transfer row
+            // lets the journal check link it to the run made on another one.
+            let candidate = if matched == Some(Match::Tree) {
+                if let Some(tree) = self.tree.get() {
+                    observation::record_transfer(dir, &self.task_id, run, &current.id, tree, now)?;
+                }
+                current.id.clone()
+            } else {
+                run.candidate.clone()
+            };
             // K6: a run on the starting candidate evidences only a baseline criterion.
-            for criterion in self.criteria.iter().filter(|c| {
-                c.accepts(&run.command) && (run.candidate == current.id || c.is_baseline())
-            }) {
-                if self
-                    .gate
-                    .receipts
-                    .iter()
-                    .any(|r| r.criterion == criterion.id && r.output_ref == run.reference)
-                {
+            for criterion in self
+                .criteria
+                .iter()
+                .filter(|c| c.accepts(&run.command) && (matched.is_some() || c.is_baseline()))
+            {
+                if self.gate.receipts.iter().any(|r| {
+                    r.criterion == criterion.id
+                        && r.output_ref == run.reference
+                        && r.candidate == candidate
+                }) {
                     continue;
                 }
                 let receipt = VerificationReceipt {
                     criterion: criterion.id.clone(),
-                    candidate: run.candidate.clone(),
+                    candidate: candidate.clone(),
                     command: run.command.clone(),
                     cwd: run.cwd.clone(),
                     exit_code: run.exit_code,
@@ -1523,7 +1624,7 @@ impl Session {
         }
         // Current criteria are project-root checks. Nested observations retain their
         // actual cwd, but explicit nested criterion contexts need a separate contract API.
-        let execution_root = location::canonical_project(project);
+        let execution_root = crate::binding::execution_root(dir, project);
         for criterion in self.criteria.iter().filter(|c| c.mandatory) {
             let latest = current_rows.iter().rev().find(|row| {
                 text(row, "kind") == Some("dispatch")
@@ -1531,8 +1632,22 @@ impl Session {
                     && text(row, "task_id") == Some(self.task_id.as_str())
                     && text(row, "command").is_some_and(|s| criterion.accepts(s))
                     && row.get("candidate").is_some_and(|v| {
-                        text(v, "base_commit") == Some(current.id.base_commit.as_str())
-                            && text(v, "dirty_digest") == Some(current.id.dirty_digest.as_str())
+                        let id = coding_supervisor::CandidateId {
+                            base_commit: text(v, "base_commit").unwrap_or_default().to_owned(),
+                            dirty_digest: text(v, "dirty_digest").unwrap_or_default().to_owned(),
+                        };
+                        let dispatch = text(row, "dispatch_id").unwrap_or_default();
+                        self.matches_current(
+                            &id,
+                            text(row, "tree"),
+                            observation::transferred(
+                                &current_rows,
+                                &self.task_id,
+                                dispatch,
+                                &current.id,
+                            ),
+                        )
+                        .is_some()
                     })
             });
             let Some(latest) = latest else { continue };
