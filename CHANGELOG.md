@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.3](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.9.2...v0.9.3) (2026-11-05)
+
+
+### Bug Fixes
+
+* **gate:** close the linked-worktree gap and name the way out of two refusals ([4a87208](https://github.com/special-place-ai-heaven/coding-supervisor/commit/4a8720876d4a3147c7d48ba5e13f02417cb0f322))
+* **gate:** close the linked-worktree gap and name the way out of two refusals ([bf49e42](https://github.com/special-place-ai-heaven/coding-supervisor/commit/bf49e420b7dbeded9e5270d78d356a609e2d0196))
+
 ## [0.9.2](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.9.1...v0.9.2) (2026-11-05)
 
 
