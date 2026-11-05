@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.10.0...v0.10.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **gate:** keep read-only commands open after completion and end stopped jobs ([fe43487](https://github.com/special-place-ai-heaven/coding-supervisor/commit/fe4348757af96ec9eda8fa47df0eb91dc8e7653d))
+* **gate:** keep read-only commands open after completion and end stopped jobs ([b81b86a](https://github.com/special-place-ai-heaven/coding-supervisor/commit/b81b86a3f016c41b4f1dbed1e7034e767b2b9983))
+
 ## [0.10.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.9.3...v0.10.0) (2026-11-05)
 
 
