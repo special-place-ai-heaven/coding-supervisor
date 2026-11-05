@@ -415,6 +415,29 @@ fn protection(payload: &Value, env: &Env) -> Option<Decision> {
     }
 }
 
+/// Linked worktrees keep their own gate state, so a session whose prompt is registered in the
+/// main checkout has no prompt in its worktree. That must not make the worktree ungated.
+fn unregistered_linked_worktree(root: &Path, payload: &Value) -> Option<Decision> {
+    let session = text(payload, "session_id").unwrap_or_default();
+    if crate::autonomy::registered(root, session).unwrap_or(true) {
+        return None;
+    }
+    let worktree = PathBuf::from(location::canonical_project(Path::new(
+        text(payload, "cwd").unwrap_or("."),
+    )));
+    let main = location::linked_main_checkout(&worktree)?;
+    let lookup = |name: &str| std::env::var(name).ok();
+    let (main_root, _) = location::resolve_state_dir_read_only(&main, &lookup).ok()?;
+    if !crate::autonomy::registered(&main_root, session).unwrap_or(true) {
+        return None;
+    }
+    Some(Decision::Deny(format!(
+        "GATE: this session's prompt is registered in the main checkout {}, not in linked worktree {}; its task does not observe edits here. Send the next prompt from this worktree so the gate registers it here, or work in the main checkout",
+        location::canonical_project(&main),
+        worktree.display()
+    )))
+}
+
 /// The active task is bound to a different session than this prompt's. Unknown ownership is
 /// not reported as foreign, so the ordinary advice stays.
 fn foreign_task(root: &Path, payload: &Value) -> bool {
@@ -487,6 +510,13 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     .to_owned(),
             ),
         };
+    }
+    if event == "PreToolUse"
+        && !inspection(payload)
+        && env.state_location != "test"
+        && let Some(denial) = unregistered_linked_worktree(&root, payload)
+    {
+        return denial;
     }
     let guarded_intent =
         (event == "PreToolUse" && !inspection(payload)) || matches!(event, "Stop" | "SubagentStop");
@@ -1330,7 +1360,7 @@ impl Session {
             let Some(latest) = latest else { continue };
             if !observation::approved_context(latest) {
                 return Err(format!(
-                    "{} latest execution has unapproved or legacy execution context",
+                    "{} latest execution has unapproved or legacy execution context: rerun it without extra environment or shell; a CARGO_TARGET_DIR passed to the command counts only when the hook's own environment has the same value (set it in the harness settings env or cargo's [build] target-dir instead)",
                     criterion.id.0
                 ));
             }
@@ -1352,10 +1382,24 @@ impl Session {
                     }));
                 }
                 None => {
-                    return Err(format!(
-                        "{} latest execution has no observed completion",
-                        criterion.id.0
-                    ));
+                    // A Terminal Commander job is recorded only from its final command_status;
+                    // an exit seen through bucket_wait carries no structured exit state.
+                    let job = current_rows.iter().find_map(|row| {
+                        (text(row, "kind") == Some("job")
+                            && text(row, "dispatch_id") == Some(dispatch))
+                        .then(|| text(row, "job_id"))
+                        .flatten()
+                    });
+                    return Err(match job {
+                        Some(job) => format!(
+                            "{} latest execution has no observed completion: call command_status for Terminal Commander job {job} after it ends to record its exit",
+                            criterion.id.0
+                        ),
+                        None => format!(
+                            "{} latest execution has no observed completion",
+                            criterion.id.0
+                        ),
+                    });
                 }
             }
         }

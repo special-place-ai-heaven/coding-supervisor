@@ -9,6 +9,25 @@ pub fn canonical_project(cwd: &Path) -> String {
     normalize(git_root(cwd).ok().flatten().as_deref().unwrap_or(cwd))
 }
 
+/// The main checkout of a linked worktree, read from the worktree's `.git` file
+/// (`gitdir: <main>/.git/worktrees/<name>`). `None` for a main checkout, a submodule or no
+/// repository. File reads only, no git process.
+pub fn linked_main_checkout(worktree: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(worktree.join(".git")).ok()?;
+    let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
+    let gitdir = if gitdir.is_absolute() {
+        gitdir
+    } else {
+        worktree.join(gitdir)
+    };
+    let worktrees = gitdir.parent()?;
+    let common = worktrees.parent()?;
+    if worktrees.file_name()? != "worktrees" || common.file_name()? != ".git" {
+        return None;
+    }
+    common.parent().map(Path::to_path_buf)
+}
+
 /// [`canonical_project`], or an error when git does not answer in time, for callers whose
 /// state namespace or gate decision must not silently follow a different identity.
 pub(crate) fn checked_project(cwd: &Path) -> Result<String, String> {
