@@ -347,6 +347,26 @@ pub(crate) fn observe(
     if !matches!(event, "PostToolUse" | "PostToolUseFailure") {
         return Ok(false);
     }
+    // G13: a job its owner stopped is no longer pending. The row records no exit, so it can
+    // never count as a completion.
+    if tc == Some("command_stop") {
+        if event != "PostToolUse" {
+            return Ok(false);
+        }
+        let Some(job) = previous.iter().find(|v| {
+            text(v, "kind") == Some("job")
+                && same_scope(v, payload, task, agent)
+                && text(v, "job_id").is_some()
+                && text(v, "job_id") == text(input, "job_id")
+        }) else {
+            return Ok(false);
+        };
+        let mut stopped = job.clone();
+        stopped["kind"] = "stopped".into();
+        stopped["t"] = now.into();
+        append(&stopped)?;
+        return Ok(true);
+    }
     let dispatch = if starts {
         previous.iter().find(|v| {
             text(v, "kind") == Some("dispatch")
@@ -594,12 +614,13 @@ pub(crate) fn pending_jobs(dir: &Path, task: &str) -> Result<Value, String> {
                 && other.get("agent_id") == row.get("agent_id")
         };
         if rows.iter().filter(same_dispatch).any(|other| {
-            text(other, "kind") == Some("completed")
-                && approved_context(other)
-                && matches!(
-                    text(other, "completion_trust"),
-                    Some("observed" | "tc-reconstructed")
-                )
+            text(other, "kind") == Some("stopped")
+                || text(other, "kind") == Some("completed")
+                    && approved_context(other)
+                    && matches!(
+                        text(other, "completion_trust"),
+                        Some("observed" | "tc-reconstructed")
+                    )
         }) {
             continue;
         }
@@ -1705,5 +1726,36 @@ test result: ok. 4 passed; 0 failed"
             crate::autonomy::pending_jobs(&d.0, "other-task").unwrap(),
             json!([])
         );
+    }
+
+    /// G13: a job stopped with `command_stop` is no longer pending, and stopping it records no
+    /// completion. Another session cannot stop-mark it.
+    #[test]
+    fn a_stopped_tc_job_is_no_longer_pending_and_counts_as_no_completion() {
+        let (d, mut p, c) = setup();
+        assert!(event(&d, &p, "PreToolUse", &c));
+        p["tool_response"] = json!({"job_id":"job-1","bucket_id":"bucket-1"});
+        event(&d, &p, "PostToolUse", &c);
+        std::fs::write(d.0.join("contract.json"), json!({"id":"fixture","goal":"fixture","criteria":[{"id":"C1","check":"test","mandatory":true,"command":"cargo test"}],"scope":["src/"],"forbidden_effects":[],"max_repair_rounds":2}).to_string()).unwrap();
+        let stop = |session: &str| {
+            json!({"tool_name":format!("{TC}command_stop"),"tool_use_id":format!("stop-{session}"),
+                "session_id":session,"cwd":d.0,"tool_input":{"job_id":"job-1"},
+                "tool_response":{"job_id":"job-1","bucket_id":"bucket-1","bytes_total":10,"events_emitted":0,"frames_total":1}})
+        };
+        assert!(!event(&d, &stop("session-2"), "PostToolUse", &c));
+        assert_eq!(
+            crate::autonomy::pending_jobs(&d.0, "task-1")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(event(&d, &stop("session-1"), "PostToolUse", &c));
+        assert_eq!(
+            crate::autonomy::pending_jobs(&d.0, "task-1").unwrap(),
+            json!([])
+        );
+        assert!(read_runs(&d.0, "task-1").unwrap().is_empty());
     }
 }
