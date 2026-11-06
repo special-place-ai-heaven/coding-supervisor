@@ -396,7 +396,9 @@ pub(crate) fn observe(
     } else if matches!(tc, Some("command_status" | "bucket_wait")) {
         let mut found = None;
         for v in &previous {
-            let same_owner = same_scope(v, payload, task, agent);
+            // G25: in its own session the chair may record the exit of a worker's job.
+            let same_owner = same_scope(v, payload, task, agent)
+                || (text(v, "task_id") == Some(task) && text(v, "session_id") == Some(session));
             let recovered = text(v, "task_id") == Some(task)
                 && crate::autonomy::recovers_session(
                     dir,
@@ -585,7 +587,7 @@ pub(crate) fn observe(
         }
     }
     run["finished"] = now.into();
-    if text(dispatch, "session_id") != Some(session) {
+    if text(dispatch, "session_id") != Some(session) || text(dispatch, "agent_id") != Some(agent) {
         run["recovered_by_session"] = session.into();
         run["recovered_by_agent"] = agent.into();
     }
@@ -876,12 +878,14 @@ pub(crate) fn read_runs(dir: &Path, task: &str) -> Result<Vec<Run>, String> {
             text(row, "recovered_by_session"),
             text(row, "recovered_by_agent"),
             text(row, "dispatch_id"),
-        ) && crate::autonomy::recovers_session(
-            dir,
-            task,
-            text(row, "session_id").unwrap_or_default(),
-            session,
-        )? {
+        ) && (text(row, "session_id") == Some(session)
+            || crate::autonomy::recovers_session(
+                dir,
+                task,
+                text(row, "session_id").unwrap_or_default(),
+                session,
+            )?)
+        {
             recovered.insert(
                 json!([row.get("session_id"), row.get("agent_id"), dispatch]).to_string(),
                 agent.to_owned(),

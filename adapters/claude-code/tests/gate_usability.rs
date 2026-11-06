@@ -663,3 +663,91 @@ fn memory_saves_are_allowed_under_discussion_and_unclassified_prompts() {
     );
     assert!(matches!(escape, Decision::Deny(_)), "{escape:?}");
 }
+
+/// G27: a still-running Terminal Commander job is refused once; the next stop in the same
+/// turn is released with a note naming the job, and nothing is certified.
+#[test]
+fn a_pending_terminal_commander_job_refuses_stop_once_then_waits() {
+    let (_d, mut env, _) = autonomous();
+    let project = cwd(&env);
+    let input = json!({"argv":["cargo","test"],"cwd":project});
+    let name = "mcp__terminal_commander__command_start_combed";
+    assert_eq!(
+        tool(
+            &mut env,
+            "PreToolUse",
+            "session",
+            name,
+            "tc1",
+            input.clone()
+        ),
+        Decision::None
+    );
+    handle(
+        &json!({"hook_event_name":"PostToolUse","cwd":project,"session_id":"session",
+        "agent_id":"main","tool_use_id":"tc1","tool_name":name,"tool_input":input,
+        "tool_response":{"job_id":"job-1","bucket_id":"bucket-1"}}),
+        &mut env,
+    );
+    let Decision::Block(first) = stop_with(&mut env, "main", false) else {
+        panic!("the first stop must name the pending job");
+    };
+    assert!(first.contains("job-1"), "{first}");
+    assert!(
+        !first.contains("report the task as not complete"),
+        "{first}"
+    );
+    let second = stop_with(&mut env, "main", true);
+    let Decision::System(note) = &second else {
+        panic!("the second stop must be released, got {second:?}");
+    };
+    assert!(
+        note.contains("job-1") && note.contains("command_status"),
+        "{note}"
+    );
+    assert_ne!(gate(&env)["state"], "completed");
+}
+
+/// G25: the chair records the exit of a Terminal Commander job its worker started in the
+/// same session, and that run then counts for the chair's Stop.
+#[test]
+fn the_chair_records_the_exit_of_a_workers_terminal_commander_job() {
+    let (_d, mut env, _) = autonomous();
+    run_checks(&mut env, "first");
+    let project = cwd(&env);
+    let input = json!({"argv":["cargo","test"],"cwd":project});
+    let start = "mcp__terminal_commander__command_start_combed";
+    assert_eq!(
+        as_agent(&mut env, "w1", start, "tc1", input.clone()),
+        Decision::None
+    );
+    handle(
+        &json!({"hook_event_name":"PostToolUse","cwd":project,"session_id":"session",
+        "agent_id":"w1","tool_use_id":"tc1","tool_name":start,"tool_input":input,
+        "tool_response":{"job_id":"job-w","bucket_id":"bucket-w"}}),
+        &mut env,
+    );
+    let status = "mcp__terminal_commander__command_status";
+    let status_input = json!({"job_id":"job-w"});
+    assert_eq!(
+        tool(
+            &mut env,
+            "PreToolUse",
+            "session",
+            status,
+            "st1",
+            status_input.clone()
+        ),
+        Decision::None
+    );
+    handle(
+        &json!({"hook_event_name":"PostToolUse","cwd":project,"session_id":"session",
+        "agent_id":"main","tool_use_id":"st1","tool_name":status,"tool_input":status_input,
+        "tool_response":{"job_id":"job-w","bucket_id":"bucket-w","state":"exited",
+            "complete":true,"exit_code":0,"outcome_trust":"observed","degraded":false,
+            "pipeline_exit_masked":false}}),
+        &mut env,
+    );
+    assert_eq!(stop(&mut env, "main"), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+}
