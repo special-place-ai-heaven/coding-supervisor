@@ -169,3 +169,11 @@ resolve the reported mismatch; never remove the journal merely to get a pass.
 
 These are process-crash recovery mechanisms, not protection against a malicious
 same-user process that can rewrite hooks, binaries and their storage.
+
+## Long checks (G29, 2026-11-06)
+
+No hook fires while a Terminal Commander wait blocks, so neither the gate nor the harness
+shows movement during a long check (the local `cargo test --workspace` takes about 20
+minutes here). Say before the wait which check runs and roughly how long it takes, and
+report on each return. `bucket_wait` can return a heartbeat at once on a running job; wait
+on the process (or `command_status`) instead of polling `bucket_wait`.
