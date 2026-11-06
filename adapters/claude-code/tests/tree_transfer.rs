@@ -191,3 +191,18 @@ fn a_dispatch_row_without_a_tree_keeps_the_exact_rule() {
     git(&f.project, &["commit", "-q", "-a", "-m", "work"]);
     refused(&f, &mut env);
 }
+
+/// G30: the advisory view (`task_state`) sees what Stop will count: a passing run follows a
+/// commit of identical content and is gone once the content changes.
+#[test]
+fn observed_criteria_follow_the_tree_after_a_commit() {
+    let (f, mut env) = setup();
+    passing_run(&f, &mut env);
+    git(&f.project, &["commit", "-q", "-a", "-m", "work"]);
+    let observed = |env: &Env| {
+        supervisor_claude_code::adapter::observed_criteria(&env.state_dir, &f.project).unwrap()
+    };
+    assert_eq!(observed(&env), vec!["C2".to_owned()]);
+    fs::write(f.project.join("src/a.rs"), "a3\n").unwrap();
+    assert!(observed(&env).is_empty());
+}

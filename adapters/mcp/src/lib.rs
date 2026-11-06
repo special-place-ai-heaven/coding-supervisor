@@ -459,6 +459,13 @@ impl Server {
                 supervisor_claude_code::autonomy::pending_jobs(dir, &task_id)?;
             details["paused"] = supervisor_claude_code::autonomy::is_paused(dir)?.into();
             details["worktree"] = supervisor_claude_code::binding::bound_root(dir).into();
+            // G30: a criterion Stop will count from an observed run (also across a commit of
+            // identical content) is not "missing" here.
+            for id in supervisor_claude_code::adapter::observed_criteria(dir, &self.project)? {
+                if details["receipts"][&id] == "missing" {
+                    details["receipts"][&id] = "observed".into();
+                }
+            }
         }
         Ok(details.to_string())
     }

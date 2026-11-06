@@ -1523,6 +1523,43 @@ pub fn render(error: &GateError) -> String {
     }
 }
 
+/// G30: the criteria with a passing observed run on the current worktree content (the same
+/// candidate, or another one with the same tree), as a Stop would count them. Read-only:
+/// nothing is recorded, so the advisory `task_state` can show what the hook adapter accepts.
+pub fn observed_criteria(dir: &Path, project: &Path) -> Result<Vec<String>, String> {
+    let Some(contract) = state::read_contract(dir)?.0 else {
+        return Ok(Vec::new());
+    };
+    let task = lifecycle::task_identity(dir, &contract.id.0)?;
+    let root = crate::binding::bound_root(dir).map_or_else(|| project.to_owned(), PathBuf::from);
+    let Ok(current) = (crate::candidate::GitCandidate { cwd: root.clone() }).observe() else {
+        return Ok(Vec::new());
+    };
+    let tree = std::cell::OnceCell::new();
+    let mut ids: Vec<String> = Vec::new();
+    for run in observation::read_runs(dir, &task)? {
+        if run.cwd != run.execution_root || run.exit_code != Some(0) {
+            continue;
+        }
+        let same = run.candidate == current.id
+            || run.transferred_to.contains(&current.id)
+            || run.tree.as_deref().is_some_and(|t| {
+                tree.get_or_init(|| crate::git::worktree_tree(&root, dir))
+                    .as_deref()
+                    == Some(t)
+            });
+        if !same || !current_dispatch_reference(dir, &task, &run.reference)? {
+            continue;
+        }
+        for criterion in contract.criteria.iter().filter(|c| c.accepts(&run.command)) {
+            if !ids.contains(&criterion.id.0) {
+                ids.push(criterion.id.0.clone());
+            }
+        }
+    }
+    Ok(ids)
+}
+
 /// The core task and gate.json for one call, rebuilt from contract.json, gate.json and the observed candidate.
 pub struct Session {
     pub task: Task,
