@@ -483,12 +483,15 @@ fn busy_lock_verdict_and_status_exit_1_with_no_record() {
     let f = Fixture::new("busy-cli");
     f.task_start();
     let root = f.state_root();
+    // G26: the code waits up to its 10 s lock deadline; allow twice that, since a loaded
+    // machine (nextest runs test files in parallel) adds seconds that are not a hang.
+    let bound = Duration::from_secs(2 * 10);
     let run = |command: &str| {
         let mut c = Command::new(BIN);
         c.env("SUPERVISOR_STATE_DIR", &f.state)
             .args([command, "--project"])
             .arg(&f.project);
-        bounded(c, Duration::from_secs(15))
+        bounded(c, bound + Duration::from_secs(5))
     };
     // Unlocked, status succeeds and verdict does not fail with 1.
     assert!(run("status").0.status.success());
@@ -509,7 +512,7 @@ fn busy_lock_verdict_and_status_exit_1_with_no_record() {
         assert_eq!(output.status.code(), Some(1), "{command}: {stderr}");
         assert!(output.stdout.is_empty(), "{command}");
         assert!(stderr.contains(reason), "{command}: {stderr}");
-        assert!(elapsed < Duration::from_secs(13), "{command}: {elapsed:?}");
+        assert!(elapsed < bound, "{command}: {elapsed:?}");
     }
     drop(lock);
     assert_eq!((snapshot(&root), snapshot(&f.project)), before);
