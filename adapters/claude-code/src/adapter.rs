@@ -1,7 +1,7 @@
 //! One hook payload in, at most one decision out. The core's rules are authoritative on every call.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use coding_supervisor::{
@@ -335,7 +335,45 @@ fn proposal_command(payload: &Value) -> bool {
 
 /// What the pre-intent gate lets through while the current prompt is unclassified.
 fn inspection(payload: &Value) -> bool {
-    read_only_tool(payload) || read_only_command(payload) || proposal_command(payload)
+    read_only_tool(payload)
+        || read_only_command(payload)
+        || proposal_command(payload)
+        || memory_save(payload)
+}
+
+/// G31: saving memory is not project work: EverOS, or a Write/Edit of a harness memory note
+/// `.../.claude/projects/<project>/memory/<name>.md` with no `..` (never settings or hooks).
+fn memory_save(payload: &Value) -> bool {
+    let tool = text(payload, "tool_name").unwrap_or_default();
+    if let Some(name) = tool.strip_prefix("mcp__everos__memory_") {
+        return matches!(name, "add" | "flush" | "search" | "list");
+    }
+    if !matches!(tool, "Write" | "Edit") {
+        return false;
+    }
+    let Some(path) = payload
+        .pointer("/tool_input/file_path")
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    let parts: Vec<Component> = Path::new(path).components().collect();
+    if parts
+        .iter()
+        .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
+        return false;
+    }
+    let names: Vec<String> = parts
+        .iter()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    let n = names.len();
+    n >= 5
+        && names[n - 5] == ".claude"
+        && names[n - 4] == "projects"
+        && names[n - 2] == "memory"
+        && names[n - 1].ends_with(".md")
 }
 
 /// A pending prompt blocks a stop once; while the harness is already continuing, release it
@@ -661,6 +699,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
         // Inspection and proposal routes do not need to open or advance the task gate.
         if root.join("intents.json").exists()
             && (read_only_tool(payload)
+                || memory_save(payload)
                 || proposal_command(payload)
                 || (read_only_command(payload)
                     && matches!(lifecycle::active_task(&root), Ok(None))))

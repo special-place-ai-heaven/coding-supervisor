@@ -605,3 +605,61 @@ fn a_proposal_may_keep_one_of_the_floor_commands() {
         assert!(started.is_ok(), "{kept}: {started:?}");
     }
 }
+
+/// G31: saving memory (the harness's memory notes, EverOS) is not project work, so neither an
+/// unclassified nor a discussion prompt refuses it; a project write is still refused.
+#[test]
+fn memory_saves_are_allowed_under_discussion_and_unclassified_prompts() {
+    let (_d, mut env, _) = idle();
+    let home = cwd(&env).join("home");
+    let note = home.join(".claude/projects/p/memory/note.md");
+    let save = |env: &mut Env, id: &str| {
+        tool(
+            env,
+            "PreToolUse",
+            "session",
+            "Write",
+            id,
+            json!({"file_path":note,"content":"x"}),
+        )
+    };
+    follow_up(
+        &mut env,
+        "session",
+        "q1",
+        "Remember that reviews use orch-review",
+    );
+    assert!(!matches!(save(&mut env, "m1"), Decision::Deny(_)));
+    for name in ["mcp__everos__memory_add", "mcp__everos__memory_flush"] {
+        let decision = tool(&mut env, "PreToolUse", "session", name, name, json!({}));
+        assert!(
+            !matches!(decision, Decision::Deny(_)),
+            "{name}: {decision:?}"
+        );
+    }
+    let event = supervisor_claude_code::autonomy::pending(&env.state_dir, "session")
+        .unwrap()
+        .unwrap();
+    propose(&env, &event, "discussion", None, None);
+    assert!(!matches!(save(&mut env, "m2"), Decision::Deny(_)));
+    let project = cwd(&env).join("src/lib.rs");
+    let edit = tool(
+        &mut env,
+        "PreToolUse",
+        "session",
+        "Write",
+        "p1",
+        json!({"file_path":project,"content":"x"}),
+    );
+    assert!(matches!(edit, Decision::Deny(_)), "{edit:?}");
+    let escape = home.join(".claude/projects/p/memory/../../../settings.json");
+    let escape = tool(
+        &mut env,
+        "PreToolUse",
+        "session",
+        "Write",
+        "e1",
+        json!({"file_path":escape,"content":"x"}),
+    );
+    assert!(matches!(escape, Decision::Deny(_)), "{escape:?}");
+}
