@@ -811,3 +811,67 @@ fn a_proposal_can_name_a_contract_file() {
     let started = autonomy::propose(&root, &project, &start).unwrap();
     assert!(started["task_id"].is_string(), "{started}");
 }
+
+/// G32 (AAP report): where the gate discovers no checks, a person declares them with
+/// `supervisor task add-check`; the refusal says how, and the next prompt's floor carries them.
+#[test]
+fn a_person_can_add_a_check_where_none_is_discovered() {
+    let f = Fixture::new();
+    let root = f.0.join("state");
+    let project = f.0.join("project");
+    fs::remove_file(project.join("Cargo.toml")).unwrap();
+    fs::remove_file(project.join("package.json")).unwrap();
+    let event = prompt(&root, &project, "before");
+    let refusal = autonomy::propose(&root, &project, &proposal(&event, "start")).unwrap_err();
+    assert!(refusal.contains("supervisor task add-check"), "{refusal}");
+    assert!(autonomy::add_check(&root, &project, "APP", " ", "reason").is_err());
+    let added = autonomy::add_check(
+        &root,
+        &project,
+        "APP",
+        "cargo check --manifest-path app/Cargo.toml",
+        "workspace manifest lives in app/",
+    )
+    .unwrap();
+    assert_eq!(added["added"], true);
+    let event = prompt(&root, &project, "after");
+    assert!(commands(&event).contains(&"cargo check --manifest-path app/Cargo.toml".to_owned()));
+    autonomy::propose(&root, &project, &proposal(&event, "start")).unwrap();
+    assert!(
+        autonomy::add_check(&root, &project, "MORE", "x", "reason").is_err(),
+        "an active task owns its floor"
+    );
+}
+
+/// G33 (AAP report): a Cargo.toml in a direct subfolder, even a virtual workspace manifest with
+/// no [package], gives the Rust floor, run from the root with --manifest-path.
+#[test]
+fn a_subfolder_cargo_workspace_gives_the_rust_floor() {
+    let f = Fixture::new();
+    let root = f.0.join("state");
+    let project = f.0.join("project");
+    fs::remove_file(project.join("Cargo.toml")).unwrap();
+    fs::remove_file(project.join("package.json")).unwrap();
+    fs::create_dir_all(project.join("app")).unwrap();
+    fs::write(
+        project.join("app/Cargo.toml"),
+        "[workspace]\nmembers = []\n",
+    )
+    .unwrap();
+    let event = prompt(&root, &project, "subfolder-cargo");
+    let ids: Vec<&str> = event["required_criteria"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    for id in ["AUTO_FMT_APP", "AUTO_LINT_APP", "AUTO_TEST_APP"] {
+        assert!(ids.contains(&id), "{id} missing from {ids:?}");
+    }
+    let text = event["required_criteria"].to_string();
+    assert!(
+        text.contains("cargo test --manifest-path app/Cargo.toml --workspace"),
+        "{text}"
+    );
+    autonomy::propose(&root, &project, &proposal(&event, "start")).unwrap();
+}

@@ -175,6 +175,17 @@ fn npm_packages(project: &Path) -> Result<Vec<(Option<String>, Value)>, String> 
     if let Some(package) = read(&project.join("package.json"))? {
         packages.push((None, package));
     }
+    for dir in subfolders(project)? {
+        if let Some(package) = read(&project.join(&dir).join("package.json"))? {
+            packages.push((Some(dir), package));
+        }
+    }
+    Ok(packages)
+}
+
+/// The direct subfolders discovery looks into, sorted: plain names only, no hidden folders and
+/// no `node_modules`.
+fn subfolders(project: &Path) -> Result<Vec<String>, String> {
     let mut dirs: Vec<String> = match fs::read_dir(project) {
         Ok(entries) => entries
             .filter_map(Result::ok)
@@ -191,12 +202,7 @@ fn npm_packages(project: &Path) -> Result<Vec<(Option<String>, Value)>, String> 
         Err(e) => return Err(format!("{}: {e}", project.display())),
     };
     dirs.sort();
-    for dir in dirs {
-        if let Some(package) = read(&project.join(&dir).join("package.json"))? {
-            packages.push((Some(dir), package));
-        }
-    }
-    Ok(packages)
+    Ok(dirs)
 }
 
 /// K14: read `contract_file` (relative to the project) into `contract`, so the proposal is
@@ -234,15 +240,42 @@ fn extend_floor(floor: &mut Vec<Value>, extra: Vec<Value>) {
 pub fn repository_floor(project: &Path) -> Result<Vec<Value>, String> {
     let project = PathBuf::from(project_identity(project)?);
     let mut checks = Vec::new();
-    if project.join("Cargo.toml").is_file() {
+    // G33: a Cargo.toml at the root, else one in each direct subfolder (a virtual workspace
+    // manifest counts), run from the root with `--manifest-path` like npm's `--prefix`.
+    let cargo_dirs: Vec<Option<String>> = if project.join("Cargo.toml").is_file() {
+        vec![None]
+    } else {
+        subfolders(&project)?
+            .into_iter()
+            .filter(|dir| project.join(dir).join("Cargo.toml").is_file())
+            .map(Some)
+            .collect()
+    };
+    for dir in cargo_dirs {
+        let (suffix, manifest) = match &dir {
+            None => (String::new(), String::new()),
+            Some(dir) => (
+                format!("_{}", dir.to_ascii_uppercase().replace('-', "_")),
+                format!(" --manifest-path {dir}/Cargo.toml"),
+            ),
+        };
         // G20: nextest runs the same tests faster; `cargo test` stays the advised first command.
-        let mut test = criterion("AUTO_TEST", "cargo test --workspace");
-        test["command"] = json!(["cargo test --workspace", "cargo nextest run --workspace"]);
+        let mut test = criterion(
+            &format!("AUTO_TEST{suffix}"),
+            &format!("cargo test{manifest} --workspace"),
+        );
+        test["command"] = json!([
+            format!("cargo test{manifest} --workspace"),
+            format!("cargo nextest run{manifest} --workspace"),
+        ]);
         checks.extend([
-            criterion("AUTO_FMT", "cargo fmt --all -- --check"),
             criterion(
-                "AUTO_LINT",
-                "cargo clippy --workspace --all-targets -- -D warnings",
+                &format!("AUTO_FMT{suffix}"),
+                &format!("cargo fmt --all{manifest} -- --check"),
+            ),
+            criterion(
+                &format!("AUTO_LINT{suffix}"),
+                &format!("cargo clippy{manifest} --workspace --all-targets -- -D warnings"),
             ),
             test,
         ]);
@@ -812,6 +845,60 @@ pub fn amend_floor(
     Ok(json!({"criterion":criterion,"old_command":old,"new_command":command,"amended":true}))
 }
 
+/// G32: a person's check for a repository whose checks the gate cannot discover (no root or
+/// direct-subfolder Cargo.toml or package.json scripts). It joins the stored project floor, so
+/// every later prompt's `required_criteria` carries it. Person-only: the guard refuses agents.
+pub fn add_check(
+    root: &Path,
+    project: &Path,
+    criterion: &str,
+    command: &str,
+    reason: &str,
+) -> Result<Value, String> {
+    let (criterion, command, reason) = (criterion.trim(), command.trim(), reason.trim());
+    if criterion.is_empty() || command.is_empty() || reason.is_empty() {
+        return Err("add-check needs a nonempty --criterion, --command and --reason".into());
+    }
+    let tx = Transaction::open(root)?;
+    if lifecycle::active_task(root)?.is_some() {
+        return Err(
+            "a task is active and its contract owns the floor; finish or cancel it first".into(),
+        );
+    }
+    if repository_floor(project)?
+        .iter()
+        .any(|c| c["id"] != "AUTO_DIFF")
+    {
+        return Err("this repository's checks are discovered from its files; change one with `supervisor task amend-floor`".into());
+    }
+    let mut store = load(root)?;
+    if store.get("project_floor").is_none() {
+        store["project_floor"] =
+            json!({"project":project_identity(project)?,"required_criteria":[]});
+    }
+    let floor = &mut store["project_floor"];
+    validate_discovery_context(&floor["project"], project)?;
+    let list = floor["required_criteria"]
+        .as_array_mut()
+        .ok_or("invalid approved project floor")?;
+    if list.iter().any(|c| c["id"] == criterion) {
+        return Err(format!(
+            "{criterion} is already a check; change it with `supervisor task amend-floor`"
+        ));
+    }
+    list.push(json!({"id":criterion,"check":"person_declared","command":command,"mandatory":true}));
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let addition = json!({"t":t,"criterion":criterion,"command":command,"reason":reason});
+    match floor.get_mut("additions").and_then(Value::as_array_mut) {
+        Some(additions) => additions.push(addition),
+        None => floor["additions"] = json!([addition]),
+    }
+    tx.commit(vec![("intents.json".into(), format!("{store}\n"))])?;
+    Ok(json!({"criterion":criterion,"command":command,"added":true}))
+}
+
 /// The mandatory checks of a task being cancelled; a tampered gate is not cancelled.
 fn cancelled_floor(dir: &Path) -> Result<Vec<Value>, String> {
     let (contract, digest) = state::read_contract(dir)?;
@@ -1124,7 +1211,7 @@ fn add_floor(contract: &Value, floor: &Value) -> Result<Value, String> {
         .ok_or("criteria must be an array")?;
     let floor = floor.as_array().ok_or("invalid requirement floor")?;
     if floor.is_empty() || floor.iter().all(|c| c["id"] == "AUTO_DIFF") {
-        return Err("no deterministic repository checks found (not retryable): this repository has no Cargo.toml and no package.json scripts in its root or a direct subfolder, so no proposal can start a task. Stop retrying and tell the user that a person must provide the checks.".into());
+        return Err("no deterministic repository checks found (not retryable): this repository has no Cargo.toml and no package.json scripts in its root or a direct subfolder, so no proposal can start a task, whatever criteria it carries. Stop retrying and tell the user that a person declares the checks outside the session with `supervisor task add-check --project <dir> --criterion <ID> --command <command> --reason <text>`.".into());
     }
     for (required, expected) in floor.iter().zip(&required_contract.criteria) {
         if let Some(existing) = parsed.criteria.iter().find(|c| c.id == expected.id) {

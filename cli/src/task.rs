@@ -42,6 +42,13 @@ pub fn run(command: &str, flags: &Flags) -> Result<(), Failure> {
         "cancel" => {
             supervisor_claude_code::autonomy::cancel(&root, needed("--task")?, needed("--reason")?)
         }
+        "add-check" => supervisor_claude_code::autonomy::add_check(
+            &root,
+            &project,
+            needed("--criterion")?,
+            needed("--command")?,
+            needed("--reason")?,
+        ),
         "amend-floor" => supervisor_claude_code::autonomy::amend_floor(
             &root,
             &project,
