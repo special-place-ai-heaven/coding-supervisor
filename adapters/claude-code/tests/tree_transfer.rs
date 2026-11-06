@@ -206,3 +206,21 @@ fn observed_criteria_follow_the_tree_after_a_commit() {
     fs::write(f.project.join("src/a.rs"), "a3\n").unwrap();
     assert!(observed(&env).is_empty());
 }
+
+/// G28: an edit to a path CI treats as documentation only keeps the evidence (owner,
+/// 2026-11-06); principle 2 in CLAUDE.md names the list.
+#[test]
+fn a_docs_only_edit_keeps_the_evidence() {
+    let (f, mut env) = setup();
+    let path = env.state_dir.join("contract.json");
+    let contract = fs::read_to_string(&path).unwrap().replace(
+        r#""scope":["src/"]"#,
+        r#""scope":["src/","docs/","README.md"]"#,
+    );
+    fs::write(&path, contract).unwrap();
+    passing_run(&f, &mut env);
+    fs::create_dir_all(f.project.join("docs")).unwrap();
+    fs::write(f.project.join("docs/LEDGER.md"), "row\n").unwrap();
+    fs::write(f.project.join("README.md"), "readme\n").unwrap();
+    accepted(&f, &mut env);
+}

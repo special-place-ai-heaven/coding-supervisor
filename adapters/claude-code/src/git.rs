@@ -115,9 +115,23 @@ pub fn worktree_tree(cwd: &Path, state_dir: &Path) -> Option<String> {
         std::fs::copy(&real, &scratch).ok()?;
     }
     let env = [("GIT_INDEX_FILE", scratch.as_os_str())];
-    // The gate's own fallback state directory inside the project is not content.
+    // The gate's own fallback state directory inside the project is not content, and neither
+    // are the paths CI treats as documentation only (G28, owner 2026-11-06; keep in step with
+    // `paths-ignore` in .github/workflows/ci.yml).
     let tree = ok(
-        &["add", "-A", "--", ":/", ":(top,exclude).supervisor/"],
+        &[
+            "add",
+            "-A",
+            "--",
+            ":/",
+            ":(top,exclude).supervisor/",
+            ":(top,exclude)docs/",
+            ":(top,exclude)README.md",
+            ":(top,exclude)CHANGELOG.md",
+            ":(top,exclude)CLAUDE.md",
+            ":(top,exclude)HANDOVER.md",
+            ":(top,exclude)LICENSE",
+        ],
         &env,
     )
     .and_then(|_| ok(&["write-tree"], &env))
