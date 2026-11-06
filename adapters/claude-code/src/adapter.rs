@@ -397,7 +397,17 @@ fn unclassified_stop(payload: &Value, reason: &str) -> Decision {
 }
 
 pub fn handle(payload: &Value, env: &mut Env) -> Decision {
-    let decision = handle_at_level(payload, env);
+    let mut decision = handle_at_level(payload, env);
+    // G23: only a prompt hook says so, and only when the installed package moved on.
+    if let Decision::Context {
+        event: "UserPromptSubmit",
+        text,
+    } = &mut decision
+        && let Some(warning) = crate::version::current_mismatch()
+    {
+        text.push(' ');
+        text.push_str(&warning);
+    }
     note_agent_effects(payload, env, &decision).unwrap_or(decision)
 }
 
