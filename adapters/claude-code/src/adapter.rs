@@ -398,8 +398,7 @@ fn unclassified_stop(payload: &Value, reason: &str) -> Decision {
 
 pub fn handle(payload: &Value, env: &mut Env) -> Decision {
     let decision = handle_at_level(payload, env);
-    note_agent_effects(payload, env, &decision);
-    decision
+    note_agent_effects(payload, env, &decision).unwrap_or(decision)
 }
 
 fn handle_at_level(payload: &Value, env: &mut Env) -> Decision {
@@ -426,13 +425,14 @@ fn handle_at_level(payload: &Value, env: &mut Env) -> Decision {
 /// G16/G21, from the decision the harness will actually see: a SubagentStop that does not
 /// refuse the handback ends its worker, so its background delegation closes (on every route,
 /// including the early ones in `judge`); a PreToolUse that lets a tool run, which is not
-/// read-only, marks its agent as a mutator, whatever the level did to a denial.
-fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) {
+/// read-only, marks its agent as a mutator, whatever the level did to a denial. G24(b): a
+/// mutation that cannot be journaled is refused (from `enforce` up), never treated as read-only.
+fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) -> Option<Decision> {
     if matches!(decision, Decision::Block(_) | Decision::Deny(_))
         || env.level.level == Level::Off
         || JOURNAL.get() == Journal::StateUnproven
     {
-        return;
+        return None;
     }
     let now = (env.clock)();
     match text(payload, "hook_event_name") {
@@ -445,7 +445,7 @@ fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) {
             };
             // Another session's task is not this agent's to journal into.
             if !crate::autonomy::owns_session(&dir, session).unwrap_or(false) {
-                return;
+                return None;
             }
             let task = state::read_contract(&dir)
                 .ok()
@@ -453,10 +453,17 @@ fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) {
                 .and_then(|c| lifecycle::task_identity(&dir, &c.id.0).ok())
                 .unwrap_or_default();
             let agent = text(payload, "agent_id").unwrap_or("main");
-            let _ = observation::record_mutation(&dir, payload, &task, agent, now);
+            if let Err(e) = observation::record_mutation(&dir, payload, &task, agent, now) {
+                let why = format!("GATE: the gate could not journal this tool ({e}); retry");
+                return Some(match env.level.level {
+                    Level::Audit => Decision::System(why),
+                    _ => Decision::Deny(why),
+                });
+            }
         }
         _ => {}
     }
+    None
 }
 
 /// Where this hook call stands with its events.jsonl line.

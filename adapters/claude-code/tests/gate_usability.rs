@@ -751,3 +751,16 @@ fn the_chair_records_the_exit_of_a_workers_terminal_commander_job() {
     assert_eq!(stop(&mut env, "main"), Decision::None);
     assert_eq!(gate(&env)["state"], "completed");
 }
+
+/// G24(b): when the gate cannot journal a mutating tool, the agent would later read as
+/// read-only; the tool is refused instead (fail closed), with advice to retry.
+#[test]
+fn a_failed_mutation_journal_write_denies_the_tool() {
+    let (_d, mut env, _) = autonomous();
+    fs::create_dir_all(task_dir(&env).join("delegations.jsonl")).unwrap();
+    let decision = as_agent(&mut env, "w1", "Write", "w1-call", json!({}));
+    let Decision::Deny(why) = &decision else {
+        panic!("an unjournaled mutation must be refused, got {decision:?}");
+    };
+    assert!(why.contains("retry"), "{why}");
+}
