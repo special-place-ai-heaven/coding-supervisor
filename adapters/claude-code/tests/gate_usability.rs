@@ -611,7 +611,11 @@ fn a_proposal_may_keep_one_of_the_floor_commands() {
 #[test]
 fn memory_saves_are_allowed_under_discussion_and_unclassified_prompts() {
     let (_d, mut env, _) = idle();
-    let home = cwd(&env).join("home");
+    let home = PathBuf::from(
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap(),
+    );
     let note = home.join(".claude/projects/p/memory/note.md");
     let save = |env: &mut Env, id: &str| {
         tool(
@@ -662,6 +666,27 @@ fn memory_saves_are_allowed_under_discussion_and_unclassified_prompts() {
         json!({"file_path":escape,"content":"x"}),
     );
     assert!(matches!(escape, Decision::Deny(_)), "{escape:?}");
+    // Review: only the harness memory root under the home directory counts, not a look-alike
+    // path inside the project, a relative one or a share.
+    let look_alikes = [
+        cwd(&env).join(".claude/projects/p/memory/a.md"),
+        PathBuf::from(".claude/projects/p/memory/a.md"),
+        PathBuf::from("//server/share/.claude/projects/p/memory/a.md"),
+    ];
+    for path in look_alikes {
+        let decision = tool(
+            &mut env,
+            "PreToolUse",
+            "session",
+            "Write",
+            "l1",
+            json!({"file_path":path,"content":"x"}),
+        );
+        assert!(
+            matches!(decision, Decision::Deny(_)),
+            "{path:?}: {decision:?}"
+        );
+    }
 }
 
 /// G27: a still-running Terminal Commander job is refused once; the next stop in the same

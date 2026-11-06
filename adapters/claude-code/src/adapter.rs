@@ -345,7 +345,9 @@ fn inspection(payload: &Value) -> bool {
 }
 
 /// G31: saving memory is not project work: EverOS, or a Write/Edit of a harness memory note
-/// `.../.claude/projects/<project>/memory/<name>.md` with no `..` (never settings or hooks).
+/// `<home>/.claude/projects/<project>/memory/<name>.md` (never settings or hooks). The path
+/// must be absolute, and both it and the root are resolved through existing links first, so a
+/// look-alike inside a project, a share or a linked `memory` directory does not count.
 fn memory_save(payload: &Value) -> bool {
     let tool = text(payload, "tool_name").unwrap_or_default();
     if let Some(name) = tool.strip_prefix("mcp__everos__memory_") {
@@ -360,23 +362,26 @@ fn memory_save(payload: &Value) -> bool {
     else {
         return false;
     };
-    let parts: Vec<Component> = Path::new(path).components().collect();
-    if parts
-        .iter()
-        .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    let path = Path::new(path);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
     {
         return false;
     }
-    let names: Vec<String> = parts
-        .iter()
-        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
-        .collect();
-    let n = names.len();
-    n >= 5
-        && names[n - 5] == ".claude"
-        && names[n - 4] == "projects"
-        && names[n - 2] == "memory"
-        && names[n - 1].ends_with(".md")
+    let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) else {
+        return false;
+    };
+    // `normalize` resolves existing links on both sides, so a linked `memory` directory or
+    // note leaves the root and fails the prefix.
+    let root = location::normalize(&Path::new(&home).join(".claude").join("projects"));
+    let full = location::normalize(path);
+    let Some(rest) = full.strip_prefix(&format!("{root}/")) else {
+        return false;
+    };
+    matches!(rest.split('/').collect::<Vec<_>>().as_slice(), [project, "memory", name]
+        if !project.is_empty() && name.len() > 3 && name.to_lowercase().ends_with(".md"))
 }
 
 /// A pending prompt blocks a stop once; while the harness is already continuing, release it
@@ -1536,9 +1541,13 @@ pub fn observed_criteria(dir: &Path, project: &Path) -> Result<Vec<String>, Stri
         return Ok(Vec::new());
     };
     let tree = std::cell::OnceCell::new();
-    let mut ids: Vec<String> = Vec::new();
-    for run in observation::read_runs(dir, &task)? {
-        if run.cwd != run.execution_root || run.exit_code != Some(0) {
+    // The latest completed run on this content decides, as at Stop: a later failure hides an
+    // earlier pass. (A still-pending dispatch is reported separately as a pending job.)
+    let mut latest: Vec<(String, bool)> = Vec::new();
+    let mut runs = observation::read_runs(dir, &task)?;
+    runs.sort_by_key(|run| run.finished);
+    for run in runs {
+        if run.cwd != run.execution_root {
             continue;
         }
         let same = run.candidate == current.id
@@ -1552,12 +1561,14 @@ pub fn observed_criteria(dir: &Path, project: &Path) -> Result<Vec<String>, Stri
             continue;
         }
         for criterion in contract.criteria.iter().filter(|c| c.accepts(&run.command)) {
-            if !ids.contains(&criterion.id.0) {
-                ids.push(criterion.id.0.clone());
-            }
+            latest.retain(|(id, _)| id != &criterion.id.0);
+            latest.push((criterion.id.0.clone(), run.exit_code == Some(0)));
         }
     }
-    Ok(ids)
+    Ok(latest
+        .into_iter()
+        .filter_map(|(id, passed)| passed.then_some(id))
+        .collect())
 }
 
 /// The core task and gate.json for one call, rebuilt from contract.json, gate.json and the observed candidate.

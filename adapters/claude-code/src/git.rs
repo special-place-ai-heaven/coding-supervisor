@@ -116,29 +116,73 @@ pub fn worktree_tree(cwd: &Path, state_dir: &Path) -> Option<String> {
     }
     let env = [("GIT_INDEX_FILE", scratch.as_os_str())];
     // The gate's own fallback state directory inside the project is not content, and neither
-    // are the paths CI treats as documentation only (G28, owner 2026-11-06; keep in step with
-    // `paths-ignore` in .github/workflows/ci.yml).
-    let tree = ok(
-        &[
-            "add",
-            "-A",
-            "--",
-            ":/",
-            ":(top,exclude).supervisor/",
-            ":(top,exclude)docs/",
-            ":(top,exclude)README.md",
-            ":(top,exclude)CHANGELOG.md",
-            ":(top,exclude)CLAUDE.md",
-            ":(top,exclude)HANDOVER.md",
-            ":(top,exclude)LICENSE",
-        ],
-        &env,
-    )
-    .and_then(|_| ok(&["write-tree"], &env))
-    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
-    .filter(|id| !id.is_empty());
+    // is what the project's CI treats as documentation only (G28).
+    let docs = crate::location::worktree_root(cwd)
+        .map(|top| ci_docs_only(&top))
+        .unwrap_or_default();
+    let mut add = vec!["add", "-A", "--", ":/", ":(top,exclude).supervisor/"];
+    let excludes: Vec<String> = docs
+        .iter()
+        .map(|p| format!(":(top,exclude,glob){p}"))
+        .collect();
+    add.extend(excludes.iter().map(String::as_str));
+    // Tracked and committed documentation leaves the scratch index too, so a committed docs
+    // edit does not change the tree either.
+    let includes: Vec<String> = docs.iter().map(|p| format!(":(top,glob){p}")).collect();
+    let mut remove = vec!["rm", "--cached", "-r", "-q", "--ignore-unmatch", "--"];
+    remove.extend(includes.iter().map(String::as_str));
+    let tree = ok(&add, &env)
+        .and_then(|out| {
+            if includes.is_empty() {
+                Some(out)
+            } else {
+                ok(&remove, &env)
+            }
+        })
+        .and_then(|_| ok(&["write-tree"], &env))
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        .filter(|id| !id.is_empty());
     let _ = std::fs::remove_file(&scratch);
     tree
+}
+
+/// G28: the `paths-ignore` entries of the project's `.github/workflows/ci.yml` (what its CI
+/// treats as documentation only), as git glob patterns. Empty when the file or list is absent.
+fn ci_docs_only(top: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(top.join(".github/workflows/ci.yml")) else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = Vec::new();
+    let mut list_indent = None;
+    for line in text.lines() {
+        let item = line.trim_start();
+        let indent = line.len() - item.len();
+        if item.starts_with("paths-ignore:") {
+            list_indent = Some(indent);
+            continue;
+        }
+        let Some(key_indent) = list_indent else {
+            continue;
+        };
+        if item.is_empty() || item.starts_with('#') {
+            continue;
+        }
+        match item.strip_prefix("- ") {
+            Some(entry) if indent > key_indent => {
+                let entry = entry.trim().trim_matches(|c| c == '"' || c == '\'');
+                // A negated or absolute entry is not a plain path; leave it counted.
+                if !entry.is_empty()
+                    && !entry.starts_with('!')
+                    && !entry.starts_with('/')
+                    && !found.iter().any(|f| f == entry)
+                {
+                    found.push(entry.to_owned());
+                }
+            }
+            _ => list_indent = None,
+        }
+    }
+    found
 }
 
 fn drain(pipe: Option<impl Read + Send + 'static>) -> Receiver<Vec<u8>> {

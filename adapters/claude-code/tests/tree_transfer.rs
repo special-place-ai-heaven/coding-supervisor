@@ -203,24 +203,60 @@ fn observed_criteria_follow_the_tree_after_a_commit() {
         supervisor_claude_code::adapter::observed_criteria(&env.state_dir, &f.project).unwrap()
     };
     assert_eq!(observed(&env), vec!["C2".to_owned()]);
+    // Review: a later failing run on the same content wins over the earlier pass.
+    let mut pre = payload(&f, "PreToolUse");
+    pre["tool_use_id"] = "run-2".into();
+    assert_eq!(handle(&pre, &mut env), Decision::None);
+    let mut failed = payload(&f, "PostToolUseFailure");
+    failed["tool_use_id"] = "run-2".into();
+    failed["error"] = "Exit code 1".into();
+    handle(&failed, &mut env);
+    assert!(observed(&env).is_empty());
     fs::write(f.project.join("src/a.rs"), "a3\n").unwrap();
     assert!(observed(&env).is_empty());
 }
 
-/// G28: an edit to a path CI treats as documentation only keeps the evidence (owner,
-/// 2026-11-06); principle 2 in CLAUDE.md names the list.
-#[test]
-fn a_docs_only_edit_keeps_the_evidence() {
-    let (f, mut env) = setup();
+fn docs_scope(env: &Env) {
     let path = env.state_dir.join("contract.json");
     let contract = fs::read_to_string(&path).unwrap().replace(
         r#""scope":["src/"]"#,
         r#""scope":["src/","docs/","README.md"]"#,
     );
     fs::write(&path, contract).unwrap();
-    passing_run(&f, &mut env);
+}
+
+fn docs_edit(f: &Fixture) {
     fs::create_dir_all(f.project.join("docs")).unwrap();
     fs::write(f.project.join("docs/LEDGER.md"), "row\n").unwrap();
     fs::write(f.project.join("README.md"), "readme\n").unwrap();
+}
+
+/// G28: an edit, even a committed one, to a path the project's own CI treats as documentation
+/// only keeps the evidence (owner, 2026-11-06); principle 2 in CLAUDE.md says so.
+#[test]
+fn a_docs_only_edit_keeps_the_evidence() {
+    let (f, mut env) = setup();
+    docs_scope(&env);
+    let workflows = f.project.join(".github/workflows");
+    fs::create_dir_all(&workflows).unwrap();
+    fs::write(
+        workflows.join("ci.yml"),
+        "on:\n  push:\n    paths-ignore:\n      - \"docs/**\"\n      - \"README.md\"\njobs: {}\n",
+    )
+    .unwrap();
+    passing_run(&f, &mut env);
+    docs_edit(&f);
+    git(&f.project, &["add", "-A"]);
+    git(&f.project, &["commit", "-q", "-m", "docs"]);
     accepted(&f, &mut env);
+}
+
+/// Review of G28: a project whose CI names no documentation paths keeps the exact rule.
+#[test]
+fn without_a_ci_docs_list_a_docs_edit_invalidates() {
+    let (f, mut env) = setup();
+    docs_scope(&env);
+    passing_run(&f, &mut env);
+    docs_edit(&f);
+    refused(&f, &mut env);
 }
