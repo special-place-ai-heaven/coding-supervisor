@@ -333,6 +333,9 @@ fn proposal_command(payload: &Value) -> bool {
     !quoted
 }
 
+/// Ends the refusal for a Terminal Commander job whose exit is not recorded yet (G27).
+const PENDING_JOB: &str = " after it ends to record its exit";
+
 /// What the pre-intent gate lets through while the current prompt is unclassified.
 fn inspection(payload: &Value) -> bool {
     read_only_tool(payload)
@@ -1836,7 +1839,7 @@ impl Session {
                     });
                     return Err(match job {
                         Some(job) => format!(
-                            "{} latest execution has no observed completion: call command_status for Terminal Commander job {job} after it ends to record its exit",
+                            "{} latest execution has no observed completion: call command_status for Terminal Commander job {job}{PENDING_JOB}",
                             criterion.id.0
                         ),
                         None => format!(
@@ -2118,6 +2121,8 @@ impl Session {
         if self.task.requires_reproduction() {
             problems.extend(self.too_few_tests(dir)?);
         }
+        // G27: the only gap is a job still running; refuse it once per turn, then wait.
+        let only_pending_job = problems.len() == 1 && problems[0].ends_with(PENDING_JOB);
         let result = if problems.is_empty() {
             self.observed_evidence()
                 .map_err(|e| render(&e))
@@ -2176,6 +2181,11 @@ impl Session {
                     }
                 }
                 let state = state_name(self.task.state());
+                if only_pending_job && self.gate.continuations >= 1 {
+                    return Ok(Decision::System(format!(
+                        "GATE: waiting, task remains {state}; {why}; nothing is certified"
+                    )));
+                }
                 if self.gate.continuations >= 3 {
                     return Ok(Decision::System(format!(
                         "GATE: refusal cap reached; task remains {state}"
@@ -2189,7 +2199,7 @@ impl Session {
                     "run the required check commands"
                 };
                 Ok(Decision::Block(format!(
-                    "GATE refuses completion (refusal {} of 3 this turn): state {state}{round}; {why}; {next} or report the task as not complete.{run_instead}",
+                    "GATE refuses completion (refusal {} of 3 this turn): state {state}{round}; {why}; {next}.{run_instead}",
                     self.gate.continuations
                 )))
             }
