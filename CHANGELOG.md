@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.12.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.11.1...v0.12.0) (2026-11-06)
+
+
+### Features
+
+* **gate:** edits to docs-only paths keep the evidence (G28) ([cec92f6](https://github.com/special-place-ai-heaven/coding-supervisor/commit/cec92f6ac3030b472c485eb8d8b675cc431adf6f))
+* **gate:** warn when the installed package is newer than the running binary (G23) ([4292768](https://github.com/special-place-ai-heaven/coding-supervisor/commit/429276896a0bab32e4c3f4f706fe5cae1595ae05))
+
+
+### Bug Fixes
+
+* **gate:** allow memory saves under discussion and unclassified prompts (G31) ([c783dfb](https://github.com/special-place-ai-heaven/coding-supervisor/commit/c783dfbca7f5b7f531970b56ecf35735b5b44c4b))
+* **gate:** let the chair record a worker's TC job exit (G25) ([a074004](https://github.com/special-place-ai-heaven/coding-supervisor/commit/a074004401d4d0033734af1080f1571961a9af06))
+* **gate:** refuse a mutation the gate cannot journal (G24b) ([d9c3fed](https://github.com/special-place-ai-heaven/coding-supervisor/commit/d9c3fed108940437db9cbf1cd7ae02d3e120c6b7))
+* **gate:** refuse a still-running TC check once per turn, then wait (G27) ([3b7c1b8](https://github.com/special-place-ai-heaven/coding-supervisor/commit/3b7c1b8bcd3f58730548dc42c02c2f428b22bcb0))
+* **gate:** review fixes for G28, G30 and G31 ([b49f9ec](https://github.com/special-place-ai-heaven/coding-supervisor/commit/b49f9ec1b479e5a8a2079d9593d68ba787331b73))
+* **gate:** usability rows G23-G31 ([ae93250](https://github.com/special-place-ai-heaven/coding-supervisor/commit/ae932507898e1966f0bded58158f5053f895ed56))
+* **mcp:** task_state shows criteria Stop will count from observed runs (G30) ([9f6b62d](https://github.com/special-place-ai-heaven/coding-supervisor/commit/9f6b62dca3c6db84806fab7608bb67e4cc4f2cfa))
+
 ## [0.11.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.11.0...v0.11.1) (2026-11-05)
 
 
