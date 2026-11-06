@@ -32,6 +32,9 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         if let Some(note) = report["level_note"].as_str() {
             println!("note: {note}");
         }
+        if let Some(warning) = report["package_mismatch"].as_str() {
+            println!("{warning}");
+        }
         if let Some(other) = report["other_state"].as_str() {
             println!(
                 "warning: another state directory for this project exists at {other}; a hook, MCP server or command started without SUPERVISOR_STATE_DIR uses it and sees different tasks"
@@ -346,6 +349,7 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
         "schema_version":1,"harness":harness,"project":project,"project_state":root,"location_rule":rule,
         "other_state":supervisor_claude_code::location::shadow_state_dir(project, &|key| std::env::var(key).ok()),
         "reporting_binary":{"path":std::env::current_exe().ok(),"version":env!("CARGO_PKG_VERSION"),"running":true},
+        "package_mismatch":supervisor_claude_code::version::current_mismatch(),
         "registration":configuration(project,harness),"hooks":hooks,
         "connection":connection(root,harness),
         "action_policy":supervisor_claude_code::policy::configuration_status(root),

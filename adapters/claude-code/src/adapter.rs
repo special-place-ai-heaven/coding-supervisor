@@ -1,7 +1,7 @@
 //! One hook payload in, at most one decision out. The core's rules are authoritative on every call.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use coding_supervisor::{
@@ -333,9 +333,55 @@ fn proposal_command(payload: &Value) -> bool {
     !quoted
 }
 
+/// Ends the refusal for a Terminal Commander job whose exit is not recorded yet (G27).
+const PENDING_JOB: &str = " after it ends to record its exit";
+
 /// What the pre-intent gate lets through while the current prompt is unclassified.
 fn inspection(payload: &Value) -> bool {
-    read_only_tool(payload) || read_only_command(payload) || proposal_command(payload)
+    read_only_tool(payload)
+        || read_only_command(payload)
+        || proposal_command(payload)
+        || memory_save(payload)
+}
+
+/// G31: saving memory is not project work: EverOS, or a Write/Edit of a harness memory note
+/// `<home>/.claude/projects/<project>/memory/<name>.md` (never settings or hooks). The path
+/// must be absolute, and both it and the root are resolved through existing links first, so a
+/// look-alike inside a project, a share or a linked `memory` directory does not count.
+fn memory_save(payload: &Value) -> bool {
+    let tool = text(payload, "tool_name").unwrap_or_default();
+    if let Some(name) = tool.strip_prefix("mcp__everos__memory_") {
+        return matches!(name, "add" | "flush" | "search" | "list");
+    }
+    if !matches!(tool, "Write" | "Edit") {
+        return false;
+    }
+    let Some(path) = payload
+        .pointer("/tool_input/file_path")
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    let path = Path::new(path);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
+        return false;
+    }
+    let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) else {
+        return false;
+    };
+    // `normalize` resolves existing links on both sides, so a linked `memory` directory or
+    // note leaves the root and fails the prefix.
+    let root = location::normalize(&Path::new(&home).join(".claude").join("projects"));
+    let full = location::normalize(path);
+    let Some(rest) = full.strip_prefix(&format!("{root}/")) else {
+        return false;
+    };
+    matches!(rest.split('/').collect::<Vec<_>>().as_slice(), [project, "memory", name]
+        if !project.is_empty() && name.len() > 3 && name.to_lowercase().ends_with(".md"))
 }
 
 /// A pending prompt blocks a stop once; while the harness is already continuing, release it
@@ -356,9 +402,18 @@ fn unclassified_stop(payload: &Value, reason: &str) -> Decision {
 }
 
 pub fn handle(payload: &Value, env: &mut Env) -> Decision {
-    let decision = handle_at_level(payload, env);
-    note_agent_effects(payload, env, &decision);
-    decision
+    let mut decision = handle_at_level(payload, env);
+    // G23: only a prompt hook says so, and only when the installed package moved on.
+    if let Decision::Context {
+        event: "UserPromptSubmit",
+        text,
+    } = &mut decision
+        && let Some(warning) = crate::version::current_mismatch()
+    {
+        text.push(' ');
+        text.push_str(&warning);
+    }
+    note_agent_effects(payload, env, &decision).unwrap_or(decision)
 }
 
 fn handle_at_level(payload: &Value, env: &mut Env) -> Decision {
@@ -385,13 +440,14 @@ fn handle_at_level(payload: &Value, env: &mut Env) -> Decision {
 /// G16/G21, from the decision the harness will actually see: a SubagentStop that does not
 /// refuse the handback ends its worker, so its background delegation closes (on every route,
 /// including the early ones in `judge`); a PreToolUse that lets a tool run, which is not
-/// read-only, marks its agent as a mutator, whatever the level did to a denial.
-fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) {
+/// read-only, marks its agent as a mutator, whatever the level did to a denial. G24(b): a
+/// mutation that cannot be journaled is refused (from `enforce` up), never treated as read-only.
+fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) -> Option<Decision> {
     if matches!(decision, Decision::Block(_) | Decision::Deny(_))
         || env.level.level == Level::Off
         || JOURNAL.get() == Journal::StateUnproven
     {
-        return;
+        return None;
     }
     let now = (env.clock)();
     match text(payload, "hook_event_name") {
@@ -404,7 +460,7 @@ fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) {
             };
             // Another session's task is not this agent's to journal into.
             if !crate::autonomy::owns_session(&dir, session).unwrap_or(false) {
-                return;
+                return None;
             }
             let task = state::read_contract(&dir)
                 .ok()
@@ -412,10 +468,17 @@ fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) {
                 .and_then(|c| lifecycle::task_identity(&dir, &c.id.0).ok())
                 .unwrap_or_default();
             let agent = text(payload, "agent_id").unwrap_or("main");
-            let _ = observation::record_mutation(&dir, payload, &task, agent, now);
+            if let Err(e) = observation::record_mutation(&dir, payload, &task, agent, now) {
+                let why = format!("GATE: the gate could not journal this tool ({e}); retry");
+                return Some(match env.level.level {
+                    Level::Audit => Decision::System(why),
+                    _ => Decision::Deny(why),
+                });
+            }
         }
         _ => {}
     }
+    None
 }
 
 /// Where this hook call stands with its events.jsonl line.
@@ -661,6 +724,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
         // Inspection and proposal routes do not need to open or advance the task gate.
         if root.join("intents.json").exists()
             && (read_only_tool(payload)
+                || memory_save(payload)
                 || proposal_command(payload)
                 || (read_only_command(payload)
                     && matches!(lifecycle::active_task(&root), Ok(None))))
@@ -1464,6 +1528,49 @@ pub fn render(error: &GateError) -> String {
     }
 }
 
+/// G30: the criteria with a passing observed run on the current worktree content (the same
+/// candidate, or another one with the same tree), as a Stop would count them. Read-only:
+/// nothing is recorded, so the advisory `task_state` can show what the hook adapter accepts.
+pub fn observed_criteria(dir: &Path, project: &Path) -> Result<Vec<String>, String> {
+    let Some(contract) = state::read_contract(dir)?.0 else {
+        return Ok(Vec::new());
+    };
+    let task = lifecycle::task_identity(dir, &contract.id.0)?;
+    let root = crate::binding::bound_root(dir).map_or_else(|| project.to_owned(), PathBuf::from);
+    let Ok(current) = (crate::candidate::GitCandidate { cwd: root.clone() }).observe() else {
+        return Ok(Vec::new());
+    };
+    let tree = std::cell::OnceCell::new();
+    // The latest completed run on this content decides, as at Stop: a later failure hides an
+    // earlier pass. (A still-pending dispatch is reported separately as a pending job.)
+    let mut latest: Vec<(String, bool)> = Vec::new();
+    let mut runs = observation::read_runs(dir, &task)?;
+    runs.sort_by_key(|run| run.finished);
+    for run in runs {
+        if run.cwd != run.execution_root {
+            continue;
+        }
+        let same = run.candidate == current.id
+            || run.transferred_to.contains(&current.id)
+            || run.tree.as_deref().is_some_and(|t| {
+                tree.get_or_init(|| crate::git::worktree_tree(&root, dir))
+                    .as_deref()
+                    == Some(t)
+            });
+        if !same || !current_dispatch_reference(dir, &task, &run.reference)? {
+            continue;
+        }
+        for criterion in contract.criteria.iter().filter(|c| c.accepts(&run.command)) {
+            latest.retain(|(id, _)| id != &criterion.id.0);
+            latest.push((criterion.id.0.clone(), run.exit_code == Some(0)));
+        }
+    }
+    Ok(latest
+        .into_iter()
+        .filter_map(|(id, passed)| passed.then_some(id))
+        .collect())
+}
+
 /// The core task and gate.json for one call, rebuilt from contract.json, gate.json and the observed candidate.
 pub struct Session {
     pub task: Task,
@@ -1797,7 +1904,7 @@ impl Session {
                     });
                     return Err(match job {
                         Some(job) => format!(
-                            "{} latest execution has no observed completion: call command_status for Terminal Commander job {job} after it ends to record its exit",
+                            "{} latest execution has no observed completion: call command_status for Terminal Commander job {job}{PENDING_JOB}",
                             criterion.id.0
                         ),
                         None => format!(
@@ -2079,6 +2186,8 @@ impl Session {
         if self.task.requires_reproduction() {
             problems.extend(self.too_few_tests(dir)?);
         }
+        // G27: the only gap is a job still running; refuse it once per turn, then wait.
+        let only_pending_job = problems.len() == 1 && problems[0].ends_with(PENDING_JOB);
         let result = if problems.is_empty() {
             self.observed_evidence()
                 .map_err(|e| render(&e))
@@ -2137,6 +2246,11 @@ impl Session {
                     }
                 }
                 let state = state_name(self.task.state());
+                if only_pending_job && self.gate.continuations >= 1 {
+                    return Ok(Decision::System(format!(
+                        "GATE: waiting, task remains {state}; {why}; nothing is certified"
+                    )));
+                }
                 if self.gate.continuations >= 3 {
                     return Ok(Decision::System(format!(
                         "GATE: refusal cap reached; task remains {state}"
@@ -2150,7 +2264,7 @@ impl Session {
                     "run the required check commands"
                 };
                 Ok(Decision::Block(format!(
-                    "GATE refuses completion (refusal {} of 3 this turn): state {state}{round}; {why}; {next} or report the task as not complete.{run_instead}",
+                    "GATE refuses completion (refusal {} of 3 this turn): state {state}{round}; {why}; {next}.{run_instead}",
                     self.gate.continuations
                 )))
             }

@@ -605,3 +605,187 @@ fn a_proposal_may_keep_one_of_the_floor_commands() {
         assert!(started.is_ok(), "{kept}: {started:?}");
     }
 }
+
+/// G31: saving memory (the harness's memory notes, EverOS) is not project work, so neither an
+/// unclassified nor a discussion prompt refuses it; a project write is still refused.
+#[test]
+fn memory_saves_are_allowed_under_discussion_and_unclassified_prompts() {
+    let (_d, mut env, _) = idle();
+    let home = PathBuf::from(
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap(),
+    );
+    let note = home.join(".claude/projects/p/memory/note.md");
+    let save = |env: &mut Env, id: &str| {
+        tool(
+            env,
+            "PreToolUse",
+            "session",
+            "Write",
+            id,
+            json!({"file_path":note,"content":"x"}),
+        )
+    };
+    follow_up(
+        &mut env,
+        "session",
+        "q1",
+        "Remember that reviews use orch-review",
+    );
+    assert!(!matches!(save(&mut env, "m1"), Decision::Deny(_)));
+    for name in ["mcp__everos__memory_add", "mcp__everos__memory_flush"] {
+        let decision = tool(&mut env, "PreToolUse", "session", name, name, json!({}));
+        assert!(
+            !matches!(decision, Decision::Deny(_)),
+            "{name}: {decision:?}"
+        );
+    }
+    let event = supervisor_claude_code::autonomy::pending(&env.state_dir, "session")
+        .unwrap()
+        .unwrap();
+    propose(&env, &event, "discussion", None, None);
+    assert!(!matches!(save(&mut env, "m2"), Decision::Deny(_)));
+    let project = cwd(&env).join("src/lib.rs");
+    let edit = tool(
+        &mut env,
+        "PreToolUse",
+        "session",
+        "Write",
+        "p1",
+        json!({"file_path":project,"content":"x"}),
+    );
+    assert!(matches!(edit, Decision::Deny(_)), "{edit:?}");
+    let escape = home.join(".claude/projects/p/memory/../../../settings.json");
+    let escape = tool(
+        &mut env,
+        "PreToolUse",
+        "session",
+        "Write",
+        "e1",
+        json!({"file_path":escape,"content":"x"}),
+    );
+    assert!(matches!(escape, Decision::Deny(_)), "{escape:?}");
+    // Review: only the harness memory root under the home directory counts, not a look-alike
+    // path inside the project, a relative one or a share.
+    let look_alikes = [
+        cwd(&env).join(".claude/projects/p/memory/a.md"),
+        PathBuf::from(".claude/projects/p/memory/a.md"),
+        PathBuf::from("//server/share/.claude/projects/p/memory/a.md"),
+    ];
+    for path in look_alikes {
+        let decision = tool(
+            &mut env,
+            "PreToolUse",
+            "session",
+            "Write",
+            "l1",
+            json!({"file_path":path,"content":"x"}),
+        );
+        assert!(
+            matches!(decision, Decision::Deny(_)),
+            "{path:?}: {decision:?}"
+        );
+    }
+}
+
+/// G27: a still-running Terminal Commander job is refused once; the next stop in the same
+/// turn is released with a note naming the job, and nothing is certified.
+#[test]
+fn a_pending_terminal_commander_job_refuses_stop_once_then_waits() {
+    let (_d, mut env, _) = autonomous();
+    let project = cwd(&env);
+    let input = json!({"argv":["cargo","test"],"cwd":project});
+    let name = "mcp__terminal_commander__command_start_combed";
+    assert_eq!(
+        tool(
+            &mut env,
+            "PreToolUse",
+            "session",
+            name,
+            "tc1",
+            input.clone()
+        ),
+        Decision::None
+    );
+    handle(
+        &json!({"hook_event_name":"PostToolUse","cwd":project,"session_id":"session",
+        "agent_id":"main","tool_use_id":"tc1","tool_name":name,"tool_input":input,
+        "tool_response":{"job_id":"job-1","bucket_id":"bucket-1"}}),
+        &mut env,
+    );
+    let Decision::Block(first) = stop_with(&mut env, "main", false) else {
+        panic!("the first stop must name the pending job");
+    };
+    assert!(first.contains("job-1"), "{first}");
+    assert!(
+        !first.contains("report the task as not complete"),
+        "{first}"
+    );
+    let second = stop_with(&mut env, "main", true);
+    let Decision::System(note) = &second else {
+        panic!("the second stop must be released, got {second:?}");
+    };
+    assert!(
+        note.contains("job-1") && note.contains("command_status"),
+        "{note}"
+    );
+    assert_ne!(gate(&env)["state"], "completed");
+}
+
+/// G25: the chair records the exit of a Terminal Commander job its worker started in the
+/// same session, and that run then counts for the chair's Stop.
+#[test]
+fn the_chair_records_the_exit_of_a_workers_terminal_commander_job() {
+    let (_d, mut env, _) = autonomous();
+    run_checks(&mut env, "first");
+    let project = cwd(&env);
+    let input = json!({"argv":["cargo","test"],"cwd":project});
+    let start = "mcp__terminal_commander__command_start_combed";
+    assert_eq!(
+        as_agent(&mut env, "w1", start, "tc1", input.clone()),
+        Decision::None
+    );
+    handle(
+        &json!({"hook_event_name":"PostToolUse","cwd":project,"session_id":"session",
+        "agent_id":"w1","tool_use_id":"tc1","tool_name":start,"tool_input":input,
+        "tool_response":{"job_id":"job-w","bucket_id":"bucket-w"}}),
+        &mut env,
+    );
+    let status = "mcp__terminal_commander__command_status";
+    let status_input = json!({"job_id":"job-w"});
+    assert_eq!(
+        tool(
+            &mut env,
+            "PreToolUse",
+            "session",
+            status,
+            "st1",
+            status_input.clone()
+        ),
+        Decision::None
+    );
+    handle(
+        &json!({"hook_event_name":"PostToolUse","cwd":project,"session_id":"session",
+        "agent_id":"main","tool_use_id":"st1","tool_name":status,"tool_input":status_input,
+        "tool_response":{"job_id":"job-w","bucket_id":"bucket-w","state":"exited",
+            "complete":true,"exit_code":0,"outcome_trust":"observed","degraded":false,
+            "pipeline_exit_masked":false}}),
+        &mut env,
+    );
+    assert_eq!(stop(&mut env, "main"), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+}
+
+/// G24(b): when the gate cannot journal a mutating tool, the agent would later read as
+/// read-only; the tool is refused instead (fail closed), with advice to retry.
+#[test]
+fn a_failed_mutation_journal_write_denies_the_tool() {
+    let (_d, mut env, _) = autonomous();
+    fs::create_dir_all(task_dir(&env).join("delegations.jsonl")).unwrap();
+    let decision = as_agent(&mut env, "w1", "Write", "w1-call", json!({}));
+    let Decision::Deny(why) = &decision else {
+        panic!("an unjournaled mutation must be refused, got {decision:?}");
+    };
+    assert!(why.contains("retry"), "{why}");
+}
