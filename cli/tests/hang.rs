@@ -13,6 +13,17 @@ use serde_json::{Value, json};
 use supervisor_claude_code::{location, sha256};
 
 const BIN: &str = env!("CARGO_BIN_EXE_supervisor");
+
+/// G26: these tests measure wall-clock bounds with sleeping stub gits and 30 s lock holders;
+/// run side by side they starve each other past their bounds (each passes alone), so they run
+/// one at a time (`.config/nextest.toml` does the same under nextest). A panic poisons the
+/// mutex; the next test still runs.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 /// A hook whose every git is cut off at the 5 s deadline answers by then (about 20 s measured).
 const GIT_BOUND: Duration = Duration::from_secs(30);
 /// A hook that waits out the 10 s lock deadline once answers by then.
@@ -247,6 +258,7 @@ fn blocked(decision: &Value) -> &str {
 
 #[test]
 fn hanging_git_denies_and_blocks_within_the_bound() {
+    let _serial = serial();
     let f = Fixture::new("git");
     f.task_start();
     let path = f.stub_path();
@@ -266,6 +278,7 @@ fn hanging_git_denies_and_blocks_within_the_bound() {
 
 #[test]
 fn held_state_lock_denies_and_blocks_within_the_bound() {
+    let _serial = serial();
     let f = Fixture::new("lock");
     f.task_start();
     let lock = OpenOptions::new()
@@ -287,6 +300,7 @@ fn held_state_lock_denies_and_blocks_within_the_bound() {
 
 #[test]
 fn hook_never_runs_git_under_the_state_lock_and_parallel_hooks_do_not_queue_on_it() {
+    let _serial = serial();
     let f = Fixture::new("parallel");
     f.task_start();
     let path = f.stub_path();
@@ -305,7 +319,9 @@ fn hook_never_runs_git_under_the_state_lock_and_parallel_hooks_do_not_queue_on_i
     );
     assert_eq!(decision, Value::Null);
     let calls = fs::read_to_string(&log).unwrap();
-    assert!(calls.lines().count() >= 4, "{calls}");
+    // At least the root lookup and the candidate's `rev-parse HEAD`; repeated "not a repository"
+    // lookups are cached since G39, so the stub sees fewer calls than the 6 it saw before.
+    assert!(calls.lines().count() >= 2, "{calls}");
     assert!(calls.lines().all(|line| line == "free"), "{calls}");
     // Each hook spends seconds in 1 s git calls; under the lock eight would take turns.
     let env = [
@@ -325,6 +341,7 @@ fn hook_never_runs_git_under_the_state_lock_and_parallel_hooks_do_not_queue_on_i
 
 #[test]
 fn lock_taken_after_state_preparation_denies_and_blocks_and_records_nothing() {
+    let _serial = serial();
     let (write, stop) = (
         Fixture::new("connection-write"),
         Fixture::new("connection-stop"),
@@ -414,6 +431,7 @@ fn subagent_stop(f: &Fixture) -> Value {
 
 #[test]
 fn busy_lock_stop_and_subagentstop_block_with_no_record() {
+    let _serial = serial();
     thread::scope(|s| {
         for (name, payload) in [
             ("busy-stop", Fixture::stop as fn(&Fixture) -> Value),
@@ -429,6 +447,7 @@ fn busy_lock_stop_and_subagentstop_block_with_no_record() {
 
 #[test]
 fn busy_lock_after_git_timeout_at_stop_blocks_with_no_record() {
+    let _serial = serial();
     // The candidate's `rev-parse HEAD` is cut off at 5 s; then the connection lock is busy.
     let decision = busy_at_connection("busy-git-stop", Fixture::stop, "600000");
     assert!(blocked(&decision).contains("state is busy"), "{decision}");
@@ -436,6 +455,7 @@ fn busy_lock_after_git_timeout_at_stop_blocks_with_no_record() {
 
 #[test]
 fn busy_lock_other_events_fail_open_unchanged() {
+    let _serial = serial();
     fn post_tool_use(f: &Fixture) -> Value {
         json!({"cwd":f.project,"session_id":"session-1","hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"src/lib.rs","content":"x"},"tool_response":{"success":true}})
     }
@@ -480,6 +500,7 @@ fn bounded(mut command: Command, bound: Duration) -> (std::process::Output, Dura
 
 #[test]
 fn busy_lock_verdict_and_status_exit_1_with_no_record() {
+    let _serial = serial();
     let f = Fixture::new("busy-cli");
     f.task_start();
     let root = f.state_root();
@@ -528,6 +549,7 @@ impl Drop for Release {
 
 #[test]
 fn git_whose_orphan_keeps_its_pipes_open_denies_and_blocks_within_the_bound() {
+    let _serial = serial();
     let f = Fixture::new("orphan");
     f.task_start();
     let path = f.stub_path();
@@ -554,6 +576,7 @@ fn git_whose_orphan_keeps_its_pipes_open_denies_and_blocks_within_the_bound() {
 #[cfg(target_os = "linux")]
 #[test]
 fn timed_out_git_is_reaped_before_the_next_git_starts() {
+    let _serial = serial();
     let f = Fixture::new("reap");
     f.task_start();
     let path = f.stub_path();
