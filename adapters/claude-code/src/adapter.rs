@@ -459,8 +459,18 @@ fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) -> Option
                 _ => env.state_dir.clone(),
             };
             // Another session's task is not this agent's to journal into.
-            if !crate::autonomy::owns_session(&dir, session).unwrap_or(false) {
-                return None;
+            // Another session's task is not this agent's; an unreadable ownership is refused
+            // like an unjournaled mutation (review of G24b), never read as "not ours".
+            match crate::autonomy::owns_session(&dir, session) {
+                Ok(true) => {}
+                Ok(false) => return None,
+                Err(e) => {
+                    let why = format!("GATE: the gate could not journal this tool ({e}); retry");
+                    return Some(match env.level.level {
+                        Level::Audit => Decision::System(why),
+                        _ => Decision::Deny(why),
+                    });
+                }
             }
             let task = state::read_contract(&dir)
                 .ok()
@@ -607,11 +617,42 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
     let legacy_contract = root.join("contract.json").is_file()
         && !root.join("active.json").exists()
         && !root.join("intents.json").exists();
+    // G36 (AAP report): a background-task notice the harness delivers as a prompt is not a
+    // request; the previous prompt's classification stands. A person typing this marker
+    // first only keeps that classification, it never widens it.
+    if event == "UserPromptSubmit"
+        && !legacy_contract
+        && text(payload, "prompt")
+            .is_some_and(|p| p.trim_start().starts_with("<task-notification>"))
+    {
+        return Decision::None;
+    }
     if event == "UserPromptSubmit" && text(payload, "prompt").is_some() && !legacy_contract {
         let project =
             crate::binding::state_project(&root, Path::new(text(payload, "cwd").unwrap_or(".")));
         return match crate::autonomy::record_prompt(&root, &project, payload) {
             Ok(intent) => {
+                // G35 (AAP report): with no discoverable checks and no task, no proposal can
+                // start one; say that once, briefly, with what blocks at this level.
+                let checkless = intent["task_id"].is_null()
+                    && intent["required_criteria"]
+                        .as_array()
+                        .is_some_and(|c| c.iter().all(|c| c["id"] == "AUTO_DIFF"));
+                if checkless {
+                    let level = env.level.level;
+                    let blocks = if matches!(level, Level::Enforce | Level::Strict) {
+                        "edits are refused until then"
+                    } else {
+                        "nothing is blocked meanwhile"
+                    };
+                    return Decision::Context {
+                        event: "UserPromptSubmit",
+                        text: format!(
+                            "SUPERVISOR: this repository has no checks the gate can discover, so no task can start until a person adds one outside the session with `supervisor task add-check --project <dir> --criterion <ID> --command <command> --reason <text>`; at level {}, {blocks}. Do not call intent_apply to start a task here.",
+                            level.name()
+                        ),
+                    };
+                }
                 let mut call = serde_json::json!({"event_id":intent["event_id"],"nonce":intent["nonce"],"prompt_hash":intent["prompt_hash"],"task_id":intent["task_id"]});
                 // G18: the session's own unfinished task already took this prompt as `continue`.
                 if intent["default_action"] == "continue" {
@@ -627,7 +668,8 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                 let next = if intent["task_id"].is_null() {
                     call["action"] = "start".into();
                     format!(
-                        "Next call for new work: intent_apply {call} plus \"contract\": a scoped contract; for a question, the same fields with \"action\":\"discussion\"."
+                        "Next call for new work: intent_apply {call} plus \"contract\": a scoped contract, at least {}; for a question, the same fields with \"action\":\"discussion\".",
+                        crate::autonomy::MINIMAL_CONTRACT
                     )
                 } else if foreign_task(&root, payload) {
                     // `continue`, `start` and `cancel` are all refused for another session's

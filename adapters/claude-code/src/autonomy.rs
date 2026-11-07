@@ -1138,7 +1138,28 @@ fn within(path: &str, allowed: &str) -> bool {
     }
 }
 
+/// G34: the shape every refusal for a malformed contract shows, so one refusal is enough.
+pub const MINIMAL_CONTRACT: &str = r#"{"id":"<short-slug>","goal":"<the request>","scope":["<path>/"],"criteria":<required_criteria>,"forbidden_effects":[],"max_repair_rounds":3}"#;
+
 fn validate_contract(contract: &Value) -> Result<Value, String> {
+    // G34 (AAP report): name every missing field at once instead of one per round trip.
+    let missing: Vec<&str> = [
+        "id",
+        "goal",
+        "scope",
+        "criteria",
+        "forbidden_effects",
+        "max_repair_rounds",
+    ]
+    .into_iter()
+    .filter(|field| contract.get(field).is_none())
+    .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "contract is missing {}; a minimal contract is {MINIMAL_CONTRACT}",
+            missing.join(", ")
+        ));
+    }
     let mut contract = contract.clone();
     contract["scope"] = normalized_scope(&contract)?.into();
     let parsed = state::contract_from(&contract)?;

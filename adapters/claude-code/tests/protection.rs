@@ -154,7 +154,7 @@ fn write_into_a_supervisor_directory_is_denied() {
     ));
     assert_eq!(
         r,
-        "GATE: Write refused: the gate's own state is not writable by agents (E:\\x\\.supervisor\\gate.json)"
+        "GATE: Write refused: the gate's own state is not writable by agents and not readable this way (use `supervisor status` or the task_state tool) (E:\\x\\.supervisor\\gate.json)"
     );
 }
 

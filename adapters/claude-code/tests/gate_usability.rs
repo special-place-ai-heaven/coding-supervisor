@@ -789,3 +789,35 @@ fn a_failed_mutation_journal_write_denies_the_tool() {
     };
     assert!(why.contains("retry"), "{why}");
 }
+
+/// G36 (AAP report): a background-task notice delivered as a prompt registers nothing; the
+/// previous prompt's classification stands.
+#[test]
+fn a_task_notification_prompt_is_not_classified() {
+    let (_d, mut env, _) = idle();
+    let first = prompt(&mut env, "q1", "Review the change");
+    let notice = follow_up(
+        &mut env,
+        "session",
+        "n1",
+        "<task-notification>\n<task-id>x</task-id>\n</task-notification>",
+    );
+    assert_eq!(notice, Decision::None);
+    let pending = supervisor_claude_code::autonomy::pending(&env.state_dir, "session")
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending["event_id"], first["event_id"]);
+}
+
+/// G35 (AAP report): a repository with no discoverable checks gets one short line naming the
+/// person's command and what blocks at the level, not the full proposal block.
+#[test]
+fn a_checkless_repository_gets_one_short_line() {
+    let (_d, mut env, _) = idle();
+    fs::remove_file(cwd(&env).join("Cargo.toml")).unwrap();
+    let Decision::Context { text, .. } = follow_up(&mut env, "session", "q1", "Fix the bug") else {
+        panic!("a prompt context is expected");
+    };
+    assert!(text.contains("supervisor task add-check"), "{text}");
+    assert!(!text.contains("requires an intent proposal"), "{text}");
+}

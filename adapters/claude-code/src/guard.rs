@@ -62,7 +62,7 @@ pub fn gate_write_denial(
 fn deny(payload: &Value, matched: String) -> Option<Decision> {
     let tool = payload.get("tool_name").and_then(Value::as_str)?;
     Some(Decision::Deny(format!(
-        "GATE: {tool} refused: the gate's own state is not writable by agents ({matched})"
+        "GATE: {tool} refused: the gate's own state is not writable by agents and not readable this way (use `supervisor status` or the task_state tool) ({matched})"
     )))
 }
 

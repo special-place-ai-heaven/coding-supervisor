@@ -875,3 +875,20 @@ fn a_subfolder_cargo_workspace_gives_the_rust_floor() {
     );
     autonomy::propose(&root, &project, &proposal(&event, "start")).unwrap();
 }
+
+/// G34 (AAP report): one refusal names every missing contract field and shows a minimal
+/// contract, instead of one field per round trip.
+#[test]
+fn a_partial_contract_names_every_missing_field_at_once() {
+    let f = Fixture::new();
+    let root = f.0.join("state");
+    let project = f.0.join("project");
+    let event = prompt(&root, &project, "partial");
+    let mut call = proposal(&event, "start");
+    call["contract"] = json!({"goal":"Implement feature","criteria":event["required_criteria"]});
+    let refusal = autonomy::propose(&root, &project, &call).unwrap_err();
+    for field in ["id", "scope", "forbidden_effects", "max_repair_rounds"] {
+        assert!(refusal.contains(field), "{field}: {refusal}");
+    }
+    assert!(refusal.contains("a minimal contract is"), "{refusal}");
+}
