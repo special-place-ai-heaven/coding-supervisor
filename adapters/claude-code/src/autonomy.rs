@@ -43,30 +43,30 @@ fn project_identity(project: &Path) -> Result<String, String> {
         .map_err(|e| format!("project identity unavailable: {e}"))
 }
 
-fn same_project(recorded: &Value, project: &Path) -> Result<bool, String> {
-    let identity = project_identity(project)?;
+/// `identity` is [`project_identity`] of the caller's project, computed before the state lock:
+/// it spawns git, and git under the lock made concurrent prompts queue past its deadline (G26).
+fn same_project(recorded: &Value, identity: &str) -> Result<bool, String> {
     // Schema 1 originally stored raw canonical Windows paths, including nested cwd.
     Ok(recorded.as_str().is_some_and(|old| {
-        old == identity || project_identity(Path::new(old)).as_deref() == Ok(identity.as_str())
+        old == identity || project_identity(Path::new(old)).as_deref() == Ok(identity)
     }))
 }
 
-fn legacy_subdirectory_context(recorded: &Value, project: &Path) -> Result<bool, String> {
-    let identity = project_identity(project)?;
+fn legacy_subdirectory_context(recorded: &Value, identity: &str) -> Result<bool, String> {
     let Some(recorded) = recorded.as_str() else {
         return Ok(false);
     };
     let captured =
         fs::canonicalize(recorded).map_err(|_| "recorded discovery directory unavailable")?;
-    let root = fs::canonicalize(&identity).map_err(|_| "project root unavailable")?;
+    let root = fs::canonicalize(identity).map_err(|_| "project root unavailable")?;
     Ok(captured != root && crate::location::canonical_project(&captured) == identity)
 }
 
-fn validate_discovery_context(recorded: &Value, project: &Path) -> Result<(), String> {
-    if !same_project(recorded, project)? {
+fn validate_discovery_context(recorded: &Value, identity: &str) -> Result<(), String> {
+    if !same_project(recorded, identity)? {
         return Err("discovery snapshot belongs to another physical worktree".into());
     }
-    if legacy_subdirectory_context(recorded, project)? {
+    if legacy_subdirectory_context(recorded, identity)? {
         return Err("legacy subdirectory discovery cannot certify project-root checks; submit a fresh root prompt and explicitly cancel the old task before restarting; unsupported repositories need an explicitly approved root contract".into());
     }
     Ok(())
@@ -238,7 +238,12 @@ fn extend_floor(floor: &mut Vec<Value>, extra: Vec<Value>) {
 /// A conservative floor discovered before edits. Unsupported repositories need an explicit
 /// preexisting contract; arbitrary model-selected commands are not a trusted check floor.
 pub fn repository_floor(project: &Path) -> Result<Vec<Value>, String> {
-    let project = PathBuf::from(project_identity(project)?);
+    floor_at(Path::new(&project_identity(project)?))
+}
+
+/// [`repository_floor`] of a project root already resolved by [`project_identity`].
+fn floor_at(project: &Path) -> Result<Vec<Value>, String> {
+    let project = project.to_path_buf();
     let mut checks = Vec::new();
     // G33: a Cargo.toml at the root, else one in each direct subfolder (a virtual workspace
     // manifest counts), run from the root with `--manifest-path` like npm's `--prefix`.
@@ -314,8 +319,9 @@ pub fn repository_floor(project: &Path) -> Result<Vec<Value>, String> {
     Ok(checks)
 }
 
-fn npm_definitions(project: &Path) -> Result<Value, String> {
-    let project = PathBuf::from(project_identity(project)?);
+/// The npm script definitions under a root resolved by [`project_identity`].
+fn npm_definitions_at(project: &Path) -> Result<Value, String> {
+    let project = project.to_path_buf();
     let mut scripts = serde_json::Map::new();
     for (dir, package) in npm_packages(&project)? {
         let Some(entries) = package.get("scripts") else {
@@ -387,14 +393,15 @@ fn selected_entrypoints(contract: &Value, definitions: &Value) -> Result<Value, 
     Ok(selected.into())
 }
 
-fn check_entrypoint_map(expected: &Value, project: &Path) -> Result<(), String> {
+/// `root` is the project root resolved by [`project_identity`].
+fn check_entrypoint_map(expected: &Value, root: &Path) -> Result<(), String> {
     let expected = expected
         .as_object()
         .ok_or("invalid npm entrypoint snapshot")?;
     if expected.is_empty() {
         return Ok(());
     }
-    let current = npm_definitions(project)?;
+    let current = npm_definitions_at(root)?;
     for (name, digest) in expected {
         if !digest.is_null() && !digest.is_string() {
             return Err("invalid npm entrypoint digest".into());
@@ -457,8 +464,8 @@ fn register(
         return Err("prompt registration superseded by another delivery".into());
     }
     if let Some(old) = store["events"].get(&event_id) {
-        validate_discovery_context(&old["project"], project)?;
-        if old["prompt_hash"] != prompt_hash || !same_project(&old["project"], project)? {
+        validate_discovery_context(&old["project"], &identity)?;
+        if old["prompt_hash"] != prompt_hash || !same_project(&old["project"], &identity)? {
             return Err("prompt event ID reused with different input".into());
         }
         if !identified && old.get("applied").is_some() {
@@ -490,7 +497,7 @@ fn register(
         }
     }
     let active = lifecycle::active_task(root)?;
-    let mut floor = repository_floor(project)?;
+    let mut floor = floor_at(Path::new(&identity))?;
     // A person may replace a discovered command (`supervisor task amend-floor`).
     for check in &mut floor {
         if let Some(command) = check["id"]
@@ -522,7 +529,7 @@ fn register(
     } else if !floor.iter().any(|criterion| criterion["id"] != "AUTO_DIFF")
         && let Some(approved) = store.get("project_floor")
     {
-        validate_discovery_context(&approved["project"], project)?;
+        validate_discovery_context(&approved["project"], &identity)?;
         extend_floor(
             &mut floor,
             approved["required_criteria"]
@@ -551,7 +558,7 @@ fn register(
         }
         _ => false,
     };
-    let mut event = json!({"event_id":event_id,"nonce":nonce,"prompt_hash":prompt_hash,"source":source,"session_id":session,"project":identity,"required_criteria":floor,"npm_definitions":npm_definitions(project)?,"control":control(prompt),"task_id":active.map(|a| a.task_id)});
+    let mut event = json!({"event_id":event_id,"nonce":nonce,"prompt_hash":prompt_hash,"source":source,"session_id":session,"project":identity,"required_criteria":floor,"npm_definitions":npm_definitions_at(Path::new(&identity))?,"control":control(prompt),"task_id":active.map(|a| a.task_id)});
     if continues {
         event["default_action"] = "continue".into();
     }
@@ -606,6 +613,7 @@ pub fn record_prompt(root: &Path, project: &Path, payload: &Value) -> Result<Val
         std::process::id(),
         NONCE.fetch_add(1, Ordering::Relaxed)
     );
+    let identity = project_identity(project)?;
     let prompt_identity = {
         let tx = Transaction::open(root)?;
         let mut store = load(root)?;
@@ -616,8 +624,8 @@ pub fn record_prompt(root: &Path, project: &Path, payload: &Value) -> Result<Val
             }
             // A historical duplicate never displaces a newer pending registration.
             if let Some(old) = store["events"].get(id) {
-                validate_discovery_context(&old["project"], project)?;
-                if old["prompt_hash"] != *hash || !same_project(&old["project"], project)? {
+                validate_discovery_context(&old["project"], &identity)?;
+                if old["prompt_hash"] != *hash || !same_project(&old["project"], &identity)? {
                     return Err("prompt event ID reused with different input".into());
                 }
                 if !identified && old.get("applied").is_some() {
@@ -785,6 +793,7 @@ pub fn amend_floor(
     if command.is_empty() || reason.is_empty() {
         return Err("amend-floor needs a nonempty --command and --reason".into());
     }
+    let identity = project_identity(project)?;
     let tx = Transaction::open(root)?;
     if lifecycle::active_task(root)?.is_some() {
         return Err(
@@ -795,7 +804,7 @@ pub fn amend_floor(
     let t = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let discovered = repository_floor(project)?;
+    let discovered = floor_at(Path::new(&identity))?;
     if let Some(found) = discovered.iter().find(|c| c["id"] == criterion) {
         let entry = &mut store["floor_overrides"][criterion];
         let old = match entry.get("command").unwrap_or(&found["command"]) {
@@ -824,7 +833,7 @@ pub fn amend_floor(
     let floor = store
         .get_mut("project_floor")
         .ok_or("no stored project floor; one is kept when a prompt-managed task is cancelled")?;
-    validate_discovery_context(&floor["project"], project)?;
+    validate_discovery_context(&floor["project"], &identity)?;
     let entry = floor["required_criteria"]
         .as_array_mut()
         .ok_or("invalid approved project floor")?
@@ -869,13 +878,14 @@ pub fn add_check(
             "{criterion}: a person's criterion id uses letters, digits, '_' or '-' and does not start with AUTO_"
         ));
     }
+    let identity = project_identity(project)?;
     let tx = Transaction::open(root)?;
     if lifecycle::active_task(root)?.is_some() {
         return Err(
             "a task is active and its contract owns the floor; finish or cancel it first".into(),
         );
     }
-    if repository_floor(project)?
+    if floor_at(Path::new(&identity))?
         .iter()
         .any(|c| c["id"] != "AUTO_DIFF")
     {
@@ -884,10 +894,10 @@ pub fn add_check(
     let mut store = load(root)?;
     if store.get("project_floor").is_none() {
         store["project_floor"] =
-            json!({"project":project_identity(project)?,"required_criteria":[]});
+            json!({"project":identity,"required_criteria":[]});
     }
     let floor = &mut store["project_floor"];
-    validate_discovery_context(&floor["project"], project)?;
+    validate_discovery_context(&floor["project"], &identity)?;
     let list = floor["required_criteria"]
         .as_array_mut()
         .ok_or("invalid approved project floor")?;
@@ -1022,10 +1032,10 @@ pub fn validate_entrypoints(dir: &Path, project: &Path) -> Result<(), String> {
     if let Some(recorded) = metadata.get("project")
         && !in_bound_worktree
     {
-        validate_discovery_context(recorded, project)?;
+        validate_discovery_context(recorded, &project_identity(project)?)?;
     }
     match metadata.get("npm_entrypoints") {
-        Some(expected) => check_entrypoint_map(expected, project),
+        Some(expected) => check_entrypoint_map(expected, Path::new(&project_identity(project)?)),
         None => {
             let contract =
                 read(&dir.join("contract.json"))?.ok_or("autonomous contract missing")?;
@@ -1398,6 +1408,7 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         }
     };
     let id = text(proposal, "event_id")?;
+    let identity = project_identity(project)?;
     let tx = Transaction::open(root)?;
     let mut store = load(root)?;
     let event = store["events"]
@@ -1409,7 +1420,7 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
     {
         return Err("proposal does not match its recorded prompt event".into());
     }
-    validate_discovery_context(&event["project"], project)?;
+    validate_discovery_context(&event["project"], &identity)?;
     let digest = crate::sha256::hex(crate::chain::canonical(proposal).as_bytes());
     // A discussion changed no task, so the same prompt may still become work; the replaced
     // discussion's digest stays in the record. Work is never turned back into a discussion.
@@ -1501,7 +1512,7 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
             &contract,
             event.get("npm_definitions").unwrap_or(&json!({})),
         )?;
-        check_entrypoint_map(&npm_entrypoints, project)?;
+        check_entrypoint_map(&npm_entrypoints, Path::new(&identity))?;
         let mut metadata = json!({"schema":1,"source":event["source"],"project":event["project"],"session_id":session,"initial_event":id,"requirement_floor":contract,"npm_entrypoints":npm_entrypoints,"paused":false,"revisions":[{"event_id":id,"action":"start","contract":contract}]});
         if let Some(worktree) = requested_worktree(project, proposal)? {
             metadata["worktree"] = worktree.into();
@@ -1524,7 +1535,7 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         if action != "cancel"
             && let Some(recorded) = metadata.get("project")
         {
-            validate_discovery_context(recorded, project)?;
+            validate_discovery_context(recorded, &identity)?;
         }
         if metadata.get("npm_entrypoints").is_none() {
             let current_contract =
@@ -1568,7 +1579,7 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
             && metadata["source"] == "hook"
             && metadata
                 .get("project")
-                .map(|recorded| legacy_subdirectory_context(recorded, project))
+                .map(|recorded| legacy_subdirectory_context(recorded, &identity))
                 .transpose()?
                 .unwrap_or(false);
         if task_state == "completed" && !retire_legacy_completed {
