@@ -183,6 +183,23 @@ fn npm_packages(project: &Path) -> Result<Vec<(Option<String>, Value)>, String> 
     Ok(packages)
 }
 
+/// The id suffix for a discovered subfolder: its name in upper case with `-` as `_`, unless
+/// another folder of the same kind (`dirs`) would get the same suffix; then the name as it is,
+/// so `a-b` and `a_b` keep distinct checks (G33 review). Lone folders keep the stable form.
+fn id_suffix<S: AsRef<str>>(dir: &str, dirs: &[S]) -> String {
+    let normal = |d: &str| d.to_ascii_uppercase().replace('-', "_");
+    if dirs
+        .iter()
+        .filter(|d| normal(d.as_ref()) == normal(dir))
+        .count()
+        > 1
+    {
+        dir.to_owned()
+    } else {
+        normal(dir)
+    }
+}
+
 /// The direct subfolders discovery looks into, sorted: plain names only, no hidden folders and
 /// no `node_modules`.
 fn subfolders(project: &Path) -> Result<Vec<String>, String> {
@@ -256,11 +273,12 @@ fn floor_at(project: &Path) -> Result<Vec<Value>, String> {
             .map(Some)
             .collect()
     };
-    for dir in cargo_dirs {
-        let (suffix, manifest) = match &dir {
+    let cargo_names: Vec<&str> = cargo_dirs.iter().flatten().map(String::as_str).collect();
+    for dir in &cargo_dirs {
+        let (suffix, manifest) = match dir {
             None => (String::new(), String::new()),
             Some(dir) => (
-                format!("_{}", dir.to_ascii_uppercase().replace('-', "_")),
+                format!("_{}", id_suffix(dir, &cargo_names)),
                 format!(" --manifest-path {dir}/Cargo.toml"),
             ),
         };
@@ -288,6 +306,10 @@ fn floor_at(project: &Path) -> Result<Vec<Value>, String> {
     let packages = npm_packages(&project)?;
     // Subfolder packages are the floor only when the root has none of its own.
     let root_only = packages.iter().any(|(dir, _)| dir.is_none());
+    let npm_names: Vec<&str> = packages
+        .iter()
+        .filter_map(|(dir, _)| dir.as_deref())
+        .collect();
     for (dir, package) in packages
         .iter()
         .filter(|(dir, _)| dir.is_none() || !root_only)
@@ -306,7 +328,7 @@ fn floor_at(project: &Path) -> Result<Vec<Value>, String> {
                 checks.push(match dir {
                     None => criterion(id, &format!("npm run {script}")),
                     Some(dir) => criterion(
-                        &format!("{id}_{}", dir.to_ascii_uppercase().replace('-', "_")),
+                        &format!("{id}_{}", id_suffix(dir, &npm_names)),
                         &format!("npm --prefix {dir} run {script}"),
                     ),
                 });
