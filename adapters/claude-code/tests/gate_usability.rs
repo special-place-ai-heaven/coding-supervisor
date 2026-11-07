@@ -819,5 +819,6 @@ fn a_checkless_repository_gets_one_short_line() {
         panic!("a prompt context is expected");
     };
     assert!(text.contains("supervisor task add-check"), "{text}");
+    assert!(text.contains("supervisor intent apply"), "{text}");
     assert!(!text.contains("requires an intent proposal"), "{text}");
 }

@@ -632,6 +632,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
             crate::binding::state_project(&root, Path::new(text(payload, "cwd").unwrap_or(".")));
         return match crate::autonomy::record_prompt(&root, &project, payload) {
             Ok(intent) => {
+                let mut call = serde_json::json!({"event_id":intent["event_id"],"nonce":intent["nonce"],"prompt_hash":intent["prompt_hash"],"task_id":intent["task_id"]});
                 // G35 (AAP report): with no discoverable checks and no task, no proposal can
                 // start one; say that once, briefly, with what blocks at this level.
                 let checkless = intent["task_id"].is_null()
@@ -645,15 +646,16 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     } else {
                         "nothing is blocked meanwhile"
                     };
+                    // F19: a question must still be classifiable, from the shell too.
+                    call["action"] = "discussion".into();
                     return Decision::Context {
                         event: "UserPromptSubmit",
                         text: format!(
-                            "SUPERVISOR: this repository has no checks the gate can discover, so no task can start until a person adds one outside the session with `supervisor task add-check --project <dir> --criterion <ID> --command <command> --reason <text>`; at level {}, {blocks}. Do not call intent_apply to start a task here.",
+                            "SUPERVISOR: this repository has no checks the gate can discover, so no task can start until a person adds one outside the session with `supervisor task add-check --project <dir> --criterion <ID> --command <command> --reason <text>`; at level {}, {blocks}. Do not start a task here. To classify this prompt as a question: intent_apply {call}; without the supervisor MCP tools, run it alone from the Bash tool: supervisor intent apply --proposal '<the call as JSON>'.",
                             level.name()
                         ),
                     };
                 }
-                let mut call = serde_json::json!({"event_id":intent["event_id"],"nonce":intent["nonce"],"prompt_hash":intent["prompt_hash"],"task_id":intent["task_id"]});
                 // G18: the session's own unfinished task already took this prompt as `continue`.
                 if intent["default_action"] == "continue" {
                     call["action"] = "<action>".into();
