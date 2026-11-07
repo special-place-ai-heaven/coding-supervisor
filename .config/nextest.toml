@@ -1,0 +1,7 @@
+# G26: the hang.rs tests measure wall-clock bounds; they run one at a time (see cli/tests/hang.rs).
+[test-groups]
+serial-hang = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(hang)'
+test-group = 'serial-hang'
