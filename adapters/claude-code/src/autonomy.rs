@@ -893,8 +893,7 @@ pub fn add_check(
     }
     let mut store = load(root)?;
     if store.get("project_floor").is_none() {
-        store["project_floor"] =
-            json!({"project":identity,"required_criteria":[]});
+        store["project_floor"] = json!({"project":identity,"required_criteria":[]});
     }
     let floor = &mut store["project_floor"];
     validate_discovery_context(&floor["project"], &identity)?;

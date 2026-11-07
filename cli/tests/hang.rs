@@ -20,7 +20,9 @@ const BIN: &str = env!("CARGO_BIN_EXE_supervisor");
 /// mutex; the next test still runs.
 fn serial() -> std::sync::MutexGuard<'static, ()> {
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 /// A hook whose every git is cut off at the 5 s deadline answers by then (about 20 s measured).
 const GIT_BOUND: Duration = Duration::from_secs(30);
