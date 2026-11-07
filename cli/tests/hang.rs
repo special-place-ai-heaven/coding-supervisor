@@ -319,7 +319,9 @@ fn hook_never_runs_git_under_the_state_lock_and_parallel_hooks_do_not_queue_on_i
     );
     assert_eq!(decision, Value::Null);
     let calls = fs::read_to_string(&log).unwrap();
-    assert!(calls.lines().count() >= 4, "{calls}");
+    // At least the root lookup and the candidate's `rev-parse HEAD`; repeated "not a repository"
+    // lookups are cached since G39, so the stub sees fewer calls than the 6 it saw before.
+    assert!(calls.lines().count() >= 2, "{calls}");
     assert!(calls.lines().all(|line| line == "free"), "{calls}");
     // Each hook spends seconds in 1 s git calls; under the lock eight would take turns.
     let env = [
