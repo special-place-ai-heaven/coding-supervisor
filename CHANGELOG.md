@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.13.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.12.0...v0.13.0) (2026-11-07)
+
+
+### Features
+
+* **gate:** person-declared checks and subfolder Cargo discovery (G32, G33) ([9f60e12](https://github.com/special-place-ai-heaven/coding-supervisor/commit/9f60e128c7abfc48b946cb45bfe4f539f1371314))
+
+
+### Bug Fixes
+
+* **gate:** AAP report fixes G32-G37 ([c1e919e](https://github.com/special-place-ai-heaven/coding-supervisor/commit/c1e919e4c7f7136603d9afe34e7b6f69f9758b40))
+* **gate:** full contract schema, checkless prompt line, notices (G34-G37) ([ca96557](https://github.com/special-place-ai-heaven/coding-supervisor/commit/ca965578637174f70dcc77101e364802f1d9298e))
+* **gate:** keep the discussion call shape in the checkless line (F19) ([5909105](https://github.com/special-place-ai-heaven/coding-supervisor/commit/59091050f1223c481387da82c260f00027fd1c17))
+* **gate:** review follow-ups for add-check (G32) ([574571f](https://github.com/special-place-ai-heaven/coding-supervisor/commit/574571fc970385905751446c9f6e74d18c72003f))
+
 ## [0.12.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.11.1...v0.12.0) (2026-11-06)
 
 
