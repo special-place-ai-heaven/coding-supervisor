@@ -1678,6 +1678,10 @@ fn pending_prompt_allows_tool_search_and_single_read_only_commands() {
         ("l", "git log -1 --format=%H"),
         ("b", "git branch --show-current"),
         ("p", "pwd"),
+        // G38: a version query of a program on PATH.
+        ("v", "supervisor --version"),
+        ("n", "node --version"),
+        ("c", "cargo -V"),
     ] {
         assert_eq!(
             handle(&bash(id, command), &mut env),
@@ -1694,6 +1698,9 @@ fn pending_prompt_allows_tool_search_and_single_read_only_commands() {
         ("delete", "git branch -D main"),
         ("output", "git diff --output=out.txt"),
         ("write", "touch x"),
+        ("local", "./build.sh --version"),
+        ("winlocal", "tools\\run.exe --version"),
+        ("extra", "node --version -e x"),
     ] {
         assert!(
             matches!(handle(&bash(id, command), &mut env), Decision::Deny(_)),
