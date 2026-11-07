@@ -1701,6 +1701,10 @@ fn pending_prompt_allows_tool_search_and_single_read_only_commands() {
         ("local", "./build.sh --version"),
         ("winlocal", "tools\\run.exe --version"),
         ("extra", "node --version -e x"),
+        ("brace", "{node,x.js} --version"),
+        ("glob", "node* --version"),
+        ("tilde", "~/x --version"),
+        ("quoted", "'./x' --version"),
     ] {
         assert!(
             matches!(handle(&bash(id, command), &mut env), Decision::Deny(_)),

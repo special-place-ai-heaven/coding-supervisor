@@ -1408,6 +1408,8 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
     };
     let id = text(proposal, "event_id")?;
     let identity = project_identity(project)?;
+    // Resolving a requested worktree runs git too; its error still surfaces only where used.
+    let worktree = requested_worktree(project, proposal);
     let tx = Transaction::open(root)?;
     let mut store = load(root)?;
     let event = store["events"]
@@ -1513,7 +1515,7 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         )?;
         check_entrypoint_map(&npm_entrypoints, Path::new(&identity))?;
         let mut metadata = json!({"schema":1,"source":event["source"],"project":event["project"],"session_id":session,"initial_event":id,"requirement_floor":contract,"npm_entrypoints":npm_entrypoints,"paused":false,"revisions":[{"event_id":id,"action":"start","contract":contract}]});
-        if let Some(worktree) = requested_worktree(project, proposal)? {
+        if let Some(worktree) = worktree.clone()? {
             metadata["worktree"] = worktree.into();
         }
         writes.push((
@@ -1638,7 +1640,7 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                     expected.entry(name).or_insert_with(|| digest.clone());
                 }
                 // A revise naming the project itself moves the task back: the binding is cleared.
-                match requested_worktree(project, proposal)? {
+                match worktree.clone()? {
                     Some(worktree) => metadata["worktree"] = worktree.into(),
                     None if proposal.get("worktree").is_some() => {
                         if let Some(fields) = metadata.as_object_mut() {
