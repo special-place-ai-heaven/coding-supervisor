@@ -94,6 +94,8 @@ pub(crate) fn checked_project(cwd: &Path) -> Result<String, String> {
 /// one directory shares an entry. Only roots found are kept, so a directory that becomes a
 /// repository later is still seen.
 static ROOTS: std::sync::Mutex<Vec<(String, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+/// Directories git answered "not a repository" for (G39).
+static NOT_ROOTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 fn git_root(cwd: &Path) -> Result<Option<PathBuf>, String> {
     let key = normalize(cwd);
@@ -104,6 +106,17 @@ fn git_root(cwd: &Path) -> Result<Option<PathBuf>, String> {
         && root_still_holds(&key, &root)
     {
         return Ok(Some(root));
+    }
+    // G39: "not a repository" is remembered too; replay asks once per recorded run, so an
+    // uncached answer spawned git per run. It holds while no `.git` (directory or worktree
+    // file) appears in the directory or an ancestor, so a later `git init` is seen.
+    // shortcut: a repository with no `.git` in its tree (one named only by GIT_DIR) stays "not
+    // a repository" in a long-lived process until restart; recheck with git if that matters.
+    // The walk uses `cwd` itself: the normalized key is not a usable path for UNC or drive roots.
+    if NOT_ROOTS.lock().is_ok_and(|dirs| dirs.contains(&key))
+        && !cwd.ancestors().any(|dir| dir.join(".git").exists())
+    {
+        return Ok(None);
     }
     match crate::git::run(cwd, &["rev-parse", "--show-toplevel"]) {
         Ok(out) if out.status.success() => {
@@ -117,7 +130,15 @@ fn git_root(cwd: &Path) -> Result<Option<PathBuf>, String> {
             }
             Ok(root)
         }
-        Ok(_) | Err(crate::git::Failure::Unavailable(_)) => Ok(None),
+        Ok(_) => {
+            if let Ok(mut dirs) = NOT_ROOTS.lock()
+                && !dirs.contains(&key)
+            {
+                dirs.push(key);
+            }
+            Ok(None)
+        }
+        Err(crate::git::Failure::Unavailable(_)) => Ok(None),
         Err(crate::git::Failure::TimedOut(why)) => Err(why),
     }
 }

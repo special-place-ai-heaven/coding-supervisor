@@ -291,6 +291,16 @@ fn read_only_command(payload: &Value) -> bool {
     if words.iter().any(|w| w.starts_with("--output")) {
         return false;
     }
+    // G38: a version query of a program found on PATH. Only a plain name: a path could name a
+    // repo script, and shell expansion (`{node,x.js}`, globs, `~`, quotes) could build one.
+    if let [program, "--version" | "-V"] = words.as_slice()
+        && program
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+'))
+        && !program.starts_with('-')
+    {
+        return true;
+    }
     matches!(
         words.as_slice(),
         ["git", "status" | "log" | "diff" | "show" | "rev-parse", ..]
