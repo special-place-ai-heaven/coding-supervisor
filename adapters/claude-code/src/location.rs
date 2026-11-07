@@ -110,12 +110,11 @@ fn git_root(cwd: &Path) -> Result<Option<PathBuf>, String> {
     // G39: "not a repository" is remembered too; replay asks once per recorded run, so an
     // uncached answer spawned git per run. It holds while no `.git` (directory or worktree
     // file) appears in the directory or an ancestor, so a later `git init` is seen.
-    // shortcut: a repository git refuses (safe.directory, dubious ownership) stays "not a
-    // repository" in a long-lived process until restart; recheck with git if that matters.
-    if NOT_ROOTS
-        .lock()
-        .is_ok_and(|dirs| dirs.iter().any(|dir| *dir == key))
-        && !Path::new(&key).ancestors().any(|dir| dir.join(".git").exists())
+    // shortcut: a repository with no `.git` in its tree (one named only by GIT_DIR) stays "not
+    // a repository" in a long-lived process until restart; recheck with git if that matters.
+    // The walk uses `cwd` itself: the normalized key is not a usable path for UNC or drive roots.
+    if NOT_ROOTS.lock().is_ok_and(|dirs| dirs.contains(&key))
+        && !cwd.ancestors().any(|dir| dir.join(".git").exists())
     {
         return Ok(None);
     }
