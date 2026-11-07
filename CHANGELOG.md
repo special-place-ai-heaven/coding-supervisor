@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.13.0...v0.13.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* **gate:** a version query is read-only under any prompt (G38) ([efd1f31](https://github.com/special-place-ai-heaven/coding-supervisor/commit/efd1f3136c10e4aaeb3650e4e58a4472250668b2))
+* **gate:** G39 review follow-ups (revalidate from cwd, ceiling comment) ([e6c848c](https://github.com/special-place-ai-heaven/coding-supervisor/commit/e6c848c7d61ddce21d3ffccedc55458a103ea244))
+* **gate:** no git under the state lock when a prompt or proposal runs (G26) ([e777512](https://github.com/special-place-ai-heaven/coding-supervisor/commit/e777512f10cd9da0aea5d33351294a459afa8fe3))
+* **gate:** read-only version queries, no git under the lock, cached non-repos (G38, G26, G39) ([facb97f](https://github.com/special-place-ai-heaven/coding-supervisor/commit/facb97f3b22e3d00f549bae2aed32417c513e742))
+* **gate:** remember "not a repository" so replay does not respawn git (G39) ([e5a0a48](https://github.com/special-place-ai-heaven/coding-supervisor/commit/e5a0a482559e058fb69c4b6f77ab321d9cd06364))
+* **gate:** review follow-ups for G38 and G26 ([83e35d9](https://github.com/special-place-ai-heaven/coding-supervisor/commit/83e35d9017b9c3a0924c8fbf5035cf344c2e3943))
+
 ## [0.13.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.12.0...v0.13.0) (2026-11-07)
 
 
