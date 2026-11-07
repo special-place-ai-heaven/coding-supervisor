@@ -825,6 +825,9 @@ fn a_person_can_add_a_check_where_none_is_discovered() {
     let refusal = autonomy::propose(&root, &project, &proposal(&event, "start")).unwrap_err();
     assert!(refusal.contains("supervisor task add-check"), "{refusal}");
     assert!(autonomy::add_check(&root, &project, "APP", " ", "reason").is_err());
+    for reserved in ["AUTO_TEST", "A B"] {
+        assert!(autonomy::add_check(&root, &project, reserved, "x", "reason").is_err());
+    }
     let added = autonomy::add_check(
         &root,
         &project,

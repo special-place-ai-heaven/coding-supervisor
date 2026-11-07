@@ -458,7 +458,6 @@ fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) -> Option
                 Ok(Some(active)) => active.dir,
                 _ => env.state_dir.clone(),
             };
-            // Another session's task is not this agent's to journal into.
             // Another session's task is not this agent's; an unreadable ownership is refused
             // like an unjournaled mutation (review of G24b), never read as "not ours".
             match crate::autonomy::owns_session(&dir, session) {

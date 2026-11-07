@@ -859,6 +859,16 @@ pub fn add_check(
     if criterion.is_empty() || command.is_empty() || reason.is_empty() {
         return Err("add-check needs a nonempty --criterion, --command and --reason".into());
     }
+    // AUTO_* ids belong to discovery; the checkless test keys on AUTO_DIFF.
+    if criterion.starts_with("AUTO_")
+        || !criterion
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(format!(
+            "{criterion}: a person's criterion id uses letters, digits, '_' or '-' and does not start with AUTO_"
+        ));
+    }
     let tx = Transaction::open(root)?;
     if lifecycle::active_task(root)?.is_some() {
         return Err(
@@ -917,10 +927,13 @@ fn cancelled_floor(dir: &Path) -> Result<Vec<Value>, String> {
 /// Retain only the approved task checks as the project floor, never a proposed replacement,
 /// keeping a person's earlier amendments.
 fn keep_floor(store: &mut Value, project: &Value, floor: Vec<Value>) {
-    let amendments = store["project_floor"].get("amendments").cloned();
+    let old = store["project_floor"].take();
     store["project_floor"] = json!({"project":project,"required_criteria":floor});
-    if let Some(amendments) = amendments {
-        store["project_floor"]["amendments"] = amendments;
+    // A person's amendments and added checks (G32) keep their reasons.
+    for history in ["amendments", "additions"] {
+        if let Some(entries) = old.get(history) {
+            store["project_floor"][history] = entries.clone();
+        }
     }
 }
 
