@@ -23,6 +23,7 @@ const USAGE: &str = "usage: supervisor mcp [--project <dir>]  (serve the gate as
        supervisor task migrate --legacy <directory> [--project <dir>]
        supervisor task reset-rounds --task <active-id> --reason <text> [--project <dir>]  (a person's command: budget_exhausted back to repairing with no rounds spent)
        supervisor task amend-floor --criterion <id> --command <command> --reason <text> [--project <dir>]  (a person's command: replace one stored floor command while no task is active)
+       supervisor task add-check --criterion <id> --command <command> --reason <text> [--project <dir>]  (a person's command: add a check where none is discovered, while no task is active)
        supervisor task cancel --task <active-id> --reason <text> [--project <dir>]  (a person's command: end the active task, prompt-managed or not, without a session)
        supervisor intent apply --proposal <json> [--project <dir>]  (the intent_apply call from a shell, for a session without the supervisor MCP server)
        supervisor level [off|audit|enforce|strict] [--project <dir>] [--global]  (no level: show the effective one; a level: write it for the project, or with --global for the user; lite, full and ultra are accepted aliases; exit 0 done, 1 error, 2 usage)

@@ -14,10 +14,23 @@ pub fn package_mismatch(exe: &Path, running: &str) -> Option<String> {
         .into_iter()
         .flatten()
         .find_map(|dir| {
-            let manifest: Value =
-                serde_json::from_slice(&std::fs::read(dir.join("package.json")).ok()?).ok()?;
-            let name = manifest["name"].as_str()?;
-            let version = manifest["version"].as_str()?;
+            // Review: a manifest is small; read at most 64 KiB, and only a plain package name and
+            // version reach the model's context or the terminal.
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(
+                &mut std::io::Read::take(std::fs::File::open(dir.join("package.json")).ok()?, 65536),
+                &mut bytes,
+            )
+            .ok()?;
+            let manifest: Value = serde_json::from_slice(&bytes).ok()?;
+            let plain = |s: &str| {
+                s.len() <= 64
+                    && s
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-._+@/".contains(&b))
+            };
+            let name = manifest["name"].as_str().filter(|s| plain(s))?;
+            let version = manifest["version"].as_str().filter(|s| plain(s))?;
             (name.starts_with("coding-supervisor") && version != running).then(|| {
                 format!(
                     "SUPERVISOR WARNING: the running supervisor binary is {running} but the installed package {name} is {version}; close every Claude session, reinstall, then check `supervisor --version`."

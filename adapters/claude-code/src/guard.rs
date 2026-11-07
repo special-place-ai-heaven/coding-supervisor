@@ -62,7 +62,7 @@ pub fn gate_write_denial(
 fn deny(payload: &Value, matched: String) -> Option<Decision> {
     let tool = payload.get("tool_name").and_then(Value::as_str)?;
     Some(Decision::Deny(format!(
-        "GATE: {tool} refused: the gate's own state is not writable by agents ({matched})"
+        "GATE: {tool} refused: the gate's own state is not writable by agents and not readable this way (use `supervisor status` or the task_state tool) ({matched})"
     )))
 }
 
@@ -84,7 +84,7 @@ fn level_command(payload: &Value) -> Option<String> {
         let operator = w[1] == "task"
             && matches!(
                 w[2],
-                "reset-rounds" | "amend-floor" | "cancel" | "start" | "next"
+                "reset-rounds" | "amend-floor" | "add-check" | "cancel" | "start" | "next"
             );
         (program.ends_with("supervisor") && (sets_level || operator))
             .then(|| format!("supervisor {} {}", w[1], w[2]))
