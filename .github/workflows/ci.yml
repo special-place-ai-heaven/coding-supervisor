@@ -170,7 +170,7 @@ jobs:
     runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","Windows","X64","windows-host-interim"]') || 'windows-latest' }}
     defaults:
       run:
-        shell: bash
+        shell: '"C:\Program Files\Git\bin\bash.exe" --noprofile --norc -e -o pipefail {0}'
     steps:
       - uses: actions/checkout@v7
 
