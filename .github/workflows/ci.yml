@@ -47,7 +47,7 @@ jobs:
   # documentation. A release tag (release.yml) always runs everything.
   changes:
     name: Decide whether to run
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","Linux","X64","fresh","light"]') || 'ubuntu-latest' }}
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
@@ -165,7 +165,9 @@ jobs:
     name: "Windows (hosted): test"
     needs: changes
     if: needs.changes.outputs.run == 'true'
-    runs-on: windows-latest
+    # Job name kept for required-check stability. Push and same-repo PRs use the interim Windows runner;
+    # fork PRs and ci-hosted-labelled PRs use windows-latest.
+    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","Windows","X64","windows-host-interim"]') || 'windows-latest' }}
     defaults:
       run:
         shell: bash
