@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.2](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.13.1...v0.13.2) (2026-11-09)
+
+
+### Bug Fixes
+
+* **gate:** keep the index time on the scratch copy so a same-second edit counts ([3517975](https://github.com/special-place-ai-heaven/coding-supervisor/commit/3517975c6af618ea41c9c736a41e0649c83812a4))
+* **gate:** keep the index time on the scratch copy so a same-second edit counts ([634bc39](https://github.com/special-place-ai-heaven/coding-supervisor/commit/634bc39482df41e255edc366d70ea9ffe67f7f70))
+
 ## [0.13.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.13.0...v0.13.1) (2026-11-07)
 
 
