@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.4](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.13.3...v0.13.4) (2026-11-09)
+
+
+### Bug Fixes
+
+* **gate:** colliding subfolder names keep distinct check ids (G41) ([35606b5](https://github.com/special-place-ai-heaven/coding-supervisor/commit/35606b5a58f9b6f265f6a0f35ef5dfccf043c9a7))
+* **gate:** read-only forge, worktree and registry views stay open (G40) ([f61038b](https://github.com/special-place-ai-heaven/coding-supervisor/commit/f61038b53df0bc489eee99d1ee0496bf16c1cf29))
+
 ## [0.13.3](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.13.2...v0.13.3) (2026-11-09)
 
 
