@@ -1,0 +1,46 @@
+# Governance Phase 1 (local only): plan
+
+as_of 2026-11-09, base `main` `e25a0d3` (0.13.1). Status: **approved by the owner on 2026-11-09**: option (a) of every question, except the changes to 2, 5 and 7 recorded under "Owner decisions". Ledger: `GATES.md` in this folder, oracles in `check.mjs`.
+
+## Order and why
+
+| # | Branch, PR subject | What lands | Why here |
+|---|---|---|---|
+| 0 | `ci/report-every-pr`, `ci: report every pull request` | Drop `paths-ignore` from the `push` and `pull_request` triggers. The `changes` job compares the changed files with the same docs list and sets `run=false`. Release-please and tag runs behave as today. | Required checks would otherwise hang docs-only PRs. Smallest change. |
+| D | `docs/governance-phase1-plan`, `docs: governance phase 1 plan and ledger` | This folder (prompt, Phase 0 report, plan, ledger, `check.mjs`). | Its own docs-only PR, so it also proves WP0 works. It must be branched after WP0 is merged: a PR runs the `ci.yml` from its own head. |
+| 1 | `feat/fail-closed` | Every `fail_open` call becomes `adapter_error`. It denies at PreToolUse and refuses at Stop and SubagentStop when the project has an active task at `enforce` or `strict`. With no task, or at `off` or `audit`, it keeps today's message. A per-project `failure: open` setting next to `level`, set by `supervisor level`, is journaled and printed by `status` as advisory. `supervisor level off --project <dir>` must work from a plain terminal while the hooks fail closed (spec §9 case 18), so a broken build cannot lock out the repository that would fix it. | Largest safety gain, independent of everything else. |
+| 2 | `feat/contract-v2` | `schema_version: 2`, `base_sha`, `approval {by, at, via}` labelled "recorded, not proven", `limits {wall_clock_s, turns}`, `artifacts`, `review {required, independent}`. A v1 contract loads only through the explicit migration (pattern: `task migrate`). Path rules are checked after canonical resolution. Also fixes the stale core comment at `src/lib.rs:40-43`. | Steps 3 to 7 need these fields. |
+| 4 | `feat/task-limits` | A **turn** is one `PreToolUse` call judged for the active task. Wall clock runs from `approval.at`. At a limit: deny new mutating tools, allow Stop with `budget_exhausted`, never touch the tree or the journal. | Needs only v2. |
+| 5 | `feat/review-record` | Core `Review {reviewer, model, decision: Approved, Rejected, findings, at, provenance}`. A review from the builder's own `session_id`+`agent_id` is stored as `caller-asserted`, and `independent` counts only separate agents. Inconclusive is not a decision. | Needs only v2. |
+| 6 | `feat/signed-receipts` | Ed25519 signature over the canonical receipt bytes, plus a key ID (first 16 hex characters of the SHA-256 of the public key). Key storage: Windows Credential Manager, Linux a 0600 file labelled `file-fallback`. Public keys live in `supervisor-keys.json` (key ID, public key, `revoked_at`). With no key the receipt says `unsigned`. | Independent of 3. |
+| 7 | `feat/receipt-verify-ci` | `supervisor receipt export` writes `supervisor-receipts/<task>.json` (contract, its hash, candidate tree, changed-path manifest, receipts, signature). `supervisor receipt verify` checks them. New CI job `Verify supervisor receipts` re-runs the contract's acceptance commands. It needs a valid receipt on **every PR to main**. CI itself decides the only exemptions: docs-only (from the `changes` job), release-please's version-only PR, or a label the owner applied, which is checked by the labelling actor in the PR timeline. Branch names opt nothing in or out. The rule itself lives in `supervisor receipt required`, which reads the event and the label timeline that CI passes it, so it can be tested. `supervisor-receipts/` is left out of the candidate identity, so a committed receipt does not make itself stale (CLAUDE.md principle 2 updated). Adoption guide in `docs/`. From this merge on, WP3 and WP8 carry their own receipts. | Needs 2, 5, 6. |
+| 3 | `feat/worktree-create` | `supervisor task start --worktree`: `git worktree add -b supervisor/<task> <path> <base_sha>`, then checks path, branch, base and clean state. One task per worktree. Cleanup refuses unreceipted work and unlinks junctions first. | Moved late: it waits on owner question 1. 4 to 7 do not need it. |
+| 8 | `test/barrier-matrix` | `RESULTS.md` holding the spec §9 matrix (20 cases) run on disposable fixtures under `C:\Target\coding-supervisor\matrix`, recording real exit codes. The recorded outputs are committed under `evidence/case-NN/` in this folder. Each case that needs the server is marked N/A with the reason. Then `CLAUDE.md` and `HANDOVER.md`. | Needs all of the above. |
+
+**Landed next to WP0 (2026-11-09, owner-directed):** #62 (WP0) removed `paths-ignore`, which the gate had read as its documentation list. #64 makes `.github/docs-paths.txt` the one list both CI and the gate read. CI reads it from the base commit, so a PR cannot widen it for itself. #63 fixes a gate race: the scratch index copy now keeps the real index's timestamp, so a same-second edit is no longer missed. That race made `tree_transfer` tests fail intermittently on Linux. #61 routes same-repository CI to the self-hosted light, heavy and Windows interim runners, and fixes a hook test that counted killed but unreaped processes as alive.
+
+Each feature package goes through `ecc:orch-add-feature`. Its plan approval and commit confirmation go to the advisor. Each package also gets a worktree under `E:\project\cs-wt\<branch>`, `CARGO_TARGET_DIR=C:\Target\coding-supervisor\<branch>\target`, regression test first, builds through Terminal Commander, one full suite at a time. Before every merge request: `ecc:orch-review`, with a builder and a verifier that are different agents.
+
+## Crate placement and new dependencies
+
+- **Core** (`coding-supervisor`, standard library only): the v2 contract fields, the `Review` record, limit arithmetic over times the caller supplies, and the new rejection reasons.
+- **`adapters/claude-code`**: fail-closed decisions, the turn counter, review provenance from hook payloads, the v1→v2 migration. No new dependency.
+- **`cli`** (`supervisor`): `level` failure setting, `task start --worktree`, `receipt export|verify`, signing and key storage. New dependencies, all in `cli` only:
+  - `ed25519-dalek` 3.0.0: maintained, widely used Ed25519 crate (267 M downloads, released 2026-07-06, MSRV 1.85).
+  - `getrandom` 0.4.3: the 32-byte key seed comes from the OS random source.
+  - `keyring-core` 1 + `windows-native-keyring-store` 1 (Windows only): Windows Credential Manager access. In keyring 4.2.0 each platform store is its own crate.
+- No new crate. The receipt code sits in `cli` because only the `supervisor` binary signs and verifies.
+
+## Honest limits (repeated in each PR)
+
+A same-user agent can read the key, edit the state and run the approval command, so a local signature or approval is an **attestation, not proof**. The CI re-run is the authoritative check. When the hook binary is missing or crashes, Claude Code itself lets the call through, and fail-closed covers only errors the adapter can report. No spend ceiling: hook payloads carry no cost data.
+
+## Owner decisions (2026-11-09)
+
+1. **Worktree default:** a contract field `isolation: worktree`, off for migrated v1 contracts and on for new v2 tasks. Writes in the base tree are blocked only when it is on. Claude Code's session directory stays the main checkout, so the agent edits under the worktree path.
+2. **Fail-closed:** the default from WP1, with `supervisor level enforce --failure open --project <dir>` as the logged way out. Condition: `supervisor level off --project <dir>` works from a plain terminal while the hooks fail closed, proven by a real test (gate W1.3). Today only this repository has the hooks wired.
+3. **Signing key:** created on the first `receipt export` in the user's credential store. The owner merges the PR that adds each machine's public key to `supervisor-keys.json`. CI trusts only the key list on the base branch.
+4. **Linux key storage:** a 0600 file, labelled as the fallback; Secret Service later.
+5. **Receipts required (changed by the owner):** on every PR to main. The only exemptions are rules CI decides itself: docs-only (from the `changes` job), release-please's version-only PR, or an owner-applied label, which is visible in the PR history. A branch-name opt-in would let anyone skip the check, and a skipped job counts as passing. Exemptions are the visible exception.
+6. **Deferral:** a deferred package is an `ABANDON:` line in `GATES.md`, and the final check then reports `HANDOFF REQUIRED`, not `ALL MET`.
+7. **Receipt location:** `supervisor-receipts/` in the repository. PR artifacts expire after about 90 days, but receipts in the repository stay checkable. A receipt describes the tree it is committed into, so the folder is left out of the candidate identity (gate W7.4).
