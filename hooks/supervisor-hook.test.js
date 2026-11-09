@@ -63,7 +63,19 @@ function killPids(file) {
   }
 }
 
-const alive = (pid) => { try { return process.kill(pid, 0); } catch (_err) { return false; } };
+// A killed process stays a zombie (state Z) until its new parent reaps it, and signal 0 still
+// reaches a zombie. How soon that happens is up to the reaper, not the hook, so on Linux a zombie
+// counts as exited. Any other state, including a stopped process, is still running.
+const alive = (pid) => {
+  try { process.kill(pid, 0); } catch (_err) { return false; }
+  if (process.platform !== "linux") return true;
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) !== "Z";
+  } catch (_err) {
+    return false; // Reaped between the two checks.
+  }
+};
 
 const payload = (event, fields) => JSON.stringify({ hook_event_name: event, cwd: ROOT, ...fields });
 
