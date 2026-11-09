@@ -81,7 +81,8 @@ jobs:
             range="$BEFORE..$AFTER"
           fi
           if [ "$run" = true ] && [ -n "$range" ]; then
-            if ! files=$(git diff --name-only "$range"); then
+            # --no-renames lists both paths of a move, so moving a source file into docs/ still runs.
+            if ! files=$(git diff --name-only --no-renames "$range"); then
               echo "::warning::could not list the changed files of $range; running everything"
             elif [ -n "$files" ] && ! printf '%s\n' "$files" | grep -Evq "$DOCS"; then
               echo "documentation only:"
