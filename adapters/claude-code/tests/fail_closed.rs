@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use coding_supervisor::{Candidate, CandidateId};
 use serde_json::{Value, json};
-use supervisor_claude_code::adapter::{Decision, Env, handle};
+use supervisor_claude_code::adapter::{Decision, Env, handle, run_hook};
 use supervisor_claude_code::candidate::CandidateProvider;
 use supervisor_claude_code::level::{Level, Setting};
 
@@ -235,4 +235,133 @@ fn a_non_blocking_event_keeps_the_advisory_message() {
     );
     post["tool_response"] = json!({"success":true});
     advisory(&handle(&post, &mut env));
+}
+
+/// No word Claude Code reads as "nothing to block" (review: such stop texts do not block).
+fn clean(text: &str) {
+    for word in ["no such file", "not found", "missing"] {
+        assert!(!text.to_lowercase().contains(word), "{text}");
+    }
+}
+
+fn answer(raw: &str) -> Value {
+    serde_json::from_str(&run_hook(raw).expect("an answer")).unwrap()
+}
+
+#[test]
+fn a_truncated_pre_tool_use_payload_is_denied() {
+    let raw = r#"{"hook_event_name":"PreToolUse","cwd":"C:/nowhere","tool_name":"Write","tool_input":{"file_path":"src/lib.rs","content":"x"#;
+    let v = answer(raw);
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny", "{v}");
+    let reason = v["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .unwrap();
+    assert!(reason.contains("fails closed"), "{reason}");
+    clean(reason);
+}
+
+#[test]
+fn a_truncated_stop_payload_is_refused_unless_a_stop_hook_is_already_active() {
+    let v =
+        answer(r#"{"hook_event_name" : "Stop", "cwd":"C:/nowhere","last_assistant_message":"do"#);
+    assert_eq!(v["decision"], "block", "{v}");
+    clean(v["reason"].as_str().unwrap());
+    let v = answer(
+        r#"{"hook_event_name":"SubagentStop","stop_hook_active":true,"cwd":"C:/nowhere","last_assistant_message":"do"#,
+    );
+    assert_ne!(v["decision"], "block", "{v}");
+    let message = v["systemMessage"].as_str().unwrap_or_default();
+    assert!(message.contains("went ahead NOT certified"), "{v}");
+}
+
+#[test]
+fn a_contract_error_naming_a_missing_field_is_denied_in_blocking_words() {
+    let (_d, mut env) = project(Level::Enforce);
+    fs::write(
+        env.state_dir.join("contract.json"),
+        json!({"id":"wp1","goal":"fail closed","scope":["src/"],"forbidden_effects":[],
+            "max_repair_rounds":2,"criteria":[{"id":"C1","check":"test","command":"cargo test"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let decision = handle(&write(&env), &mut env);
+    let Decision::Deny(why) = &decision else {
+        panic!("a governed contract error must deny, got {decision:?}");
+    };
+    assert!(why.contains("fails closed"), "{why}");
+    assert!(why.contains("field mandatory"), "{why}");
+    clean(why);
+}
+
+#[test]
+fn a_governed_stop_with_an_adapter_error_fails_closed() {
+    let (_d, mut env) = project(Level::Enforce);
+    break_runs(&env);
+    let decision = handle(&stop(&env), &mut env);
+    assert!(matches!(decision, Decision::Block(_)), "{decision:?}");
+    fails_closed(&decision);
+}
+
+#[test]
+fn a_stop_already_continued_by_a_stop_hook_goes_ahead_uncertified() {
+    let (_d, mut env) = project(Level::Enforce);
+    break_runs(&env);
+    let mut payload = stop(&env);
+    payload["stop_hook_active"] = json!(true);
+    let decision = handle(&payload, &mut env);
+    let Decision::System(message) = &decision else {
+        panic!("an active stop hook must not loop on a broken gate, got {decision:?}");
+    };
+    assert!(
+        message.starts_with("GATE: WARNING, this Stop went ahead NOT certified: "),
+        "{message}"
+    );
+}
+
+#[test]
+fn intent_apply_is_not_exempt_from_failing_closed() {
+    let (_d, mut env) = project(Level::Enforce);
+    break_runs(&env);
+    let call = tool(
+        &env,
+        "PreToolUse",
+        "mcp__supervisor__intent_apply",
+        json!({"event_id":"e","nonce":"n","prompt_hash":"h","action":"discussion"}),
+    );
+    let decision = handle(&call, &mut env);
+    assert!(matches!(decision, Decision::Deny(_)), "{decision:?}");
+    fails_closed(&decision);
+}
+
+#[test]
+fn an_unwritable_events_journal_commits_nothing_for_the_denied_call() {
+    let (_d, mut env) = project(Level::Enforce);
+    break_events(&env);
+    let run = tool(&env, "PreToolUse", "Bash", json!({"command":"cargo test"}));
+    let decision = handle(&run, &mut env);
+    assert!(matches!(decision, Decision::Deny(_)), "{decision:?}");
+    let runs = fs::read_to_string(env.state_dir.join("runs.jsonl")).unwrap_or_default();
+    assert!(
+        runs.trim().is_empty(),
+        "a start record was committed: {runs}"
+    );
+    let cached = fs::read_to_string(env.state_dir.join("applied-events.json")).unwrap_or_default();
+    assert!(
+        !cached.contains("PreToolUse-Bash"),
+        "a decision was cached: {cached}"
+    );
+}
+
+#[test]
+fn failure_open_keeps_a_computed_stop_refusal_when_the_journal_fails() {
+    let (_d, mut env) = project(Level::Enforce);
+    fs::write(env.state_dir.join("failure"), "open\n").unwrap();
+    break_events(&env);
+    // No receipt for C1: the gate refuses this stop for evidence reasons.
+    let decision = handle(&stop(&env), &mut env);
+    let Decision::Block(why) = &decision else {
+        panic!("the evidence refusal must survive a lost journal line, got {decision:?}");
+    };
+    assert!(!why.contains("fails closed"), "{why}");
+    assert!(!why.contains("adapter error"), "{why}");
 }

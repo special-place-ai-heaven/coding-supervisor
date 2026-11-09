@@ -99,6 +99,11 @@ impl Fixture {
             .unwrap()
     }
     fn hook(&self, payload: &Value) -> Value {
+        self.hook_text(&payload.to_string())
+    }
+    /// One hook call on payload text written as given (serde_json cannot write a lone
+    /// surrogate escape).
+    fn hook_text(&self, payload: &str) -> Value {
         let mut child = self
             .command()
             .arg("hook")
@@ -123,6 +128,20 @@ impl Fixture {
     fn stop(&self) -> Value {
         json!({"cwd":self.project,"session_id":"session-1","hook_event_name":"Stop","stop_hook_active":false})
     }
+    fn state_root(&self) -> PathBuf {
+        location::resolve_state_dir(&self.project, &|key| {
+            (key == "SUPERVISOR_STATE_DIR").then(|| self.state.to_string_lossy().into_owned())
+        })
+        .0
+    }
+    /// A PreToolUse Write of `path` whose content holds a lone UTF-16 surrogate escape.
+    fn surrogate_write(&self, path: &str) -> String {
+        format!(
+            r#"{{"cwd":{},"session_id":"session-1","hook_event_name":"PreToolUse","tool_name":"Write","tool_use_id":"s1","tool_input":{{"file_path":{},"content":"a\ud800b"}}}}"#,
+            serde_json::to_string(&self.project).unwrap(),
+            serde_json::to_string(path).unwrap()
+        )
+    }
     /// The task's cached answer for the Write no longer holds a decision: replaying that call
     /// is an adapter error while the state directory still resolves.
     fn break_cached_answer(&self) {
@@ -132,11 +151,7 @@ impl Fixture {
             "{healthy}"
         );
         assert!(healthy.get("systemMessage").is_none(), "{healthy}");
-        let root = location::resolve_state_dir(&self.project, &|key| {
-            (key == "SUPERVISOR_STATE_DIR").then(|| self.state.to_string_lossy().into_owned())
-        })
-        .0;
-        let task = lifecycle::active_task(&root).unwrap().unwrap();
+        let task = lifecycle::active_task(&self.state_root()).unwrap().unwrap();
         let path = task.dir.join("applied-events.json");
         let mut events: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         for event in events.as_object_mut().unwrap().values_mut() {
@@ -193,12 +208,69 @@ fn failure_open_lets_the_call_go_ahead_and_is_shown_as_advisory() {
     let json: Value = serde_json::from_str(&stdout(&f.supervisor(&["status", "--json"]))).unwrap();
     assert_eq!(json["failure_mode"], "open", "{json}");
 
+    // A later level write still shows that adapter errors are advisory.
+    let out = f.supervisor(&["level", "strict"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(stdout(&out).contains("failure: open (advisory)"), "{out:?}");
     let out = f.supervisor(&["level", "enforce", "--failure", "closed"]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert!(
         stdout(&f.supervisor(&["level"])).contains("failure: closed"),
         "closed again"
     );
-    let out = f.supervisor(&["level", "enforce", "--failure", "ajar"]);
-    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let denied = f.hook(&f.write());
+    assert_eq!(
+        denied["hookSpecificOutput"]["permissionDecision"], "deny",
+        "closed again must fail closed again: {denied}"
+    );
+    for args in [
+        &["level", "enforce", "--failure", "ajar"][..],
+        &["level", "enforce", "--failure", "open", "--global"],
+        &["level", "--failure", "open"],
+        &["level", "enforce", "--failure"],
+    ] {
+        let out = f.supervisor(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");
+    }
+}
+
+#[test]
+fn an_unreadable_level_file_fails_closed_and_level_off_still_unblocks() {
+    let f = Fixture::new("garbage-level");
+    f.break_cached_answer();
+    fs::write(f.state_root().join("level"), "bogus\n").unwrap();
+    let denied = f.hook(&f.write());
+    assert_eq!(
+        denied["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{denied}"
+    );
+    let out = f.supervisor(&["level", "off"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let write = f.hook(&f.write());
+    assert_ne!(
+        write["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{write}"
+    );
+}
+
+#[test]
+fn a_lone_surrogate_in_a_write_is_judged_like_any_write() {
+    let f = Fixture::new("surrogate");
+    let decision = f.hook_text(&f.surrogate_write("src/lib.rs"));
+    assert_ne!(
+        decision["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{decision}"
+    );
+    assert!(decision.get("systemMessage").is_none(), "{decision}");
+}
+
+#[test]
+fn a_lone_surrogate_does_not_get_past_the_state_guard() {
+    let f = Fixture::new("surrogate-guard");
+    let target = f.state_root().join("gate.json");
+    let decision = f.hook_text(&f.surrogate_write(&target.to_string_lossy()));
+    assert_eq!(
+        decision["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{decision}"
+    );
 }
