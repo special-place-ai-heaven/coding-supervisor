@@ -1,19 +1,18 @@
-# Picks where the Linux and Windows test jobs run.
+# Picks where the Linux test jobs run (ci.yml's Linux job and release.yml's Linux build).
 #
-# Route: a push, a release tag and a pull request from this repository run on the owner's
-# self-hosted runners; a fork's pull request, or a pull request labelled ci-hosted, runs
-# GitHub-hosted, so a fork's code never executes on a self-hosted machine. This job itself runs
-# where the route says (a fresh light runner, or ubuntu-latest), and the step reads that back
-# from RUNNER_ENVIRONMENT, so the route expression below is the only place the rule is written.
+# Route (SELF_HOSTED below, the only place the rule is written): a push, a release tag and a pull
+# request from this repository run on the owner's self-hosted runners; a fork's pull request, or a
+# pull request labelled ci-hosted, runs GitHub-hosted, so a fork's code never executes on a
+# self-hosted machine. This job itself always runs GitHub-hosted, so it never waits for the
+# owner's PC (owner, 2026-11-09).
 #
-# On the self-hosted route:
-# - Linux: a fresh heavy runner when one is online and idle, otherwise ubuntu-latest (owner,
-#   2026-11-02: the fresh runners live on the owner's home PC, which is not always on).
-# - Windows: the interim Windows runner when it is online, otherwise windows-latest.
-# The lookup calls the GitHub API with curl (the fresh runners have no gh or jq) using
-# RUNNER_STATUS_TOKEN, else RELEASE_PLEASE_TOKEN (both org-wide secrets); it needs read access to
-# the organisation's self-hosted runners. Every fallback to GitHub-hosted on the self-hosted route
-# is a workflow warning, so it shows on the run's summary.
+# On the self-hosted route: a fresh heavy runner when one is online and idle, otherwise
+# ubuntu-latest (owner, 2026-11-02: the fresh runners live on the owner's home PC, which is not
+# always on). The lookup calls the GitHub API with curl and needs no JSON tool, so it also runs on
+# a fresh runner, which has no gh or jq. It uses RUNNER_STATUS_TOKEN, else RELEASE_PLEASE_TOKEN
+# (both org-wide secrets); it needs read access to the organisation's self-hosted runners. Every
+# fallback to GitHub-hosted on the self-hosted route is a workflow warning, so it shows on the
+# run's summary.
 # shortcut: availability is checked once at pick time; if another job takes the runner first,
 # this job waits in that runner's queue until it frees up.
 name: Pick runner
@@ -24,9 +23,6 @@ on:
       linux:
         description: JSON runs-on value for Linux test jobs
         value: ${{ jobs.pick.outputs.linux }}
-      windows:
-        description: JSON runs-on value for Windows test jobs
-        value: ${{ jobs.pick.outputs.windows }}
 
 permissions:
   contents: read
@@ -34,10 +30,9 @@ permissions:
 jobs:
   pick:
     name: Pick the Linux runner
-    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","Linux","X64","fresh","light"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     outputs:
       linux: ${{ steps.pick.outputs.linux }}
-      windows: ${{ steps.pick.outputs.windows }}
     steps:
       - id: pick
         env:
@@ -45,12 +40,11 @@ jobs:
           STATUS_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
           RELEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           ORG: ${{ github.repository_owner }}
+          SELF_HOSTED: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) }}
         run: |
           linux='"ubuntu-latest"'
-          windows='"windows-latest"'
           heavy='["self-hosted","Linux","X64","fresh","heavy"]'
-          interim='["self-hosted","Windows","X64","windows-host-interim"]'
-          if [ "$RUNNER_ENVIRONMENT" != "self-hosted" ]; then
+          if [ "$SELF_HOSTED" != "true" ]; then
             echo "fork or ci-hosted pull request: GitHub-hosted by rule"
           else
             read_ok=false
@@ -73,30 +67,21 @@ jobs:
               records=$(printf '%s' "$flat" | sed 's/"os":/\n/g' | tail -n +2)
               count=$(printf '%s\n' "$records" | grep -c . || true)
               if [ -z "$total" ] || [ "$count" != "$total" ]; then
-                echo "::warning::runner list not understood ($count records, total_count ${total:-missing}); the tests run GitHub-hosted"
+                echo "::warning::runner list not understood ($count records, total_count ${total:-missing}); the Linux tests run GitHub-hosted"
                 break
               fi
-              online=$(printf '%s\n' "$records" | grep '"status":"online"' || true)
-              idle_heavy=$(printf '%s\n' "$online" | grep '"busy":false' | grep -c '"name":"heavy"' || true)
-              online_windows=$(printf '%s\n' "$online" | grep -c '"name":"windows-host-interim"' || true)
-              echo "$name: $total runners; idle heavy: $idle_heavy; online interim Windows: $online_windows"
+              idle_heavy=$(printf '%s\n' "$records" | grep '"status":"online"' | grep '"busy":false' | grep -c '"name":"heavy"' || true)
+              echo "$name: $total runners; idle heavy: $idle_heavy"
               if [ "$idle_heavy" -gt 0 ]; then
                 linux="$heavy"
               else
                 echo "::warning::no idle fresh heavy runner; the Linux tests run GitHub-hosted"
               fi
-              if [ "$online_windows" -gt 0 ]; then
-                windows="$interim"
-              else
-                echo "::warning::the interim Windows runner is offline; the Windows tests run GitHub-hosted"
-              fi
               break
             done
             if [ "$read_ok" = false ]; then
-              echo "::warning::no token could read the runner list; the tests run GitHub-hosted"
+              echo "::warning::no token could read the runner list; the Linux tests run GitHub-hosted"
             fi
           fi
           echo "linux=$linux" >> "$GITHUB_OUTPUT"
-          echo "windows=$windows" >> "$GITHUB_OUTPUT"
           echo "Linux tests run on: $linux"
-          echo "Windows tests run on: $windows"
