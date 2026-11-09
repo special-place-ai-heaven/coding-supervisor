@@ -1,0 +1,11 @@
+# Paths that are documentation only: one git glob per line, from the repository root.
+# CI (.github/workflows/ci.yml, "Decide whether to run") skips its heavy jobs when a change touches
+# nothing else, and the gate leaves these paths out of a candidate's tree identity (CLAUDE.md
+# principle 2). CI reads this file as it stands on the base commit. Skill templates under skills/
+# are compiled into the binary, so they are not listed.
+docs/**
+README.md
+CHANGELOG.md
+CLAUDE.md
+HANDOVER.md
+LICENSE
