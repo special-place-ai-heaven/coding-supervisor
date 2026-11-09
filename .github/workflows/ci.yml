@@ -14,28 +14,17 @@
 name: CI
 
 # Runs once per change (owner, 2026-11-03: remove all waste): a push to main and a pull
-# request, not a push to every branch or tag. A change to documentation only runs nothing;
-# the skill templates under skills/ are compiled into the binary, so they are not skipped.
-# release.yml calls this workflow on each release tag, which is the one run a release gets:
-# release-please's own pull request and its merge into main change version numbers only.
+# request, not a push to every branch or tag. The workflow itself always runs, so every pull
+# request reports the same checks (a required check would otherwise wait forever on a PR that no
+# workflow ran for); the `changes` job skips the heavy jobs, which then report as skipped, when a
+# change touches documentation only (`DOCS` below) or is release-please's version-only pull request
+# or its merge into main. The skill templates under skills/ are compiled into the binary, so they
+# are not documentation. release.yml calls this workflow on each release tag, which always runs
+# everything.
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "README.md"
-      - "CHANGELOG.md"
-      - "CLAUDE.md"
-      - "HANDOVER.md"
-      - "LICENSE"
   pull_request:
-    paths-ignore:
-      - "docs/**"
-      - "README.md"
-      - "CHANGELOG.md"
-      - "CLAUDE.md"
-      - "HANDOVER.md"
-      - "LICENSE"
   workflow_call:
 
 # A new push cancels the superseded run of the same branch.
@@ -53,24 +42,53 @@ env:
   RUSTC_WRAPPER: ""
 
 jobs:
-  # Skips release-please's version-only pull request and its merge commit on main; a release
-  # tag (release.yml) still runs everything.
+  # Decides whether the heavy jobs run. They are skipped for release-please's version-only pull
+  # request and its merge commit on main, and for a pull request or push to main that changes only
+  # documentation. A release tag (release.yml) always runs everything.
   changes:
     name: Decide whether to run
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - id: decide
         env:
+          EVENT: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
           REF: ${{ github.ref }}
           MESSAGE: ${{ github.event.head_commit.message }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          # Root-level files and the docs folder; the same list ci.yml once had under paths-ignore.
+          DOCS: '^(docs/.*|README\.md|CHANGELOG\.md|CLAUDE\.md|HANDOVER\.md|LICENSE)$'
         run: |
           run=true
           case "$HEAD_REF" in release-please--*) run=false ;; esac
           if [ "$REF" = "refs/heads/main" ] && printf '%s' "$MESSAGE" | head -n 1 | grep -q 'release-please--branches--'; then
             run=false
+          fi
+          # Which commits to compare; none (a tag, a new branch) means run everything.
+          range=
+          if [ "$EVENT" = pull_request ]; then
+            range="$PR_BASE...$PR_HEAD"
+          elif [ "$EVENT" = push ] && [ "$REF" = "refs/heads/main" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            range="$BEFORE..$AFTER"
+          fi
+          if [ "$run" = true ] && [ -n "$range" ]; then
+            # --no-renames lists both paths of a move, so moving a source file into docs/ still runs.
+            if ! files=$(git diff --name-only --no-renames "$range"); then
+              echo "::warning::could not list the changed files of $range; running everything"
+            elif [ -n "$files" ] && ! printf '%s\n' "$files" | grep -Evq "$DOCS"; then
+              echo "documentation only:"
+              printf '%s\n' "$files"
+              run=false
+            fi
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
           echo "run: $run"
