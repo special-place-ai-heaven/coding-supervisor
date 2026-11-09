@@ -5,3 +5,9 @@ serial-hang = { max-threads = 1 }
 [[profile.default.overrides]]
 filter = 'binary(hang)'
 test-group = 'serial-hang'
+
+# The node hook suite asserts 20-25 s answer bounds on spawned processes; it runs with nothing
+# else beside it (G42), so other tests cannot starve it past them. Bounds unchanged.
+[[profile.default.overrides]]
+filter = 'binary(plugin_hook)'
+threads-required = "num-cpus"

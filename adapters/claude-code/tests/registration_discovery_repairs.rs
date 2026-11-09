@@ -895,3 +895,37 @@ fn a_partial_contract_names_every_missing_field_at_once() {
     }
     assert!(refusal.contains("a minimal contract is"), "{refusal}");
 }
+
+/// G33 review: two subfolders whose names differ only by `-` and `_` keep distinct check ids,
+/// while a lone folder keeps its normalized id.
+#[test]
+fn subfolders_that_normalize_alike_keep_distinct_check_ids() {
+    let f = Fixture::new();
+    let root = f.0.join("state");
+    let project = f.0.join("project");
+    fs::remove_file(project.join("Cargo.toml")).unwrap();
+    fs::remove_file(project.join("package.json")).unwrap();
+    for dir in ["a-b", "a_b", "solo-x"] {
+        fs::create_dir_all(project.join(dir)).unwrap();
+        fs::write(
+            project.join(dir).join("Cargo.toml"),
+            "[workspace]\nmembers = []\n",
+        )
+        .unwrap();
+    }
+    let event = prompt(&root, &project, "colliding-subfolders");
+    let ids: Vec<&str> = event["required_criteria"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    let tests: Vec<&&str> = ids
+        .iter()
+        .filter(|id| id.starts_with("AUTO_TEST"))
+        .collect();
+    assert_eq!(tests.len(), 3, "{ids:?}");
+    let unique: std::collections::BTreeSet<&&str> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "duplicate ids: {ids:?}");
+    assert!(ids.contains(&"AUTO_TEST_SOLO_X"), "{ids:?}");
+}

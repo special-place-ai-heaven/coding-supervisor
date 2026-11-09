@@ -1682,6 +1682,16 @@ fn pending_prompt_allows_tool_search_and_single_read_only_commands() {
         ("v", "supervisor --version"),
         ("n", "node --version"),
         ("c", "cargo -V"),
+        // G40: read-only views of the forge, worktrees and the npm registry.
+        ("g1", "gh pr checks 59"),
+        ("g2", "gh pr view 59 --json state"),
+        ("g3", "gh run list --workflow release.yml --limit 2"),
+        ("g4", "gh release view v0.13.1"),
+        ("w1", "git worktree list"),
+        ("w2", "git -C C:/x log --oneline -3"),
+        ("w3", "git branch -a"),
+        ("w4", "git remote -v"),
+        ("n1", "npm view coding-supervisor version"),
     ] {
         assert_eq!(
             handle(&bash(id, command), &mut env),
@@ -1705,6 +1715,15 @@ fn pending_prompt_allows_tool_search_and_single_read_only_commands() {
         ("glob", "node* --version"),
         ("tilde", "~/x --version"),
         ("quoted", "'./x' --version"),
+        ("merge", "gh pr merge 59 --merge"),
+        ("api", "gh api -X DELETE repos/o/r/git/refs/heads/b"),
+        ("ghc", "gh pr checkout 59"),
+        ("wtrm", "git worktree remove x"),
+        ("cdel", "git -C C:/x branch -D main"),
+        ("cpush", "git -C C:/x push"),
+        ("bnew", "git branch newbranch"),
+        ("radd", "git remote add o u"),
+        ("ni", "npm install -g coding-supervisor"),
     ] {
         assert!(
             matches!(handle(&bash(id, command), &mut env), Decision::Deny(_)),

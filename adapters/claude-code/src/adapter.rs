@@ -231,6 +231,8 @@ fn read_only_tool(payload: &Value) -> bool {
             | "TaskList"
             | "ToolSearch"
             | "StructuredOutput"
+            // G40: asking the user changes nothing.
+            | "AskUserQuestion"
     ) {
         return true;
     }
@@ -287,9 +289,13 @@ fn read_only_command(payload: &Value) -> bool {
     if command.contains([';', '&', '|', '<', '>', '$', '`', '(', ')', '\n', '\r']) {
         return false;
     }
-    let words: Vec<&str> = command.split_whitespace().collect();
+    let mut words: Vec<&str> = command.split_whitespace().collect();
     if words.iter().any(|w| w.starts_with("--output")) {
         return false;
+    }
+    // G40: `git -C <dir> <subcommand>` is the same subcommand run in another directory.
+    if let ["git", "-C", _, ..] = words.as_slice() {
+        words.drain(1..3);
     }
     // G38: a version query of a program found on PATH. Only a plain name: a path could name a
     // repo script, and shell expansion (`{node,x.js}`, globs, `~`, quotes) could build one.
@@ -305,6 +311,12 @@ fn read_only_command(payload: &Value) -> bool {
         words.as_slice(),
         ["git", "status" | "log" | "diff" | "show" | "rev-parse", ..]
             | ["git", "branch", "--show-current"]
+            | ["git", "worktree", "list", ..]
+            | ["git", "remote"]
+            | ["git", "remote", "-v"]
+            // G40: read-only views of the forge and the npm registry.
+            | ["gh", "pr" | "issue" | "release" | "run", "view" | "list" | "checks" | "diff" | "status", ..]
+            | ["npm", "view" | "ls" | "list", ..]
             | ["ls", ..]
             | ["pwd"]
             | ["supervisor", "status", ..]
@@ -312,7 +324,8 @@ fn read_only_command(payload: &Value) -> bool {
             | ["supervisor", "level", "--project", _]
             | ["supervisor", "level", "status", ..]
             | ["supervisor", "--help"]
-    )
+    ) || matches!(words.as_slice(), ["git", "branch", flags @ ..]
+        if flags.iter().all(|f| matches!(*f, "-a" | "-r" | "-v" | "-vv" | "--all" | "--remotes" | "--list" | "--verbose")))
 }
 
 /// `supervisor intent apply ...` run alone from Bash: the MCP proposal for a session that has no

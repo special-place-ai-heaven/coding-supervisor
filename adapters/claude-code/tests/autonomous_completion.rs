@@ -588,6 +588,8 @@ fn a_completed_task_still_allows_read_only_commands_and_names_the_next_step() {
         "supervisor status --json",
         "supervisor level",
         "git status --short",
+        // G40: the forge's read-only views after a merge.
+        "gh pr checks 59",
     ] {
         assert_eq!(
             handle(&bash(command), &mut env),
@@ -595,6 +597,10 @@ fn a_completed_task_still_allows_read_only_commands_and_names_the_next_step() {
             "{command}"
         );
     }
+    // G40: asking the user changes nothing, so the question picker stays open.
+    let ask = json!({"hook_event_name":"PreToolUse","cwd":cwd,"session_id":"session","agent_id":"main",
+        "tool_use_id":"ask","tool_name":"AskUserQuestion","tool_input":{"questions":[]}});
+    assert_eq!(handle(&ask, &mut env), Decision::None);
     let Decision::Deny(reason) = handle(&bash("touch x"), &mut env) else {
         panic!("a mutation after completion must still be refused");
     };
