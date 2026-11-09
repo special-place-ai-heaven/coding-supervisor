@@ -2,15 +2,16 @@
 # The Rust toolchain is installed with rustup straight from rust-toolchain.toml,
 # so that file is the only place the version is written.
 #
-# Runner policy (owner, 2026-11-02): Linux jobs use the owner's self-hosted
-# "fresh" runners when one is online and idle, and GitHub-hosted ubuntu-latest
-# otherwise (the fresh runners live on the owner's home PC, which is not always
-# on). The runner job below decides; it needs the RUNNER_STATUS_TOKEN secret
-# (or RELEASE_PLEASE_TOKEN; read access to the organisation's self-hosted runners) and picks hosted
-# when that secret is absent or the lookup fails. Pull requests always run
-# hosted, so a fork's code never executes on a self-hosted machine. A hosted
-# windows-latest job runs for both, because the first user and the adapter's
-# path handling are Windows.
+# Runner policy (owner, 2026-11-02, extended 2026-11-09): a push, a release tag and a pull
+# request from this repository run on the owner's self-hosted runners: `changes` and the picker on
+# a fresh light runner, the Linux job on a fresh heavy runner when one is online and idle, the
+# Windows job on the interim Windows runner when it is online. Otherwise each falls back to
+# GitHub-hosted (the runners live on the owner's home PC, which is not always on). A fork's pull
+# request, or one labelled ci-hosted, runs entirely GitHub-hosted, so a fork's code never executes
+# on a self-hosted machine. pick-runner.yml holds the details; it needs the RUNNER_STATUS_TOKEN
+# secret (or RELEASE_PLEASE_TOKEN) and picks hosted when neither can read the runner list. Job
+# names never change with the runner, because they are required checks. Windows runs for every
+# change because the first user and the adapter's path handling are Windows.
 name: CI
 
 # Runs once per change (owner, 2026-11-03: remove all waste): a push to main and a pull
@@ -100,6 +101,7 @@ jobs:
           echo "run: $run"
 
   runner:
+    # Name kept for required-check stability; it picks the Windows runner too.
     name: Pick the Linux runner
     needs: changes
     if: needs.changes.outputs.run == 'true'
@@ -162,12 +164,12 @@ jobs:
 
   # Formatting, lint and the dependency check are the same on both systems and run on Linux.
   windows-hosted:
+    # Job name kept for required-check stability. The picker chooses the interim Windows runner
+    # when it is online on the self-hosted route, otherwise windows-latest.
     name: "Windows (hosted): test"
-    needs: changes
+    needs: [changes, runner]
     if: needs.changes.outputs.run == 'true'
-    # Job name kept for required-check stability. Push and same-repo PRs use the interim Windows runner;
-    # fork PRs and ci-hosted-labelled PRs use windows-latest.
-    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","Windows","X64","windows-host-interim"]') || 'windows-latest' }}
+    runs-on: ${{ fromJSON(needs.runner.outputs.windows) }}
     defaults:
       run:
         shell: '"C:\Program Files\Git\bin\bash.exe" --noprofile --norc -e -o pipefail {0}'

@@ -1,20 +1,31 @@
-# Picks where Linux jobs run: one of the owner's self-hosted "fresh" runners
-# when one is online and idle, otherwise GitHub-hosted ubuntu-latest.
-# Pull requests always get ubuntu-latest so a fork's code never runs on a
-# self-hosted machine. The lookup uses RUNNER_STATUS_TOKEN, else
-# RELEASE_PLEASE_TOKEN (both org-wide secrets); it needs read access to the
-# organisation's self-hosted runners. If neither token can read the list, the
-# answer is ubuntu-latest.
-# shortcut: idle is checked once at pick time; if another job takes the runner
-# first, this job waits in the fresh queue until one frees up.
+# Picks where the Linux and Windows test jobs run.
+#
+# Route: a push, a release tag and a pull request from this repository run on the owner's
+# self-hosted runners; a fork's pull request, or a pull request labelled ci-hosted, runs
+# GitHub-hosted, so a fork's code never executes on a self-hosted machine. This job itself runs
+# where the route says (a fresh light runner, or ubuntu-latest), and the step reads that back
+# from RUNNER_ENVIRONMENT, so the route expression below is the only place the rule is written.
+#
+# On the self-hosted route:
+# - Linux: a fresh heavy runner when one is online and idle, otherwise ubuntu-latest (owner,
+#   2026-11-02: the fresh runners live on the owner's home PC, which is not always on).
+# - Windows: the interim Windows runner when it is online, otherwise windows-latest.
+# The lookup uses RUNNER_STATUS_TOKEN, else RELEASE_PLEASE_TOKEN (both org-wide secrets); it needs
+# read access to the organisation's self-hosted runners. If neither token can read the list, both
+# answers are GitHub-hosted.
+# shortcut: availability is checked once at pick time; if another job takes the runner first,
+# this job waits in that runner's queue until it frees up.
 name: Pick runner
 
 on:
   workflow_call:
     outputs:
       linux:
-        description: JSON runs-on value for Linux jobs
+        description: JSON runs-on value for Linux test jobs
         value: ${{ jobs.pick.outputs.linux }}
+      windows:
+        description: JSON runs-on value for Windows test jobs
+        value: ${{ jobs.pick.outputs.windows }}
 
 permissions:
   contents: read
@@ -22,9 +33,10 @@ permissions:
 jobs:
   pick:
     name: Pick the Linux runner
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","Linux","X64","fresh","light"]') || 'ubuntu-latest' }}
     outputs:
       linux: ${{ steps.pick.outputs.linux }}
+      windows: ${{ steps.pick.outputs.windows }}
     steps:
       - id: pick
         env:
@@ -32,26 +44,32 @@ jobs:
           STATUS_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
           RELEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           ORG: ${{ github.repository_owner }}
-          EVENT: ${{ github.event_name }}
         run: |
-          hosted='"ubuntu-latest"'
-          fresh='["self-hosted","Linux","X64","fresh"]'
-          choice="$hosted"
-          filter='[.runners[] | select(.status == "online" and .busy == false and any(.labels[]; .name == "fresh"))] | length'
-          if [ "$EVENT" = "pull_request" ]; then
-            echo "pull request: always hosted"
+          linux='"ubuntu-latest"'
+          windows='"windows-latest"'
+          heavy='["self-hosted","Linux","X64","fresh","heavy"]'
+          interim='["self-hosted","Windows","X64","windows-host-interim"]'
+          # One line per runner: <count of idle heavy> <count of online interim Windows>.
+          filter='[.runners[] | select(.status == "online")] | "\([.[] | select(.busy == false and any(.labels[]; .name == "heavy"))] | length) \([.[] | select(any(.labels[]; .name == "windows-host-interim"))] | length)"'
+          if [ "$RUNNER_ENVIRONMENT" != "self-hosted" ]; then
+            echo "fork or ci-hosted pull request: GitHub-hosted"
+          elif ! command -v gh > /dev/null; then
+            echo "::warning::gh is not installed on this runner; GitHub-hosted"
           else
             for name in STATUS_TOKEN RELEASE_TOKEN; do
               token="${!name}"
               [ -n "$token" ] || { echo "$name: not set"; continue; }
               if counts=$(GH_TOKEN="$token" gh api "orgs/$ORG/actions/runners" --paginate --jq "$filter" 2>/dev/null); then
-                idle=$(echo "$counts" | awk '{s += $1} END {print s + 0}')
-                echo "$name: runner list read; idle fresh runners: $idle"
-                [ "$idle" -gt 0 ] && choice="$fresh"
+                read -r idle_heavy online_windows <<< "$(echo "$counts" | awk '{h += $1; w += $2} END {print h + 0, w + 0}')"
+                echo "$name: runner list read; idle heavy: $idle_heavy; online interim Windows: $online_windows"
+                [ "$idle_heavy" -gt 0 ] && linux="$heavy"
+                [ "$online_windows" -gt 0 ] && windows="$interim"
                 break
               fi
               echo "$name: cannot read the organisation's runner list"
             done
           fi
-          echo "linux=$choice" >> "$GITHUB_OUTPUT"
-          echo "Linux jobs run on: $choice"
+          echo "linux=$linux" >> "$GITHUB_OUTPUT"
+          echo "windows=$windows" >> "$GITHUB_OUTPUT"
+          echo "Linux tests run on: $linux"
+          echo "Windows tests run on: $windows"
