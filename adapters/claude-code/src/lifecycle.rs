@@ -381,6 +381,11 @@ pub fn migrate(root: &Path, legacy: &Path) -> Result<Value, String> {
 
 /// Mutate a task under one OS lock and one recoverable commit, including every task journal.
 /// Cached responses make replayed event IDs idempotent. A changed payload under one ID is refused.
+/// Legacy task state that a person must move with `task migrate --legacy` before hooks use it.
+pub fn legacy_migration_pending(root: &Path) -> bool {
+    root.join("legacy-location.json").exists() && !root.join("active.json").exists()
+}
+
 pub fn with_task(
     root: &Path,
     expected: Option<&str>,
@@ -390,10 +395,7 @@ pub fn with_task(
 ) -> Result<Value, String> {
     let tx = Transaction::open(root)?;
     let active = active_task(root)?;
-    if active.is_none()
-        && root.join("legacy-location.json").exists()
-        && !root.join("active.json").exists()
-    {
+    if active.is_none() && legacy_migration_pending(root) {
         return Err(
             "legacy task state found; explicitly task migrate --legacy <directory> before use"
                 .to_owned(),
