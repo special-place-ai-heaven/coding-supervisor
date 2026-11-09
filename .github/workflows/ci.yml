@@ -176,17 +176,24 @@ jobs:
     steps:
       # `bash` must be Git Bash, not the WSL launcher in System32 that a self-hosted Windows PATH
       # can find first. A custom shell line cannot name "C:\Program Files\...": the runner splits
-      # it at the space. The runner user's Rust tools go on PATH too: the interim runner's
-      # service PATH has been seen both with and without them.
-      - name: Put Git Bash and the Rust tools first on PATH
+      # it at the space. The interim runner does not keep rustup between jobs (seen both present
+      # and absent from C:\Users\<runner user>\.cargo\bin), so, like the Linux job, this installs
+      # it when missing, with no default toolchain; the next step reads rust-toolchain.toml.
+      - name: Put Git Bash and rustup first on PATH
         shell: powershell
         run: |
+          $ErrorActionPreference = "Stop"
           $bin = Join-Path $env:ProgramFiles "Git\bin"
           if (-not (Test-Path (Join-Path $bin "bash.exe"))) { throw "Git Bash not found at $bin" }
           $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           $cargo = Join-Path $env:USERPROFILE ".cargo\bin"
-          $found = (Get-Command rustup -ErrorAction SilentlyContinue).Source
-          "USERPROFILE=$env:USERPROFILE CARGO_HOME=$env:CARGO_HOME RUSTUP_HOME=$env:RUSTUP_HOME; rustup.exe in ${cargo}: $(Test-Path (Join-Path $cargo 'rustup.exe')); on PATH: $found"
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue) -and -not (Test-Path (Join-Path $cargo "rustup.exe"))) {
+            "rustup is missing on $env:RUNNER_NAME; installing it into $cargo"
+            $init = Join-Path $env:RUNNER_TEMP "rustup-init.exe"
+            Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $init -UseBasicParsing
+            & $init -y --default-toolchain none --profile minimal --no-modify-path
+            if ($LASTEXITCODE -ne 0) { throw "rustup-init exited with $LASTEXITCODE" }
+          }
           if (Test-Path (Join-Path $cargo "rustup.exe")) {
             $cargo | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           }
