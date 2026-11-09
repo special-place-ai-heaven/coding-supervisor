@@ -185,6 +185,8 @@ jobs:
           if (-not (Test-Path (Join-Path $bin "bash.exe"))) { throw "Git Bash not found at $bin" }
           $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           $cargo = Join-Path $env:USERPROFILE ".cargo\bin"
+          $found = (Get-Command rustup -ErrorAction SilentlyContinue).Source
+          "USERPROFILE=$env:USERPROFILE CARGO_HOME=$env:CARGO_HOME RUSTUP_HOME=$env:RUSTUP_HOME; rustup.exe in ${cargo}: $(Test-Path (Join-Path $cargo 'rustup.exe')); on PATH: $found"
           if (Test-Path (Join-Path $cargo "rustup.exe")) {
             $cargo | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           }
