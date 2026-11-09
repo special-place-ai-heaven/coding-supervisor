@@ -2,15 +2,18 @@
 # The Rust toolchain is installed with rustup straight from rust-toolchain.toml,
 # so that file is the only place the version is written.
 #
-# Runner policy (owner, 2026-11-02): Linux jobs use the owner's self-hosted
-# "fresh" runners when one is online and idle, and GitHub-hosted ubuntu-latest
-# otherwise (the fresh runners live on the owner's home PC, which is not always
-# on). The runner job below decides; it needs the RUNNER_STATUS_TOKEN secret
-# (or RELEASE_PLEASE_TOKEN; read access to the organisation's self-hosted runners) and picks hosted
-# when that secret is absent or the lookup fails. Pull requests always run
-# hosted, so a fork's code never executes on a self-hosted machine. A hosted
-# windows-latest job runs for both, because the first user and the adapter's
-# path handling are Windows.
+# Runner policy (owner, 2026-11-02, extended 2026-11-09): a push, a release tag and a pull
+# request from this repository run on the owner's self-hosted runners: `changes` and the picker on
+# a fresh light runner, the Linux job on a fresh heavy runner when one is online and idle, the
+# Windows job on the interim Windows runner when it is online. Otherwise the test jobs fall back to
+# GitHub-hosted (the runners live on the owner's home PC, which is not always on). `changes` and
+# the picker have no fallback: when no light runner is online they wait in the queue, and so
+# does every check after them; a pull request labelled ci-hosted still runs. A fork's pull
+# request, or one labelled ci-hosted, runs entirely GitHub-hosted, so a fork's code never executes
+# on a self-hosted machine. pick-runner.yml holds the details; it needs the RUNNER_STATUS_TOKEN
+# secret (or RELEASE_PLEASE_TOKEN) and picks hosted when neither can read the runner list. Job
+# names never change with the runner, because they are required checks. Windows runs for every
+# change because the first user and the adapter's path handling are Windows.
 name: CI
 
 # Runs once per change (owner, 2026-11-03: remove all waste): a push to main and a pull
@@ -47,7 +50,7 @@ jobs:
   # documentation. A release tag (release.yml) always runs everything.
   changes:
     name: Decide whether to run
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","Linux","X64","fresh","light"]') || 'ubuntu-latest' }}
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
@@ -100,6 +103,7 @@ jobs:
           echo "run: $run"
 
   runner:
+    # Name kept for required-check stability; it picks the Windows runner too.
     name: Pick the Linux runner
     needs: changes
     if: needs.changes.outputs.run == 'true'
@@ -162,15 +166,44 @@ jobs:
 
   # Formatting, lint and the dependency check are the same on both systems and run on Linux.
   windows-hosted:
+    # Job name kept for required-check stability. The picker chooses the interim Windows runner
+    # when it is online on the self-hosted route, otherwise windows-latest.
     name: "Windows (hosted): test"
-    needs: changes
+    needs: [changes, runner]
     if: needs.changes.outputs.run == 'true'
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(needs.runner.outputs.windows) }}
     defaults:
       run:
         shell: bash
     steps:
+      # `bash` must be Git Bash, not the WSL launcher in System32 that a self-hosted Windows PATH
+      # can find first. A custom shell line cannot name "C:\Program Files\...": the runner splits
+      # it at the space. The interim runner does not keep rustup between jobs (seen both present
+      # and absent from C:\Users\<runner user>\.cargo\bin), so, like the Linux job, this installs
+      # it when missing, with no default toolchain; the next step reads rust-toolchain.toml.
+      - name: Put Git Bash and rustup first on PATH
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = Join-Path $env:ProgramFiles "Git\bin"
+          if (-not (Test-Path (Join-Path $bin "bash.exe"))) { throw "Git Bash not found at $bin" }
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $cargo = Join-Path $env:USERPROFILE ".cargo\bin"
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue) -and -not (Test-Path (Join-Path $cargo "rustup.exe"))) {
+            "rustup is missing on $env:RUNNER_NAME; installing it into $cargo"
+            $init = Join-Path $env:RUNNER_TEMP "rustup-init.exe"
+            Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $init -UseBasicParsing
+            & $init -y --default-toolchain none --profile minimal --no-modify-path
+            if ($LASTEXITCODE -ne 0) { throw "rustup-init exited with $LASTEXITCODE" }
+          }
+          if (Test-Path (Join-Path $cargo "rustup.exe")) {
+            $cargo | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+
       - uses: actions/checkout@v7
+
+      - name: Show which bash and rustup run the steps
+        run: command -v bash rustup && bash --version | head -n 1
 
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
