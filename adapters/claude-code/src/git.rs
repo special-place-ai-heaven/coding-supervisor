@@ -113,6 +113,15 @@ pub fn worktree_tree(cwd: &Path, state_dir: &Path) -> Option<String> {
     // An absent index (nothing staged yet) starts the scratch one empty.
     if real.is_file() {
         std::fs::copy(&real, &scratch).ok()?;
+        // Racy git: an entry no older than the index file is re-read, because a same-size edit
+        // in that second leaves its stat unchanged. A copy dated now (Linux) would make git
+        // trust that entry and miss the edit, so the copy keeps the real index's time.
+        let time = std::fs::metadata(&real).and_then(|m| m.modified()).ok()?;
+        std::fs::File::options()
+            .write(true)
+            .open(&scratch)
+            .and_then(|f| f.set_modified(time))
+            .ok()?;
     }
     let env = [("GIT_INDEX_FILE", scratch.as_os_str())];
     // The gate's own fallback state directory inside the project is not content, and neither
@@ -195,4 +204,76 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> Receiver<Vec<u8>> {
         });
     }
     receiver
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    struct Dir(PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str], env: &[(&str, &Path)]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args(args)
+            .envs(env.iter().copied())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    fn set_time(path: &Path, time: std::time::SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|f| f.set_modified(time))
+            .unwrap();
+    }
+
+    /// Racy git: an edit made in the same second as the index, with the same size, still matches
+    /// the index entry's stat. Git notices it only because the entry is not older than the index
+    /// file itself, so the scratch copy must keep the index's time. The race is built directly:
+    /// the edited file and the index both get the time the entry recorded (ctime cannot be set,
+    /// so `core.trustctime` is off, as git's own same-second case behaves).
+    #[test]
+    fn the_tree_includes_an_edit_whose_stat_still_matches_the_index() {
+        let dir =
+            Dir(std::env::temp_dir().join(format!("supervisor-racy-index-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&dir.0);
+        let (repo, state) = (dir.0.join("repo"), dir.0.join("state"));
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        git(&repo, &["init", "-q"], &[]);
+        git(&repo, &["config", "core.trustctime", "false"], &[]);
+        let file = repo.join("a.rs");
+        std::fs::write(&file, "a1\n").unwrap();
+        // An hour back, so the scratch copy made now is in a later second than the entry, as a
+        // hook call after the edit would be (within the same second git re-reads anyway).
+        let recorded = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        set_time(&file, recorded);
+        git(&repo, &["add", "a.rs"], &[]);
+        git(&repo, &["commit", "-q", "-m", "base"], &[]);
+        std::fs::write(&file, "a2\n").unwrap();
+        set_time(&file, recorded);
+        set_time(&repo.join(".git/index"), recorded);
+
+        // What a commit of everything would record: a fresh index has no stat cache to trust.
+        let fresh = dir.0.join("fresh-index");
+        git(&repo, &["add", "-A"], &[("GIT_INDEX_FILE", &fresh)]);
+        let want = git(&repo, &["write-tree"], &[("GIT_INDEX_FILE", &fresh)]);
+        let head = git(&repo, &["rev-parse", "HEAD^{tree}"], &[]);
+        assert_ne!(want, head, "the edit must change the tree");
+
+        assert_eq!(worktree_tree(&repo, &state).as_deref(), Some(want.as_str()));
+    }
 }
