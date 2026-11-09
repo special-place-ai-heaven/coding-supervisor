@@ -75,6 +75,12 @@ pub fn run(args: &[String]) -> Result<(), Failure> {
             resolve_state_dir_checked(&flags.project()?, &env).map_err(Failure::Error)?;
         (root, "project")
     };
+    // The failure mode first: a level written beside a stale `failure open` must not be the
+    // only change that landed.
+    let failure_path = dir.join("failure");
+    if let Some(mode) = failure {
+        atomic_write(&failure_path, format!("{mode}\n").as_bytes()).map_err(Failure::Error)?;
+    }
     let path = dir.join("level");
     atomic_write(&path, format!("{}\n", level.name()).as_bytes()).map_err(Failure::Error)?;
     println!(
@@ -82,10 +88,11 @@ pub fn run(args: &[String]) -> Result<(), Failure> {
         level.name(),
         path.display()
     );
-    if let Some(mode) = failure {
-        let path = dir.join("failure");
-        atomic_write(&path, format!("{mode}\n").as_bytes()).map_err(Failure::Error)?;
-        println!("{} written: {}", failure_line(&dir), path.display());
+    // Every project write shows the failure mode, so an old `failure open` is never missed.
+    if failure.is_some() {
+        println!("{} written: {}", failure_line(&dir), failure_path.display());
+    } else if scope == "project" {
+        println!("{}", failure_line(&dir));
     }
     Ok(())
 }

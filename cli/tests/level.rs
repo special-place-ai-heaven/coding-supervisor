@@ -219,7 +219,7 @@ fn level_command_shows_and_writes_with_documented_output_and_exit_codes() {
     assert_eq!(
         stdout(&out),
         format!(
-            "level strict written (project): {}\n",
+            "level strict written (project): {}\nfailure: closed\n",
             f.state_root().join("level").display()
         )
     );
