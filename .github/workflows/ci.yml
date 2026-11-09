@@ -5,8 +5,10 @@
 # Runner policy (owner, 2026-11-02, extended 2026-11-09): a push, a release tag and a pull
 # request from this repository run on the owner's self-hosted runners: `changes` and the picker on
 # a fresh light runner, the Linux job on a fresh heavy runner when one is online and idle, the
-# Windows job on the interim Windows runner when it is online. Otherwise each falls back to
-# GitHub-hosted (the runners live on the owner's home PC, which is not always on). A fork's pull
+# Windows job on the interim Windows runner when it is online. Otherwise the test jobs fall back to
+# GitHub-hosted (the runners live on the owner's home PC, which is not always on). `changes` and
+# the picker have no fallback: when no light runner is online they wait in the queue, and so
+# does every check after them; a pull request labelled ci-hosted still runs. A fork's pull
 # request, or one labelled ci-hosted, runs entirely GitHub-hosted, so a fork's code never executes
 # on a self-hosted machine. pick-runner.yml holds the details; it needs the RUNNER_STATUS_TOKEN
 # secret (or RELEASE_PLEASE_TOKEN) and picks hosted when neither can read the runner list. Job
