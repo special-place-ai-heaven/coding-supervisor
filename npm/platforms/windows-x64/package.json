@@ -1,6 +1,6 @@
 {
   "name": "coding-supervisor-windows-x64",
-  "version": "0.13.2",
+  "version": "0.13.3",
   "description": "Windows x64 native binaries for coding-supervisor (supervisor, supervisor-mcp, supervisor-claude-code)",
   "license": "MIT",
   "repository": {

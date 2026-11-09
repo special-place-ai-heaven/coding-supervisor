@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.3](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.13.2...v0.13.3) (2026-11-09)
+
+
+### Bug Fixes
+
+* **gate:** read one documentation list, .github/docs-paths.txt, in the gate and CI ([b878be5](https://github.com/special-place-ai-heaven/coding-supervisor/commit/b878be57b32ed6a11c43c7e49da24a6f34f5a31a))
+* **gate:** read one documentation list, .github/docs-paths.txt, in the gate and CI ([a4805b1](https://github.com/special-place-ai-heaven/coding-supervisor/commit/a4805b1fbdcbe622b5d93087e4f7e6767be962d3))
+
 ## [0.13.2](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.13.1...v0.13.2) (2026-11-09)
 
 
