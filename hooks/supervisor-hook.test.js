@@ -13,8 +13,16 @@ const test = require("node:test");
 const ROOT = path.join(__dirname, "..");
 const HOOK = path.join(__dirname, "supervisor-hook.js");
 const EVENTS = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "SubagentStop", "Stop"];
-// The hook gives up on supervisor after 20 s; it must have answered and exited by this bound.
-const ANSWER_MS = 25000;
+// The hook gives up on supervisor after 20 s and must answer and exit before Claude Code stops
+// waiting for it: the smallest timeout in hooks.json, less a 2 s margin. On Windows the tree kill
+// (taskkill /t /f) takes 0.6-1.1 s for eight runs at once on an idle machine and up to 3.8 s when
+// every core is busy (measured 2026-11-09), so a bound tighter than Claude Code's own fails on a
+// loaded runner while the hook still answers in time.
+const ANSWER_MS = (() => {
+  const { hooks } = JSON.parse(fs.readFileSync(path.join(__dirname, "hooks.json"), "utf8"));
+  const seconds = Object.values(hooks).flatMap((matchers) => matchers.flatMap((m) => m.hooks.map((h) => h.timeout)));
+  return Math.min(...seconds) * 1000 - 2000;
+})();
 
 const dirs = [];
 test.after(() => dirs.forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })));
