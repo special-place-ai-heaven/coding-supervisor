@@ -191,13 +191,33 @@ impl Decision {
     }
 }
 
+/// The advisory answer to an adapter error: the call goes ahead. Used where nothing is governed
+/// (no payload or project known, level `off` or `audit`, a person's `failure open`) and for
+/// read-only calls and events that cannot refuse; see [`adapter_error`].
 pub fn fail_open(what: &str) -> Decision {
-    // shortcut: fails open on adapter error, upgrade to fail-closed once the adapter has a month of clean journals
     Decision::System(format!("GATE adapter error: {what}"))
+}
+
+/// An adapter error in a project at `enforce` or `strict` (an unreadable level runs there too)
+/// fails closed: a non-read-only PreToolUse is denied and a stop refused. `failure_open` is the
+/// person's per-project way out (`supervisor level <level> --failure open`).
+fn adapter_error(payload: &Value, env: &Env, failure_open: bool, what: &str) -> Decision {
+    if env.level.level < Level::Enforce || failure_open {
+        return fail_open(what);
+    }
+    let why = format!("GATE: the gate fails closed: {what}");
+    match text(payload, "hook_event_name").unwrap_or_default() {
+        "PreToolUse" if !(read_only_tool(payload) || read_only_command(payload)) => {
+            Decision::Deny(why)
+        }
+        "Stop" | "SubagentStop" => Decision::Block(why),
+        _ => fail_open(what),
+    }
 }
 
 /// The binary's whole job: payload text in, decision JSON text out.
 pub fn run_hook(input: &str) -> Option<String> {
+    // Without a JSON payload and its cwd no project, so no level, is known: the call goes ahead.
     let decision = match serde_json::from_str::<Value>(input) {
         Err(e) => fail_open(&format!("payload is not JSON ({e}); not journaled")),
         Ok(payload) => match payload.get("cwd").and_then(Value::as_str) {
@@ -951,7 +971,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     }
                 }
                 env.state_dir = dir.to_path_buf();
-                let decision = handle_inner(payload, env, observed);
+                let decision = handle_inner(payload, env, observed, &root);
                 env.state_dir = root.clone();
                 Ok(decision.to_json().unwrap_or(Value::Null))
             },
@@ -959,7 +979,14 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
     });
     match result {
         Ok(Value::Null) => Decision::None,
-        Ok(v) => decision_from_json(&v),
+        Ok(v) => decision_from_json(&v).unwrap_or_else(|| {
+            adapter_error(
+                payload,
+                env,
+                level::failure_open(&root),
+                "invalid cached hook response",
+            )
+        }),
         Err(what) => match event {
             "PreToolUse" => Decision::Deny(format!("GATE: {what}")),
             "Stop" | "SubagentStop" => Decision::Block(format!("GATE: {what}")),
@@ -968,20 +995,23 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
     }
 }
 
-fn decision_from_json(v: &Value) -> Decision {
+/// `None` when `v` holds no decision (a corrupt cached response).
+fn decision_from_json(v: &Value) -> Option<Decision> {
     if let Some(message) = v.get("systemMessage").and_then(Value::as_str) {
-        return Decision::System(message.to_owned());
+        return Some(Decision::System(message.to_owned()));
     }
     if v.get("decision").and_then(Value::as_str) == Some("block") {
-        return Decision::Block(text(v, "reason").unwrap_or_default().to_owned());
+        return Some(Decision::Block(
+            text(v, "reason").unwrap_or_default().to_owned(),
+        ));
     }
     if let Some(output) = v.get("hookSpecificOutput") {
         if text(output, "permissionDecision") == Some("deny") {
-            return Decision::Deny(
+            return Some(Decision::Deny(
                 text(output, "permissionDecisionReason")
                     .unwrap_or_default()
                     .to_owned(),
-            );
+            ));
         }
         // The event name rides in the cached JSON; keep it (a PreToolUse advisory stays one).
         let event = match text(output, "hookEventName") {
@@ -989,17 +1019,24 @@ fn decision_from_json(v: &Value) -> Decision {
             Some("UserPromptSubmit") => "UserPromptSubmit",
             _ => "PostToolUse",
         };
-        return Decision::Context {
+        return Some(Decision::Context {
             event,
             text: text(output, "additionalContext")
                 .unwrap_or_default()
                 .to_owned(),
-        };
+        });
     }
-    fail_open("invalid cached hook response")
+    None
 }
 
-fn handle_inner(payload: &Value, env: &mut Env, observed: Result<Candidate, String>) -> Decision {
+/// `root` is the state root, which holds the project's `failure` setting; `env.state_dir` is the
+/// staged task here.
+fn handle_inner(
+    payload: &Value,
+    env: &mut Env,
+    observed: Result<Candidate, String>,
+    root: &Path,
+) -> Decision {
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let agent = text(payload, "agent_id").unwrap_or("main");
     let mut reasons: Vec<String> = env.level.error.iter().cloned().collect();
@@ -1023,7 +1060,13 @@ fn handle_inner(payload: &Value, env: &mut Env, observed: Result<Candidate, Stri
             "Stop" | "SubagentStop" => {
                 Decision::Block(format!("GATE: evidence unavailable: {what}"))
             }
-            _ => fail_open(&what),
+            _ => {
+                let open = level::failure_open(root);
+                if open && env.level.level >= Level::Enforce {
+                    reasons.push("failure open (advisory)".to_owned());
+                }
+                adapter_error(payload, env, open, &what)
+            }
         }
     });
     let line = journal::line(
@@ -1037,7 +1080,19 @@ fn handle_inner(payload: &Value, env: &mut Env, observed: Result<Candidate, Stri
     JOURNAL.set(Journal::Written);
     match state::append_line(&env.state_dir.join("events.jsonl"), &line) {
         Ok(()) => decision,
-        Err(what) => fail_open(&format!("events journal not written: {what}")),
+        // A refusal stands whether or not its line was written.
+        Err(_)
+            if env.level.level >= Level::Enforce
+                && matches!(decision, Decision::Deny(_) | Decision::Block(_)) =>
+        {
+            decision
+        }
+        Err(what) => adapter_error(
+            payload,
+            env,
+            level::failure_open(root),
+            &format!("events journal not written: {what}"),
+        ),
     }
 }
 

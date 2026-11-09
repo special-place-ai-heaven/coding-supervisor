@@ -656,15 +656,17 @@ fn replay_gap1_check_citing_another_command_is_refused() {
     assert_eq!(gate(&env)["state"], "verifying");
 }
 
+/// WP1: a contract that does not load is an adapter error, so at `enforce` the mutation is
+/// denied (fails closed), naming the criterion; nothing is judged or saved.
 #[test]
-fn contract_without_a_command_fails_open_naming_the_criterion() {
+fn contract_without_a_command_fails_closed_naming_the_criterion() {
     let d = dir("no-command");
     let mut c = contract(&[("C2", true)], &["src/"]);
     c["criteria"][0].as_object_mut().unwrap().remove("command");
     let mut env = env(&d, Some(c), fake("one", &["src/lib.rs"]));
     let r = handle(&pre("Write"), &mut env);
     assert!(
-        matches!(r, Decision::System(ref m) if m.starts_with("GATE adapter error: ")
+        matches!(r, Decision::Deny(ref m) if m.starts_with("GATE: the gate fails closed: ")
             && m.ends_with("criterion C2 has no command; name the command a receipt for it must cite")),
         "{r:?}"
     );
