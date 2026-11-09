@@ -251,6 +251,45 @@ fn a_docs_only_edit_keeps_the_evidence() {
     accepted(&f, &mut env);
 }
 
+/// The one documentation list both the gate and CI read: `.github/docs-paths.txt`, with a CI
+/// workflow that has no `paths-ignore` (as this repository's, since every PR reports its checks).
+fn docs_paths_file(f: &Fixture) {
+    let github = f.project.join(".github");
+    fs::create_dir_all(github.join("workflows")).unwrap();
+    fs::write(
+        github.join("workflows/ci.yml"),
+        "on:\n  push:\n    branches: [main]\n  pull_request:\njobs: {}\n",
+    )
+    .unwrap();
+    fs::write(
+        github.join("docs-paths.txt"),
+        "# Paths CI and the gate treat as documentation only.\ndocs/**\n\nREADME.md\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_docs_only_edit_listed_in_docs_paths_keeps_the_evidence() {
+    let (f, mut env) = setup();
+    docs_scope(&env);
+    docs_paths_file(&f);
+    passing_run(&f, &mut env);
+    docs_edit(&f);
+    git(&f.project, &["add", "-A"]);
+    git(&f.project, &["commit", "-q", "-m", "docs"]);
+    accepted(&f, &mut env);
+}
+
+#[test]
+fn with_a_docs_paths_list_a_code_edit_makes_the_evidence_stale() {
+    let (f, mut env) = setup();
+    docs_scope(&env);
+    docs_paths_file(&f);
+    passing_run(&f, &mut env);
+    fs::write(f.project.join("src/a.rs"), "a3\n").unwrap();
+    refused(&f, &mut env);
+}
+
 /// Review of G28: a project whose CI names no documentation paths keeps the exact rule.
 #[test]
 fn without_a_ci_docs_list_a_docs_edit_invalidates() {

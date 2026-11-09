@@ -155,9 +155,20 @@ pub fn worktree_tree(cwd: &Path, state_dir: &Path) -> Option<String> {
     tree
 }
 
-/// G28: the `paths-ignore` entries of the project's `.github/workflows/ci.yml` (what its CI
-/// treats as documentation only), as git glob patterns. Empty when the file or list is absent.
+/// G28: what the project's CI treats as documentation only, as git glob patterns. The lines of
+/// `.github/docs-paths.txt` when that file exists (one list that CI reads too; blank lines and
+/// `#` comments skipped), otherwise the `paths-ignore` entries of `.github/workflows/ci.yml`.
+/// Empty when neither names a path.
 fn ci_docs_only(top: &Path) -> Vec<String> {
+    if let Ok(text) = std::fs::read_to_string(top.join(".github/docs-paths.txt")) {
+        // A negated or absolute entry is not a plain path; leave it counted.
+        return text
+            .lines()
+            .map(str::trim)
+            .filter(|p| !p.is_empty() && !p.starts_with(['#', '!', '/']))
+            .map(str::to_owned)
+            .collect();
+    }
     let Ok(text) = std::fs::read_to_string(top.join(".github/workflows/ci.yml")) else {
         return Vec::new();
     };

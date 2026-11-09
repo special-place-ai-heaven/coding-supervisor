@@ -17,7 +17,7 @@ name: CI
 # request, not a push to every branch or tag. The workflow itself always runs, so every pull
 # request reports the same checks (a required check would otherwise wait forever on a PR that no
 # workflow ran for); the `changes` job skips the heavy jobs, which then report as skipped, when a
-# change touches documentation only (`DOCS` below) or is release-please's version-only pull request
+# change touches documentation only (.github/docs-paths.txt, which the gate reads too) or is release-please's version-only pull request
 # or its merge into main. The skill templates under skills/ are compiled into the binary, so they
 # are not documentation. release.yml calls this workflow on each release tag, which always runs
 # everything.
@@ -65,8 +65,6 @@ jobs:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
-          # Root-level files and the docs folder; the same list ci.yml once had under paths-ignore.
-          DOCS: '^(docs/.*|README\.md|CHANGELOG\.md|CLAUDE\.md|HANDOVER\.md|LICENSE)$'
         run: |
           run=true
           case "$HEAD_REF" in release-please--*) run=false ;; esac
@@ -74,17 +72,25 @@ jobs:
             run=false
           fi
           # Which commits to compare; none (a tag, a new branch) means run everything.
-          range=
+          base= range=
           if [ "$EVENT" = pull_request ]; then
-            range="$PR_BASE...$PR_HEAD"
+            base=$PR_BASE range="$PR_BASE...$PR_HEAD"
           elif [ "$EVENT" = push ] && [ "$REF" = "refs/heads/main" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
-            range="$BEFORE..$AFTER"
+            base=$BEFORE range="$BEFORE..$AFTER"
           fi
           if [ "$run" = true ] && [ -n "$range" ]; then
+            # The documentation list is .github/docs-paths.txt, the same file the gate reads (one git
+            # glob per line). It is read as it stands on the base commit, so a change cannot widen
+            # the list to skip its own checks; a change to the list itself is not documentation.
+            mapfile -t docs < <(git show "$base:.github/docs-paths.txt" 2>/dev/null \
+              | sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' -e '/^[#!\/]/d')
             # --no-renames lists both paths of a move, so moving a source file into docs/ still runs.
             if ! files=$(git diff --name-only --no-renames "$range"); then
               echo "::warning::could not list the changed files of $range; running everything"
-            elif [ -n "$files" ] && ! printf '%s\n' "$files" | grep -Evq "$DOCS"; then
+            elif [ -n "$files" ] && [ "${#docs[@]}" -gt 0 ] \
+                && ! code=$(git diff --name-only --no-renames "$range" -- . "${docs[@]/#/:(top,exclude,glob)}"); then
+              echo "::warning::could not match the changed files against the documentation list; running everything"
+            elif [ -n "$files" ] && [ "${#docs[@]}" -gt 0 ] && [ -z "$code" ]; then
               echo "documentation only:"
               printf '%s\n' "$files"
               run=false
