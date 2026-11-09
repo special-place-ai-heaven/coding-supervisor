@@ -1,16 +1,17 @@
 # Picks where the Linux and Windows test jobs run.
 #
-# Route: a push, a release tag and a pull request from this repository run on the owner's
-# self-hosted runners; a fork's pull request, or a pull request labelled ci-hosted, runs
-# GitHub-hosted, so a fork's code never executes on a self-hosted machine. This job itself runs
-# where the route says (a fresh light runner, or ubuntu-latest), and the step reads that back
-# from RUNNER_ENVIRONMENT, so the route expression below is the only place the rule is written.
+# Route (SELF_HOSTED below, the only place the rule is written): a push, a release tag and a pull
+# request from this repository run their tests on the owner's self-hosted runners; a fork's pull
+# request, or a pull request labelled ci-hosted, runs GitHub-hosted, so a fork's code never
+# executes on a self-hosted machine. This job itself always runs GitHub-hosted, so it never waits
+# for the owner's PC (owner, 2026-11-09).
 #
 # On the self-hosted route:
 # - Linux: a fresh heavy runner when one is online and idle, otherwise ubuntu-latest (owner,
 #   2026-11-02: the fresh runners live on the owner's home PC, which is not always on).
 # - Windows: the interim Windows runner when it is online, otherwise windows-latest.
-# The lookup calls the GitHub API with curl (the fresh runners have no gh or jq) using
+# The lookup calls the GitHub API with curl and needs no JSON tool, so it also runs on a fresh
+# runner, which has no gh or jq. It uses
 # RUNNER_STATUS_TOKEN, else RELEASE_PLEASE_TOKEN (both org-wide secrets); it needs read access to
 # the organisation's self-hosted runners. Every fallback to GitHub-hosted on the self-hosted route
 # is a workflow warning, so it shows on the run's summary.
@@ -34,7 +35,7 @@ permissions:
 jobs:
   pick:
     name: Pick the Linux runner
-    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","Linux","X64","fresh","light"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     outputs:
       linux: ${{ steps.pick.outputs.linux }}
       windows: ${{ steps.pick.outputs.windows }}
@@ -45,12 +46,13 @@ jobs:
           STATUS_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
           RELEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           ORG: ${{ github.repository_owner }}
+          SELF_HOSTED: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) }}
         run: |
           linux='"ubuntu-latest"'
           windows='"windows-latest"'
           heavy='["self-hosted","Linux","X64","fresh","heavy"]'
           interim='["self-hosted","Windows","X64","windows-host-interim"]'
-          if [ "$RUNNER_ENVIRONMENT" != "self-hosted" ]; then
+          if [ "$SELF_HOSTED" != "true" ]; then
             echo "fork or ci-hosted pull request: GitHub-hosted by rule"
           else
             read_ok=false

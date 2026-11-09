@@ -2,18 +2,17 @@
 # The Rust toolchain is installed with rustup straight from rust-toolchain.toml,
 # so that file is the only place the version is written.
 #
-# Runner policy (owner, 2026-11-02, extended 2026-11-09): a push, a release tag and a pull
-# request from this repository run on the owner's self-hosted runners: `changes` and the picker on
-# a fresh light runner, the Linux job on a fresh heavy runner when one is online and idle, the
-# Windows job on the interim Windows runner when it is online. Otherwise the test jobs fall back to
-# GitHub-hosted (the runners live on the owner's home PC, which is not always on). `changes` and
-# the picker have no fallback: when no light runner is online they wait in the queue, and so
-# does every check after them; a pull request labelled ci-hosted still runs. A fork's pull
-# request, or one labelled ci-hosted, runs entirely GitHub-hosted, so a fork's code never executes
-# on a self-hosted machine. pick-runner.yml holds the details; it needs the RUNNER_STATUS_TOKEN
-# secret (or RELEASE_PLEASE_TOKEN) and picks hosted when neither can read the runner list. Job
-# names never change with the runner, because they are required checks. Windows runs for every
-# change because the first user and the adapter's path handling are Windows.
+# Runner policy (owner, 2026-11-02, extended 2026-11-09): for a push, a release tag and a pull
+# request from this repository the test jobs run on the owner's self-hosted runners: Linux on a
+# fresh heavy runner when one is online and idle, Windows on the interim Windows runner when it is
+# online, each GitHub-hosted otherwise (the runners live on the owner's home PC, which is not
+# always on). `changes` and the picker take seconds and always run GitHub-hosted, so CI never
+# waits for that PC. A fork's pull request, or one labelled ci-hosted, runs entirely
+# GitHub-hosted, so a fork's code never executes on a self-hosted machine. pick-runner.yml holds
+# the details; it needs the RUNNER_STATUS_TOKEN secret (or RELEASE_PLEASE_TOKEN) and picks hosted
+# when neither can read the runner list. Job names never change with the runner, because they are
+# required checks. Windows runs for every change because the first user and the adapter's path
+# handling are Windows.
 name: CI
 
 # Runs once per change (owner, 2026-11-03: remove all waste): a push to main and a pull
@@ -50,7 +49,7 @@ jobs:
   # documentation. A release tag (release.yml) always runs everything.
   changes:
     name: Decide whether to run
-    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","Linux","X64","fresh","light"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
