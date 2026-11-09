@@ -200,7 +200,7 @@ fn level_command_shows_and_writes_with_documented_output_and_exit_codes() {
     let out = f.level(&[]);
     assert_eq!(
         (out.status.code(), stdout(&out)),
-        (Some(0), "level: enforce (default)\n")
+        (Some(0), "level: enforce (default)\nfailure: closed\n")
     );
     let out = f.level(&["lite", "--global"]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
@@ -211,7 +211,10 @@ fn level_command_shows_and_writes_with_documented_output_and_exit_codes() {
             f.config.join("level").display()
         )
     );
-    assert_eq!(stdout(&f.level(&[])), "level: audit (global)\n");
+    assert_eq!(
+        stdout(&f.level(&[])),
+        "level: audit (global)\nfailure: closed\n"
+    );
     let out = f.level(&["ultra"]);
     assert_eq!(
         stdout(&out),
@@ -220,7 +223,10 @@ fn level_command_shows_and_writes_with_documented_output_and_exit_codes() {
             f.state_root().join("level").display()
         )
     );
-    assert_eq!(stdout(&f.level(&[])), "level: strict (project)\n");
+    assert_eq!(
+        stdout(&f.level(&[])),
+        "level: strict (project)\nfailure: closed\n"
+    );
     for usage in [&["bogus"][..], &["--global"], &["full", "--bogus"]] {
         let out = f.level(usage);
         assert_eq!(out.status.code(), Some(2), "{usage:?}: {out:?}");
@@ -405,7 +411,7 @@ fn showing_the_level_creates_no_state() {
     let out = f.level(&[]);
     assert_eq!(
         (out.status.code(), stdout(&out)),
-        (Some(0), "level: enforce (default)\n")
+        (Some(0), "level: enforce (default)\nfailure: closed\n")
     );
     assert!(!f.state.exists(), "show created {}", f.state.display());
 }
@@ -723,7 +729,10 @@ fn agents_cannot_reset_rounds_or_amend_the_floor() {
 #[test]
 fn modes_have_new_names_and_old_names_still_work() {
     let f = Fixture::new("modes");
-    assert_eq!(stdout(&f.level(&[])), "level: enforce (default)\n");
+    assert_eq!(
+        stdout(&f.level(&[])),
+        "level: enforce (default)\nfailure: closed\n"
+    );
     for (word, name) in [
         ("audit", "audit"),
         ("lite", "audit"),
@@ -734,10 +743,16 @@ fn modes_have_new_names_and_old_names_still_work() {
         ("off", "off"),
     ] {
         assert_eq!(f.level(&[word]).status.code(), Some(0), "{word}");
-        assert_eq!(stdout(&f.level(&[])), format!("level: {name} (project)\n"));
+        assert_eq!(
+            stdout(&f.level(&[])),
+            format!("level: {name} (project)\nfailure: closed\n")
+        );
     }
     fs::write(f.state_root().join("level"), "ultra\n").unwrap();
-    assert_eq!(stdout(&f.level(&[])), "level: strict (project)\n");
+    assert_eq!(
+        stdout(&f.level(&[])),
+        "level: strict (project)\nfailure: closed\n"
+    );
 }
 
 /// M3: `supervisor level status` shows the mode like the bare command, so the plugin's
@@ -748,7 +763,7 @@ fn level_status_shows_the_mode() {
     let out = f.level(&["status"]);
     assert_eq!(
         (out.status.code(), stdout(&out)),
-        (Some(0), "level: enforce (default)\n")
+        (Some(0), "level: enforce (default)\nfailure: closed\n")
     );
 }
 

@@ -26,7 +26,7 @@ const USAGE: &str = "usage: supervisor mcp [--project <dir>]  (serve the gate as
        supervisor task add-check --criterion <id> --command <command> --reason <text> [--project <dir>]  (a person's command: add a check where none is discovered, while no task is active)
        supervisor task cancel --task <active-id> --reason <text> [--project <dir>]  (a person's command: end the active task, prompt-managed or not, without a session)
        supervisor intent apply --proposal <json> [--project <dir>]  (the intent_apply call from a shell, for a session without the supervisor MCP server)
-       supervisor level [off|audit|enforce|strict] [--project <dir>] [--global]  (no level: show the effective one; a level: write it for the project, or with --global for the user; lite, full and ultra are accepted aliases; exit 0 done, 1 error, 2 usage)
+       supervisor level [off|audit|enforce|strict] [--project <dir>] [--global] [--failure open|closed]  (no level: show the effective one and the failure mode; a level: write it for the project, or with --global for the user; --failure open makes adapter errors advisory for the project instead of failing closed; lite, full and ultra are accepted aliases; exit 0 done, 1 error, 2 usage)
        supervisor status [--project <dir>] [--harness <claude-code|codex>] [--json]
        supervisor verdict [--project <dir>] [--task <active-id>] [--require <observed|asserted>] [--json]  (exit 0 pass, 3 fail, 1 could not answer, 2 usage; stdout empty on 1 and 2)
        supervisor install --harness <claude-code|codex|cursor|omp|grok> [--project <dir>] [--home <dir>] [--binary <path>] [--dry-run]
@@ -143,6 +143,7 @@ fn hook() -> ExitCode {
     let mut input = String::new();
     let output = match io::stdin().read_to_string(&mut input) {
         Ok(_) => run_hook(&input),
+        // No payload, so no project or level is known: the call goes ahead.
         Err(e) => fail_open(&format!("stdin not read ({e}); not journaled"))
             .to_json()
             .map(|v| v.to_string()),
