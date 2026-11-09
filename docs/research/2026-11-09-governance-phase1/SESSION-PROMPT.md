@@ -9,7 +9,7 @@ You are working in the coding-supervisor repository (`E:\project\coding-supervis
 ## Read first
 
 1. `CLAUDE.md` and `HANDOVER.md` in this repo. They are binding.
-2. `docs/research/2026-11-09-governance-phase1/PHASE0-REPORT.md`: the read-only discovery that led here. Use §3 (what exists vs the spec, with file:line), §5 "Local supervisor" and "Receipt signing options", §6 (what each layer can and cannot enforce) and §8. Ignore everything about the VPS, the server crate, remote MCP and deployment.
+2. The Phase 0 report, kept off the repository because it describes private infrastructure (owner's machine: `%USERPROFILE%\.claude\private\coding-supervisor\PHASE0-REPORT.md`): the read-only discovery that led here. Use §3 (what exists vs the spec, with file:line), §5 "Local supervisor" and "Receipt signing options", §6 (what each layer can and cannot enforce) and §8. Ignore everything about the VPS, the server crate, remote MCP and deployment.
 3. The spec `C:\Users\rakovnik\Downloads\CLAUDE_CODE_HARNESS_BOOTSTRAP.md`: sections 3 (four planes), 4 (hooks and fail-closed), 5 (limits), 9 (test matrix) and Addendum G (receipts). The Addendum's server parts are out of scope.
 
 ## Binding constraints
