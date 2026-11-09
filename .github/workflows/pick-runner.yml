@@ -10,9 +10,10 @@
 # - Linux: a fresh heavy runner when one is online and idle, otherwise ubuntu-latest (owner,
 #   2026-11-02: the fresh runners live on the owner's home PC, which is not always on).
 # - Windows: the interim Windows runner when it is online, otherwise windows-latest.
-# The lookup uses RUNNER_STATUS_TOKEN, else RELEASE_PLEASE_TOKEN (both org-wide secrets); it needs
-# read access to the organisation's self-hosted runners. If neither token can read the list, both
-# answers are GitHub-hosted.
+# The lookup calls the GitHub API with curl (the fresh runners have no gh or jq) using
+# RUNNER_STATUS_TOKEN, else RELEASE_PLEASE_TOKEN (both org-wide secrets); it needs read access to
+# the organisation's self-hosted runners. Every fallback to GitHub-hosted on the self-hosted route
+# is a workflow warning, so it shows on the run's summary.
 # shortcut: availability is checked once at pick time; if another job takes the runner first,
 # this job waits in that runner's queue until it frees up.
 name: Pick runner
@@ -49,25 +50,51 @@ jobs:
           windows='"windows-latest"'
           heavy='["self-hosted","Linux","X64","fresh","heavy"]'
           interim='["self-hosted","Windows","X64","windows-host-interim"]'
-          # One line per runner: <count of idle heavy> <count of online interim Windows>.
-          filter='[.runners[] | select(.status == "online")] | "\([.[] | select(.busy == false and any(.labels[]; .name == "heavy"))] | length) \([.[] | select(any(.labels[]; .name == "windows-host-interim"))] | length)"'
           if [ "$RUNNER_ENVIRONMENT" != "self-hosted" ]; then
-            echo "fork or ci-hosted pull request: GitHub-hosted"
-          elif ! command -v gh > /dev/null; then
-            echo "::warning::gh is not installed on this runner; GitHub-hosted"
+            echo "fork or ci-hosted pull request: GitHub-hosted by rule"
           else
+            read_ok=false
             for name in STATUS_TOKEN RELEASE_TOKEN; do
               token="${!name}"
               [ -n "$token" ] || { echo "$name: not set"; continue; }
-              if counts=$(GH_TOKEN="$token" gh api "orgs/$ORG/actions/runners" --paginate --jq "$filter" 2>/dev/null); then
-                read -r idle_heavy online_windows <<< "$(echo "$counts" | awk '{h += $1; w += $2} END {print h + 0, w + 0}')"
-                echo "$name: runner list read; idle heavy: $idle_heavy; online interim Windows: $online_windows"
-                [ "$idle_heavy" -gt 0 ] && linux="$heavy"
-                [ "$online_windows" -gt 0 ] && windows="$interim"
+              # shortcut: one page of 100 runners; the total_count check below notices more.
+              if ! json=$(curl -fsS --max-time 20 -H "Authorization: Bearer $token" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/orgs/$ORG/actions/runners?per_page=100"); then
+                echo "$name: cannot read the organisation's runner list"
+                continue
+              fi
+              read_ok=true
+              # No JSON parser on the runner: one record per runner, starting at its "os" key,
+              # which the API returns before status, busy and labels. A record count that differs
+              # from total_count means that shape changed, and the answer stays hosted.
+              flat=$(printf '%s' "$json" | tr -d '[:space:]')
+              total=$(printf '%s' "$flat" | grep -o '"total_count":[0-9]*' | cut -d: -f2 || true)
+              records=$(printf '%s' "$flat" | sed 's/"os":/\n/g' | tail -n +2)
+              count=$(printf '%s\n' "$records" | grep -c . || true)
+              if [ -z "$total" ] || [ "$count" != "$total" ]; then
+                echo "::warning::runner list not understood ($count records, total_count ${total:-missing}); the tests run GitHub-hosted"
                 break
               fi
-              echo "$name: cannot read the organisation's runner list"
+              online=$(printf '%s\n' "$records" | grep '"status":"online"' || true)
+              idle_heavy=$(printf '%s\n' "$online" | grep '"busy":false' | grep -c '"name":"heavy"' || true)
+              online_windows=$(printf '%s\n' "$online" | grep -c '"name":"windows-host-interim"' || true)
+              echo "$name: $total runners; idle heavy: $idle_heavy; online interim Windows: $online_windows"
+              if [ "$idle_heavy" -gt 0 ]; then
+                linux="$heavy"
+              else
+                echo "::warning::no idle fresh heavy runner; the Linux tests run GitHub-hosted"
+              fi
+              if [ "$online_windows" -gt 0 ]; then
+                windows="$interim"
+              else
+                echo "::warning::the interim Windows runner is offline; the Windows tests run GitHub-hosted"
+              fi
+              break
             done
+            if [ "$read_ok" = false ]; then
+              echo "::warning::no token could read the runner list; the tests run GitHub-hosted"
+            fi
           fi
           echo "linux=$linux" >> "$GITHUB_OUTPUT"
           echo "windows=$windows" >> "$GITHUB_OUTPUT"

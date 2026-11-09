@@ -172,9 +172,22 @@ jobs:
     runs-on: ${{ fromJSON(needs.runner.outputs.windows) }}
     defaults:
       run:
-        shell: '"C:\Program Files\Git\bin\bash.exe" --noprofile --norc -e -o pipefail {0}'
+        shell: bash
     steps:
+      # `bash` must be Git Bash, not the WSL launcher in System32 that a self-hosted Windows PATH
+      # can find first. A custom shell line cannot name "C:\Program Files\...": the runner splits
+      # it at the space.
+      - name: Put Git Bash first on PATH
+        shell: powershell
+        run: |
+          $bin = Join-Path $env:ProgramFiles "Git\bin"
+          if (-not (Test-Path (Join-Path $bin "bash.exe"))) { throw "Git Bash not found at $bin" }
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - uses: actions/checkout@v7
+
+      - name: Show which bash runs the steps
+        run: command -v bash && bash --version | head -n 1
 
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
