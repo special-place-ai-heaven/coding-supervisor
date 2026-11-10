@@ -615,7 +615,17 @@ fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) -> Option
                 .and_then(|c| lifecycle::task_identity(&dir, &c.id.0).ok())
                 .unwrap_or_default();
             let agent = text(payload, "agent_id").unwrap_or("main");
-            if let Err(e) = observation::record_mutation(&dir, payload, &task, agent, now) {
+            // The tree a handback is compared with: the task's bound worktree, else `cwd`.
+            // Only a subagent hands back, so the chair's row needs none.
+            let tree = || {
+                if agent == "main" {
+                    return None;
+                }
+                let at = crate::binding::bound_root(&dir)
+                    .or_else(|| text(payload, "cwd").map(str::to_owned))?;
+                crate::git::worktree_tree(Path::new(&at), &dir)
+            };
+            if let Err(e) = observation::record_mutation(&dir, payload, &task, agent, now, tree) {
                 let why = format!("GATE: the gate could not journal this tool ({e}); retry");
                 return Some(match env.level.level {
                     Level::Audit => Decision::System(why),
@@ -642,6 +652,25 @@ enum Journal {
 
 thread_local! {
     static JOURNAL: std::cell::Cell<Journal> = const { std::cell::Cell::new(Journal::StateUnproven) };
+    /// G44: this SubagentStop's agent left the worktree as it found it. Set per hook call,
+    /// before the state lock is taken, because the answer comes from git.
+    static UNCHANGED_HANDBACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// G44: whether the stopping agent's `mutation` row holds the worktree tree that git reports
+/// now. False whenever that cannot be shown (no row or tree, no git, unreadable state).
+fn unchanged_handback(root: &Path, payload: &Value) -> bool {
+    let agent = text(payload, "agent_id").unwrap_or("main");
+    let Ok(Some(active)) = lifecycle::active_task(root) else {
+        return false;
+    };
+    let Ok(Some(Some(before))) = observation::mutation_tree(&active.dir, agent) else {
+        return false;
+    };
+    crate::binding::bound_root(&active.dir)
+        .or_else(|| text(payload, "cwd").map(str::to_owned))
+        .and_then(|at| crate::git::worktree_tree(Path::new(&at), &active.dir))
+        .is_some_and(|now| now == before)
 }
 
 /// F11e: a refusal decided before the task gate (prompt gate, guard, policy) still gets its
@@ -985,6 +1014,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
     });
     // Observed once, before with_task takes state.lock: the candidate's git never runs under it.
     let observed = env.candidate.observe();
+    UNCHANGED_HANDBACK.set(event == "SubagentStop" && unchanged_handback(&root, payload));
     let candidate = observed
         .as_ref()
         .map(|c| format!("{}:{}", c.id.base_commit, c.id.dirty_digest))
@@ -1018,14 +1048,16 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                             Some(if event == "PreToolUse" {
                                 Decision::Deny("GATE: propose the current prompt intent before mutation or delegation".to_owned())
                             } else if event == "SubagentStop"
-                                && !observation::made_mutation(
-                                    dir,
-                                    text(payload, "agent_id").unwrap_or("main"),
-                                )?
+                                && (UNCHANGED_HANDBACK.get()
+                                    || !observation::made_mutation(
+                                        dir,
+                                        text(payload, "agent_id").unwrap_or("main"),
+                                    )?)
                             {
-                                // G21: a worker that mutated nothing hands back a read-only
-                                // report; one that mutated under an earlier prompt keeps the
-                                // verification rule (the Pending refusal below).
+                                // G21, G44: a worker that mutated nothing, or left the tree
+                                // unchanged, hands back a report; one that changed it under an
+                                // earlier prompt keeps the verification rule (the Pending
+                                // refusal below).
                                 Decision::None
                             } else {
                                 unclassified_stop(
@@ -2148,9 +2180,18 @@ impl Session {
         // G21: an agent that changed nothing hands back a read-only report. Nothing is
         // consumed or accepted; the line is journaled, not printed, because any output on
         // SubagentStop keeps the worker running.
-        if !observation::made_mutation(dir, agent)? {
-            reasons.push("read-only handback: not judged".to_owned());
-            return Ok(Decision::None);
+        // G44: the same holds for an agent whose tools were not all read-only (a web fetch, a
+        // shell search) when the worktree content is what it was before the first of them.
+        match observation::mutation_tree(dir, agent)? {
+            None => {
+                reasons.push("read-only handback: not judged".to_owned());
+                return Ok(Decision::None);
+            }
+            Some(_) if UNCHANGED_HANDBACK.get() => {
+                reasons.push("handback with an unchanged tree: not judged".to_owned());
+                return Ok(Decision::None);
+            }
+            Some(_) => {}
         }
         let message = text(payload, "last_assistant_message").unwrap_or_default();
         let active = payload
