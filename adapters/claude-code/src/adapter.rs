@@ -1848,8 +1848,9 @@ fn review_protocol(rejected: bool, task_id: &str) -> String {
     let dispatch = "dispatch a reviewer agent that only reads (Read, Grep, Glob, git diff, log or show; a reviewer that edits or runs any other command counts as a builder) and whose final reply starts with the line `REVIEW: APPROVED` or `REVIEW: REJECTED`, with one `FINDING: <text>` line per finding below it";
     // `task cancel` ends a person's task and an agent's alike; `limits::way_out` names a
     // disposition that is only true at a task limit.
-    let way_out =
-        format!("end the task with `supervisor task cancel --project <dir> --task {task_id} --reason <text>`");
+    let way_out = format!(
+        "end the task with `supervisor task cancel --project <dir> --task {task_id} --reason <text>`"
+    );
     if rejected {
         format!(
             "address the review findings and change the code, because a rejection stands until the content changes; then {dispatch}; a person can instead {way_out}"
