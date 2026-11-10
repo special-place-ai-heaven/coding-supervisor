@@ -168,6 +168,22 @@ jobs:
             echo "::error::The exact release PR never acquired its pending label."
             exit 1
           fi
+          # main requires status checks (ruleset 26854669), and a merge before they report
+          # is refused. Wait up to ten minutes for the required checks to report and pass;
+          # "none reported yet" and "failed" both read as not ready, so a failure times out.
+          checks_ready=0
+          for attempt in $(seq 1 40); do
+            if gh pr checks "$PR" --required >/dev/null 2>&1; then
+              checks_ready=1
+              break
+            fi
+            sleep 15
+          done
+          if [[ "$checks_ready" -ne 1 ]]; then
+            gh pr checks "$PR" --required || true
+            echo "::error::The release PR's required checks did not pass within ten minutes."
+            exit 1
+          fi
           echo "Auto-merging release PR #$PR"
           gh pr merge "$PR" --merge --delete-branch
           # The token-powered merge pushes to main, and that run's release-please step
