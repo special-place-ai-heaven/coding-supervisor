@@ -8,7 +8,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use ed25519_dalek::VerifyingKey;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde_json::{Value, json};
 use supervisor_claude_code::adapter::now;
 use supervisor_claude_code::lifecycle;
@@ -27,14 +27,19 @@ pub fn run(action: &str, flags: &Flags) -> Result<(), Failure> {
     let env = |key: &str| std::env::var(key).ok();
     let (root, _) = resolve_state_dir_read_only(&project, &env)
         .map_err(|e| Failure::Error(format!("receipt: project state unusable: {e}")))?;
-    // Held for the whole command: a hook transaction, which rewrites every task file it staged,
-    // cannot interleave with the read and the sidecar write.
+    // `sign` reads the key store before taking the lock, so a slow store never makes a hook
+    // wait. The unlocked look only decides whether there is anything to sign; any error there
+    // is left to the read under the lock, which alone decides.
+    let key = (action == "sign" && !matches!(current(&root), Ok(Err(_))))
+        .then(|| load_key(&env, &project));
+    // Held for the rest of the command: a hook transaction, which rewrites every task file it
+    // staged, cannot interleave with the read and the sidecar write.
     let _lock = read_lock(&root)
         .map_err(|e| Failure::Error(format!("receipt: project state not readable: {e}")))?;
     let current = current(&root).map_err(|e| Failure::Error(format!("receipt: {e}")))?;
     match action {
         "sign" => {
-            println!("{}", sign(current, &env));
+            println!("{}", sign(current, key));
             Ok(())
         }
         "verify" => {
@@ -83,10 +88,21 @@ fn unsigned(reason: &str) -> Value {
     json!({"signature":"unsigned","reason":reason})
 }
 
-/// Never fakes a signature: any key store problem is `unsigned` with the reason.
+/// The key store and its key, created at the first sign.
+fn load_key(
+    env: &dyn Fn(&str) -> Option<String>,
+    project: &Path,
+) -> Result<(KeyStore, SigningKey), String> {
+    let store = KeyStore::select(env, project)?;
+    let key = store.signing_key()?;
+    Ok((store, key))
+}
+
+/// Never fakes a signature: any key store problem is `unsigned` with the reason. `key` is
+/// `None` when the unlocked look found nothing to sign.
 fn sign(
     current: Result<(PathBuf, Statement), &'static str>,
-    env: &dyn Fn(&str) -> Option<String>,
+    key: Option<Result<(KeyStore, SigningKey), String>>,
 ) -> Value {
     let (dir, statement) = match current {
         Ok(current) => current,
@@ -96,13 +112,11 @@ fn sign(
         Ok(bytes) => bytes,
         Err(reason) => return unsigned(&reason),
     };
-    let store = match KeyStore::select(env) {
-        Ok(store) => store,
-        Err(reason) => return unsigned(&reason),
-    };
-    let key = match store.signing_key() {
-        Ok(key) => key,
-        Err(reason) => return unsigned(&reason),
+    let (store, key) = match key {
+        Some(Ok(key)) => key,
+        Some(Err(reason)) => return unsigned(&reason),
+        // The task appeared between the two looks; sign again.
+        None => return unsigned("the active task appeared while signing; run sign again"),
     };
     let public = key.verifying_key();
     let key_id = signing::key_id(&public);
@@ -164,9 +178,11 @@ fn verify(current: Result<(PathBuf, Statement), &'static str>, keys: &Path) -> V
     if !matches(&sidecar, &statement) {
         return invalid("the stored state changed after signing");
     }
-    let Some(key_id) = sidecar["key_id"].as_str() else {
+    // Key ids are hex: compared without regard to letter case.
+    let Some(key_id) = sidecar["key_id"].as_str().map(str::to_ascii_lowercase) else {
         return invalid("the signature file names no key id");
     };
+    let key_id = key_id.as_str();
     let listed = match fs::read_to_string(keys) {
         Ok(text) => serde_json::from_str::<Value>(&text),
         Err(e) if e.kind() == ErrorKind::NotFound => return invalid("the keys file is absent"),
@@ -178,7 +194,10 @@ fn verify(current: Result<(PathBuf, Statement), &'static str>, keys: &Path) -> V
     let Some(entries) = listed["keys"].as_array() else {
         return invalid("the keys file has no keys list");
     };
-    let listed: Vec<&Value> = entries.iter().filter(|e| e["key_id"] == key_id).collect();
+    let listed: Vec<&Value> = entries
+        .iter()
+        .filter(|e| e["key_id"].as_str().map(str::to_ascii_lowercase).as_deref() == Some(key_id))
+        .collect();
     let Some(entry) = listed.first() else {
         return invalid("the signing key is not listed in the keys file");
     };
@@ -211,20 +230,26 @@ fn verify(current: Result<(PathBuf, Statement), &'static str>, keys: &Path) -> V
 }
 
 /// For `supervisor status`: compares the sidecar with the stored state; never reads a key
-/// store or checks the signature (that is `receipt verify`), and degrades to `unknown`.
+/// store or checks the signature (that is `receipt verify`), so a matching sidecar is
+/// `signed_not_verified`. A sidecar without a 128-hex signature or a key id is `unknown`.
 pub fn status(root: &Path) -> Value {
     let (dir, statement) = match current(root) {
         Ok(Ok(current)) => current,
         Ok(Err(_)) => return json!({"state":"unsigned"}),
         Err(_) => return json!({"state":"unknown"}),
     };
-    match read_sidecar(&dir) {
-        Ok(None) => json!({"state":"unsigned"}),
-        Ok(Some(sidecar)) if matches(&sidecar, &statement) => json!({
-            "state":"signed","key_id":sidecar["key_id"].as_str().unwrap_or("unknown"),
+    let sidecar = match read_sidecar(&dir) {
+        Ok(None) => return json!({"state":"unsigned"}),
+        Ok(Some(sidecar)) => sidecar,
+        Err(_) => return json!({"state":"unknown"}),
+    };
+    let signature = sidecar["signature"].as_str().and_then(signing::unhex::<64>);
+    match (signature, sidecar["key_id"].as_str()) {
+        (Some(_), Some(key_id)) if matches(&sidecar, &statement) => json!({
+            "state":"signed_not_verified","key_id":key_id,
             "storage":sidecar["storage"].as_str().unwrap_or("unknown"),
         }),
-        Ok(Some(_)) => json!({"state":"stale"}),
-        Err(_) => json!({"state":"unknown"}),
+        (Some(_), Some(_)) => json!({"state":"stale"}),
+        _ => json!({"state":"unknown"}),
     }
 }

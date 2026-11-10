@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::io::{ErrorKind, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use coding_supervisor::CandidateId;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
@@ -106,12 +106,24 @@ pub enum KeyStore {
 }
 
 impl KeyStore {
-    /// The override variable, else the platform's store.
-    pub fn select(env: &dyn Fn(&str) -> Option<String>) -> Result<Self, String> {
-        match env(KEY_FILE_VARIABLE).filter(|p| !p.is_empty()) {
-            Some(path) => Ok(Self::File(PathBuf::from(path))),
-            None => platform_store(env),
+    /// The override variable, else the platform's store. An override that is relative, holds a
+    /// `..` segment or resolves inside `project` is refused, so the key never lands in the tree.
+    pub fn select(env: &dyn Fn(&str) -> Option<String>, project: &Path) -> Result<Self, String> {
+        let Some(path) = env(KEY_FILE_VARIABLE).filter(|p| !p.is_empty()) else {
+            return platform_store(env);
+        };
+        let path = PathBuf::from(path);
+        if !path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
+            return Err(format!(
+                "{KEY_FILE_VARIABLE} must be an absolute path without `..` segments"
+            ));
         }
+        if resolved(&path).starts_with(resolved(project)) {
+            return Err(format!(
+                "{KEY_FILE_VARIABLE} names a path inside the project; the key must live outside it"
+            ));
+        }
+        Ok(Self::File(path))
     }
 
     pub fn label(&self) -> &'static str {
@@ -130,6 +142,25 @@ impl KeyStore {
             Self::CredentialManager => credential_key(CREDENTIAL_TARGET)?,
         };
         Ok(SigningKey::from_bytes(&secret))
+    }
+}
+
+/// `path` with its deepest existing ancestor resolved (symlinks, junctions, letter case), the
+/// rest appended as written.
+fn resolved(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut base = path;
+    loop {
+        if let Ok(real) = fs::canonicalize(base) {
+            return rest.iter().rev().fold(real, |acc, name| acc.join(name));
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                base = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
     }
 }
 
@@ -173,25 +204,36 @@ fn file_key(path: &Path) -> Result<[u8; 32], String> {
             .map_err(|_| format!("the key directory for {shown} could not be created"))?;
     }
     let secret = fresh_secret()?;
+    // Written whole to a temporary file beside it, then linked into place: the key path never
+    // exists empty or half-written, and a hard link never replaces a key another sign put there.
+    let temp = path.with_file_name(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .map_or("signing-key".into(), |n| n.to_string_lossy()),
+        hex(&fresh_secret()?[..8])
+    ));
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    match options.open(path) {
-        Ok(mut file) => {
-            file.write_all(format!("{}\n", hex(&secret)).as_bytes())
-                .and_then(|()| file.sync_all())
-                .map_err(|_| format!("the signing key file {shown} could not be written"))?;
-            Ok(secret)
-        }
-        // shortcut: a concurrent first sign may read a file the winner is still writing; that
-        // reads as unusable (unsigned), never as a second key. Lock the file if this matters.
+    let written = options.open(&temp).and_then(|mut file| {
+        file.write_all(format!("{}\n", hex(&secret)).as_bytes())?;
+        file.sync_all()
+    });
+    let linked = written.and_then(|()| fs::hard_link(&temp, path));
+    let _ = fs::remove_file(&temp);
+    match linked {
+        Ok(()) => Ok(secret),
         Err(e) if e.kind() == ErrorKind::AlreadyExists => read_key_file(path)?
             .ok_or_else(|| format!("the signing key file {shown} could not be read")),
         Err(_) => Err(format!("the signing key file {shown} could not be created")),
     }
 }
 
+/// `Ok(None)` when there is no key yet: no file, or an empty one. Since keys are linked into
+/// place whole, an empty file was not written by this tool and holds no key that anything was
+/// signed with, so it is removed and replaced. Any other content that is not a key is refused
+/// and kept: it may be a key in another form, and replacing it would lose it.
 fn read_key_file(path: &Path) -> Result<Option<[u8; 32]>, String> {
     let shown = path.display();
     let file = match fs::File::open(path) {
@@ -199,6 +241,12 @@ fn read_key_file(path: &Path) -> Result<Option<[u8; 32]>, String> {
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(format!("the signing key file {shown} could not be read")),
     };
+    if file.metadata().is_ok_and(|m| m.len() == 0) {
+        drop(file);
+        fs::remove_file(path)
+            .map_err(|_| format!("the empty signing key file {shown} could not be replaced"))?;
+        return Ok(None);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

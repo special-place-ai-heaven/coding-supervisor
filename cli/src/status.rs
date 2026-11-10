@@ -463,8 +463,9 @@ fn human(report: &Value) -> String {
     if let Some(signature) = report.pointer("/task/signature") {
         let state = signature["state"].as_str().unwrap_or("unknown");
         text.push_str(&match state {
-            "signed" => format!(
-                "\nsignature: signed {} ({})",
+            // Status compares the statement only; `supervisor receipt verify` checks the signature.
+            "signed_not_verified" => format!(
+                "\nsignature: signed (not verified) {} ({})",
                 signature["key_id"].as_str().unwrap_or("unknown"),
                 signature["storage"].as_str().unwrap_or("unknown")
             ),
