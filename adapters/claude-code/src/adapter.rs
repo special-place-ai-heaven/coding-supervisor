@@ -1602,6 +1602,11 @@ fn project_relative(project: &str, path: &Path) -> Option<String> {
         if let Ok(dir) = std::fs::canonicalize(existing) {
             break missing.iter().rev().fold(dir, |dir, name| dir.join(name));
         }
+        // There but unresolvable: a symlink or junction whose target is missing. Its name
+        // proves nothing, since a write through it lands wherever the target is.
+        if std::fs::symlink_metadata(existing).is_ok() {
+            return None;
+        }
         missing.push(existing.file_name()?);
         existing = existing.parent()?;
     };
