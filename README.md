@@ -258,11 +258,13 @@ the task id, the SHA-256 of contract.json, gate.json's verified chain head and t
 candidate. The key is created at the first sign: in the Windows Credential Manager, or on
 Linux in `$XDG_CONFIG_HOME/coding-supervisor/signing-key` (else `~/.config/...`), mode
 0600. `SUPERVISOR_SIGNING_KEY_FILE=<path>` selects a key file instead: an absolute path
-outside the project (a relative path, a `..` segment or a path inside the project is
-refused); on Windows that file gets no permission check and inherits its folder's access
-rights. When the key cannot be used, `sign` prints `unsigned` with a reason and writes no
-signature (the key's folder may already have been created). It prints the entry to add to
-`supervisor-keys.json` at the repository root:
+without `..` segments; on Windows that file gets no permission check and inherits its
+folder's access rights. A key file path, default or override, that resolves inside the
+project is refused. When the key cannot be used, `sign` prints `unsigned` with a reason and
+writes no signature, though the key's folder may already have been created. The key is read
+before the state, so a sign that then fails on a tampered or unreadable state (exit 1) may
+already have created the key. It prints the entry to add to `supervisor-keys.json` at the
+repository root:
 
 ```json
 {"keys":[{"key_id":"<16 hex>","public_key":"<64 hex>","revoked_at":null}]}
@@ -288,7 +290,13 @@ something only when CI reads it from the base commit. `valid` says nothing about
 state (a failed or unfinished task verifies too), is not compared with the current tree, and
 the statement names no project. Two signs at once can leave a signature file that does not
 parse (`invalid`) or, with the Windows Credential Manager, a signature from a key that the
-other sign then replaced. A new upstream advisory turns the required Linux CI check red,
+other sign then replaced; with an empty key file present, two racing first signs can do the
+same with a key file (sign again). The project check probably misses a second name for the
+project folder (network share, mapped drive, bind mount) and a folder created between the
+check and the write, and an override inside the supervisor's own state folder is not
+refused. Where hard links are unsupported (FAT, exFAT, some network mounts) a key file
+always gives `unsigned`. A crash between writing and linking can leave a dot-prefixed
+`.tmp` file holding the key beside the key file, which nothing removes. A new upstream advisory turns the required Linux CI check red,
 release tags included.
 
 ## Harness support
