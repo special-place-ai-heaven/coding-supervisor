@@ -29,7 +29,15 @@ fn contract() -> Value {
     json!({"id":"user-contract","goal":"lifecycle fixture","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test"}],"forbidden_effects":[],"scope":["src/"],"max_repair_rounds":2})
 }
 fn start(root: &Path) -> String {
-    lifecycle::start(root, &contract(), false, None, None).unwrap()["task_id"]
+    lifecycle::start_as(
+        root,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &contract(),
+        false,
+        None,
+        None,
+    )
+    .unwrap()["task_id"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -60,7 +68,15 @@ fn rollover_freezes_evidence_separates_ids_and_deactivates() {
     set_state(&d.0, &one, TaskState::Completed, 1);
     let old = lifecycle::active_task(&d.0).unwrap().unwrap().dir;
     let before = fs::read(old.join("gate.json")).unwrap();
-    let two = lifecycle::start(&d.0, &contract(), true, None, Some(&one)).unwrap()["task_id"]
+    let two = lifecycle::start_as(
+        &d.0,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &contract(),
+        true,
+        None,
+        Some(&one),
+    )
+    .unwrap()["task_id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -91,17 +107,33 @@ fn replayed_task_start_after_deactivation_does_not_create_a_new_task() {
     let d = dir();
     let mut request = contract();
     request["event_id"] = "start-once".into();
-    let first = lifecycle::start(&d.0, &request, false, None, None).unwrap();
+    let first = lifecycle::start_as(
+        &d.0,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &request,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     let first_id = first["task_id"].as_str().unwrap().to_owned();
     lifecycle::deactivate(&d.0, &first_id, Some("cancelled")).unwrap();
 
-    let replay = lifecycle::start(&d.0, &request, false, None, None).unwrap();
+    let replay = lifecycle::start_as(
+        &d.0,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &request,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     assert_eq!(replay["task_id"], first_id);
     assert_eq!(replay["replayed"], true);
     assert!(lifecycle::active_task(&d.0).unwrap().is_none());
     assert_eq!(fs::read_dir(d.0.join("tasks")).unwrap().count(), 1);
-    assert!(lifecycle::start(&d.0, &json!({"id":"different","goal":"changed","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test"}],"forbidden_effects":[],"scope":["src/"],"max_repair_rounds":2,"event_id":"start-once"}), false, None, None).is_err());
+    assert!(lifecycle::start_as(&d.0, &supervisor_claude_code::state::Writer::task_start(None), &json!({"id":"different","goal":"changed","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test"}],"forbidden_effects":[],"scope":["src/"],"max_repair_rounds":2,"event_id":"start-once"}), false, None, None).is_err());
 }
 
 #[test]
@@ -158,9 +190,20 @@ fn resume_preserves_budget_and_recovery_requires_explicit_disposition() {
         let before = fs::read(task.dir.join("gate.json")).unwrap();
         lifecycle::resume(&d.0, &id).unwrap();
         assert_eq!(fs::read(task.dir.join("gate.json")).unwrap(), before);
-        assert!(lifecycle::start(&d.0, &contract(), true, None, Some(&id)).is_err());
-        let next = lifecycle::start(
+        assert!(
+            lifecycle::start_as(
+                &d.0,
+                &supervisor_claude_code::state::Writer::task_start(None),
+                &contract(),
+                true,
+                None,
+                Some(&id)
+            )
+            .is_err()
+        );
+        let next = lifecycle::start_as(
             &d.0,
+            &supervisor_claude_code::state::Writer::task_start(None),
             &contract(),
             true,
             Some(state::state_name(status)),
@@ -205,7 +248,15 @@ fn duplicate_events_are_idempotent_and_stale_sessions_cannot_write() {
             .count(),
         1
     );
-    lifecycle::start(&d.0, &contract(), true, Some("cancelled"), Some(&id)).unwrap();
+    lifecycle::start_as(
+        &d.0,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &contract(),
+        true,
+        Some("cancelled"),
+        Some(&id),
+    )
+    .unwrap();
     assert!(
         lifecycle::with_task(&d.0, None, Some("old-session"), None, |_| panic!(
             "late session executed"
@@ -329,8 +380,28 @@ fn project_identity_isolates_legacy_collisions_aliases_and_overrides() {
     let (a_root, _) = location::resolve_state_dir_checked(&a, &lookup).unwrap();
     let (b_root, _) = location::resolve_state_dir_checked(&b, &lookup).unwrap();
     assert_ne!(a_root, b_root);
-    assert!(lifecycle::start(&a_root, &contract(), false, None, None).is_err());
-    assert!(lifecycle::start(&b_root, &contract(), false, None, None).is_err());
+    assert!(
+        lifecycle::start_as(
+            &a_root,
+            &supervisor_claude_code::state::Writer::task_start(None),
+            &contract(),
+            false,
+            None,
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        lifecycle::start_as(
+            &b_root,
+            &supervisor_claude_code::state::Writer::task_start(None),
+            &contract(),
+            false,
+            None,
+            None
+        )
+        .is_err()
+    );
     lifecycle::migrate(&a_root, &legacy).unwrap();
     assert_eq!(
         fs::read_to_string(legacy.join("contract.json")).unwrap(),
@@ -534,12 +605,28 @@ fn reset_rounds_reopens_only_an_exhausted_task_and_journals_the_reason() {
 #[test]
 fn start_warns_that_forbidden_effects_are_not_enforced() {
     let d = dir();
-    let plain = lifecycle::start(&d.0, &contract(), false, None, None).unwrap();
+    let plain = lifecycle::start_as(
+        &d.0,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &contract(),
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     assert!(plain.get("warnings").is_none(), "{plain}");
     let id = plain["task_id"].as_str().unwrap().to_owned();
     let mut with_effects = contract();
     with_effects["forbidden_effects"] = json!(["push to main"]);
-    let next = lifecycle::start(&d.0, &with_effects, true, Some("cancelled"), Some(&id)).unwrap();
+    let next = lifecycle::start_as(
+        &d.0,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &with_effects,
+        true,
+        Some("cancelled"),
+        Some(&id),
+    )
+    .unwrap();
     let warning = next["warnings"][0].as_str().unwrap_or_default();
     assert!(
         warning.contains("forbidden_effects") && warning.contains("not enforced"),

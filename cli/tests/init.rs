@@ -69,6 +69,12 @@ fn init_writes_the_starting_contract_and_never_overwrites_it() {
     assert_eq!(v["scope"], serde_json::json!(["src/", "tests/"]));
     assert_eq!(v["forbidden_effects"], serde_json::json!([]));
     assert_eq!(v["max_repair_rounds"], 2);
+    // WP2: the draft is contract v2. People commit it, and `task start` stamps the approval
+    // and base, so the draft carries neither.
+    assert_eq!(v["schema_version"], 2);
+    assert_eq!(v["isolation"], "none");
+    assert!(v.get("approval").is_none(), "{v}");
+    assert!(v.get("base_sha").is_none(), "{v}");
     assert!(!project.join(".supervisor").exists(), "one location only");
 
     fs::write(&path, "edited by hand").unwrap();

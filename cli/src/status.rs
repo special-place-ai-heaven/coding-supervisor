@@ -509,7 +509,15 @@ mod tests {
             "forbidden_effects":[],
             "max_repair_rounds":1
         });
-        lifecycle::start(&root, &contract, false, None, None).unwrap();
+        lifecycle::start_as(
+            &root,
+            &supervisor_claude_code::state::Writer::task_start(None),
+            &contract,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
         let task = lifecycle::active_task(&root).unwrap().unwrap();
         let (_, contract_digest) = read_contract(&task.dir).unwrap();
         let cwd = canonical_project(&project);

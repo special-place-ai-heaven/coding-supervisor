@@ -1160,6 +1160,10 @@ fn handle_inner(
         };
         adapter_error(payload, env, root, &what)
     });
+    // Last, so the first reason, which the journal also records as `reason`, is unchanged.
+    if trace.contract_v1 {
+        reasons.push(state::V1_MIGRATED_REASON.to_owned());
+    }
     let line = journal::line(
         payload,
         env.state_location,
@@ -1198,6 +1202,7 @@ fn process(
     }
     let now = (env.clock)();
     let (contract, contract_sha256) = state::read_contract(&env.state_dir)?;
+    trace.contract_v1 = contract.as_ref().is_some_and(|c| c.migrated_from_v1);
     trace.task_id = contract
         .as_ref()
         .map(|c| crate::lifecycle::task_identity(&env.state_dir, &c.id.0))
@@ -1339,11 +1344,14 @@ fn out_of_scope(payload: &Value, scope: &[String], task_dir: &Path) -> Option<De
     let path = text(input, "file_path").or_else(|| text(input, "notebook_path"))?;
     let cwd = Path::new(text(payload, "cwd").unwrap_or("."));
     let root = crate::binding::execution_root(task_dir, cwd);
-    let inside = project_relative(&root, &cwd.join(path)).is_some_and(|relative| {
-        scope
-            .iter()
-            .any(|s| coding_supervisor::scope_contains(s, &relative))
-    });
+    let inside = project_relative(&root, &cwd.join(path))
+        .ok()
+        .flatten()
+        .is_some_and(|relative| {
+            scope
+                .iter()
+                .any(|s| coding_supervisor::scope_contains(s, &relative))
+        });
     (!inside).then(|| {
         Decision::Deny(format!(
             "GATE: {tool} refused: {path} is outside the task's contract scope (level strict)"
@@ -1474,13 +1482,13 @@ fn forbidden_effect(payload: &Value, effects: &[String]) -> Option<String> {
     let input = payload.get("tool_input")?;
     let edit = matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit");
     // Resolving the project starts git, so only for an edit checked against a deny_path.
-    let relative = (edit
+    let target = (edit
         && effects
             .iter()
             .any(|e| e.trim_start().starts_with("deny_path")))
     .then(|| text(input, "file_path").or_else(|| text(input, "notebook_path")))
     .flatten()
-    .and_then(|path| {
+    .map(|path| {
         let cwd = Path::new(text(payload, "cwd").unwrap_or("."));
         project_relative(&location::canonical_project(cwd), &cwd.join(path))
     });
@@ -1540,9 +1548,12 @@ fn forbidden_effect(payload: &Value, effects: &[String]) -> Option<String> {
         let (kind, value) = effect.split_once(':').unwrap_or((effect.as_str(), ""));
         let value = value.trim();
         match kind.trim() {
-            "deny_path" => relative
-                .as_deref()
-                .is_some_and(|path| coding_supervisor::scope_contains(value, path)),
+            // A target that cannot be placed is refused by every deny_path.
+            "deny_path" => match &target {
+                Some(Err(Unresolvable)) => true,
+                Some(Ok(Some(path))) => coding_supervisor::scope_contains(value, path),
+                _ => false,
+            },
             "deny_git" => segments
                 .iter()
                 .any(|words| git_subcommand(words) == Some(value.to_lowercase().as_str())),
@@ -1584,30 +1595,45 @@ fn git_subcommand<'a>(words: &[&'a str]) -> Option<&'a str> {
     None
 }
 
+/// A path that exists but cannot be resolved: a symlink or junction whose target is missing.
+/// Its name proves nothing, since a write through it lands wherever the target is.
+struct Unresolvable;
+
 /// `path` relative to the canonical `project` (see `location::canonical_project`), in git's
-/// `/`-separated form; `None` outside the project. The deepest existing ancestor is resolved,
-/// so a new file under a symlinked or short-name spelling of the project still matches.
-fn project_relative(project: &str, path: &Path) -> Option<String> {
+/// `/`-separated form; `Ok(None)` outside the project. The deepest existing ancestor is
+/// resolved, so a new file under a symlinked or short-name spelling of the project still
+/// matches.
+fn project_relative(project: &str, path: &Path) -> Result<Option<String>, Unresolvable> {
     let mut existing = path;
     let mut missing = Vec::new();
     let resolved = loop {
         if let Ok(dir) = std::fs::canonicalize(existing) {
             break missing.iter().rev().fold(dir, |dir, name| dir.join(name));
         }
-        missing.push(existing.file_name()?);
-        existing = existing.parent()?;
+        if std::fs::symlink_metadata(existing).is_ok() {
+            return Err(Unresolvable);
+        }
+        let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+            return Ok(None);
+        };
+        missing.push(name);
+        existing = parent;
     };
     let text = resolved.to_string_lossy().replace('\\', "/");
     let text = text.strip_prefix("//?/").unwrap_or(&text);
-    let head = text.get(..project.len())?;
+    let Some(head) = text.get(..project.len()) else {
+        return Ok(None);
+    };
     // `canonical_project` is already lower-case on Windows.
     let same = if cfg!(windows) {
         head.to_lowercase() == project
     } else {
         head == project
     };
-    let relative = text[project.len()..].strip_prefix('/')?;
-    same.then(|| relative.to_owned())
+    Ok(text[project.len()..]
+        .strip_prefix('/')
+        .filter(|_| same)
+        .map(str::to_owned))
 }
 
 /// Refuse everywhere a refusal is possible; gate.json is left exactly as found.
@@ -2897,5 +2923,51 @@ mod fail_closed_tests {
             blocking_words("x: No such file or directory; Missing field; NOT FOUND"),
             "x: no file or directory; absent field; absent"
         );
+    }
+}
+
+#[cfg(test)]
+mod deny_path_tests {
+    use super::forbidden_effect;
+    use serde_json::json;
+    use std::fs;
+
+    /// A link whose target is missing cannot be placed, so a `deny_path` refuses an edit
+    /// through it on its own, without relying on the scope check running first.
+    #[test]
+    fn deny_path_refuses_an_edit_through_an_unresolvable_link() {
+        let root =
+            std::env::temp_dir().join(format!("supervisor-deny-path-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (project, outside) = (root.join("project"), root.join("outside"));
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let link = project.join("src").join("out");
+        #[cfg(unix)]
+        let target = {
+            std::os::unix::fs::symlink(outside.join("new.rs"), &link).unwrap();
+            link.clone()
+        };
+        #[cfg(windows)]
+        let target = {
+            let gone = outside.join("gone");
+            fs::create_dir_all(&gone).unwrap();
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&gone)
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "mklink /J failed");
+            fs::remove_dir(&gone).unwrap();
+            link.join("x.rs")
+        };
+        let payload = json!({"tool_name":"Write","cwd":project,
+            "tool_input":{"file_path":target,"content":"x"}});
+        let effect = forbidden_effect(&payload, &["deny_path:src/".to_owned()]);
+        #[cfg(windows)]
+        let _ = fs::remove_dir(&link);
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(effect.as_deref(), Some("deny_path:src/"));
     }
 }

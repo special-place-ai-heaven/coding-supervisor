@@ -28,7 +28,9 @@
   "forbidden_effects": [],
   "goal": "Describe what this task must achieve.",
   "id": "coding-supervisor",
+  "isolation": "none",
   "max_repair_rounds": 2,
+  "schema_version": 2,
   "scope": [
     "src/",
     "tests/"

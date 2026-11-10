@@ -83,7 +83,15 @@ fn git_only_discovery_retains_previously_approved_custom_checks() {
     fs::create_dir(f.project.join(".git")).unwrap();
     let mut approved = contract();
     approved["criteria"][0]["command"] = "python verify.py".into();
-    lifecycle::start(&f.root, &approved, false, None, None).unwrap();
+    lifecycle::start_as(
+        &f.root,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &approved,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     let event = f.prompt("next", "Continue work with the approved checks");
     let checks = event["required_criteria"].as_array().unwrap();
     assert!(checks.iter().any(|c| c["id"] == "AUTO_DIFF"));
@@ -100,7 +108,15 @@ fn cancelled_git_only_task_retains_approved_custom_floor_for_ordinary_successor(
     fs::create_dir(f.project.join(".git")).unwrap();
     let mut approved = contract();
     approved["criteria"][0]["command"] = "python verify.py".into();
-    let original = lifecycle::start(&f.root, &approved, false, None, None).unwrap();
+    let original = lifecycle::start_as(
+        &f.root,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &approved,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     let id = original["task_id"].as_str().unwrap();
     f.apply(
         &f.prompt("followup", "Continue the approved work"),
@@ -334,7 +350,17 @@ fn scope_paths_and_untrusted_mutation_are_rejected() {
         lifecycle::active_task(&f.root).unwrap().unwrap().task_id,
         id
     );
-    assert!(lifecycle::start(&f.root, &contract(), true, Some("cancelled"), Some(&id)).is_err());
+    assert!(
+        lifecycle::start_as(
+            &f.root,
+            &supervisor_claude_code::state::Writer::task_start(None),
+            &contract(),
+            true,
+            Some("cancelled"),
+            Some(&id)
+        )
+        .is_err()
+    );
     assert!(lifecycle::deactivate(&f.root, &id, Some("cancelled")).is_err());
     assert!(lifecycle::rebind(&f.root, &id, "intruder").is_err());
 }
@@ -478,7 +504,15 @@ fn root_success_then_nested_success_allows_observed_completion_and_rollover() {
     );
     let mut approved = contract();
     approved["criteria"][0]["command"] = "python check.py".into();
-    let first = lifecycle::start(&f.root, &approved, false, None, None).unwrap();
+    let first = lifecycle::start_as(
+        &f.root,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &approved,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     let first_id = first["task_id"].as_str().unwrap();
     f.apply(
         &f.prompt("adopt", "Continue implementing the requested behavior"),
@@ -654,7 +688,15 @@ fn legacy_nested_pass_receipt_and_failing_root_check_cannot_complete_or_roll_ove
     let mut approved = contract();
     approved["criteria"][0]["command"] = "python check.py".into();
     approved["criteria"].as_array_mut().unwrap().push(json!({"id":"ROOT","check":"root_validation","mandatory":true,"command":"python root_check.py"}));
-    let first = lifecycle::start(&f.root, &approved, false, None, None).unwrap();
+    let first = lifecycle::start_as(
+        &f.root,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &approved,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     let first_id = first["task_id"].as_str().unwrap();
     f.apply(
         &f.prompt("adopt", "Continue implementing"),
@@ -1916,7 +1958,15 @@ fn completed_task() -> CompletedTask {
     );
     let mut approved = contract();
     approved["criteria"][0]["command"] = "python check.py".into();
-    let first = lifecycle::start(&f.root, &approved, false, None, None).unwrap();
+    let first = lifecycle::start_as(
+        &f.root,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &approved,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     let task = first["task_id"].as_str().unwrap().to_owned();
     f.apply(
         &f.prompt("adopt", "Continue implementing the requested behavior"),

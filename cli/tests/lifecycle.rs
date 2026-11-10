@@ -341,3 +341,63 @@ fn prompt_gate_refusals_are_journaled() {
         );
     }
 }
+
+/// WP2: `task start` writes contract v2 with the repository head the task starts from.
+#[test]
+fn task_start_records_the_repository_head_in_contract_v2() {
+    let f = Fixture::new("contract-v2");
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&f.project)
+            .args([
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+            ])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    git(&["init", "-q"]);
+    fs::write(f.project.join("README"), "one\n").unwrap();
+    git(&["add", "README"]);
+    git(&["commit", "-q", "-m", "one"]);
+    let head = git(&["rev-parse", "HEAD"]);
+    let started = value(f.task("start", &["--contract", f.contract.to_str().unwrap()]));
+    let task = f
+        .state_root()
+        .join("tasks")
+        .join(started["task_id"].as_str().unwrap());
+    let c: Value =
+        serde_json::from_str(&fs::read_to_string(task.join("contract.json")).unwrap()).unwrap();
+    assert_eq!(c["schema_version"], 2, "{c}");
+    assert_eq!(c["base_sha"], head.as_str(), "{c}");
+    assert_eq!(c["approval"]["via"], "task-start", "{c}");
+    // A person's own command is the one writer that records the OS user.
+    let user = std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .ok();
+    assert_eq!(c["approval"]["by"], json!(user), "{c}");
+    assert_eq!(c["isolation"], "none", "{c}");
+}
+
+/// WP2: a contract file with a newer schema is refused by `task start`, and nothing is written.
+#[test]
+fn task_start_refuses_a_newer_schema() {
+    let f = Fixture::new("contract-v3");
+    let newer = f.root.join("newer.json");
+    let mut c: Value = serde_json::from_str(&fs::read_to_string(&f.contract).unwrap()).unwrap();
+    c["schema_version"] = json!(3);
+    fs::write(&newer, c.to_string()).unwrap();
+    let out = f.task("start", &["--contract", newer.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("schema_version 3"), "{stderr}");
+    assert!(stderr.contains(env!("CARGO_PKG_VERSION")), "{stderr}");
+    assert!(!f.state_root().join("tasks").exists());
+}

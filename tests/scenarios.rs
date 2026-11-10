@@ -34,6 +34,13 @@ fn contract() -> TaskContract {
         budget: Budget {
             max_repair_rounds: 2,
         },
+        base_sha: None,
+        approval: None,
+        limits: Default::default(),
+        artifacts: vec![],
+        review: Default::default(),
+        isolation: Default::default(),
+        migrated_from_v1: false,
     }
 }
 fn candidate(digest: &str) -> Candidate {

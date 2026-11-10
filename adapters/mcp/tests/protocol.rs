@@ -210,3 +210,56 @@ fn serve_answers_line_by_line_over_a_byte_stream() {
     assert_eq!(lines[1]["id"], 2);
     assert_eq!(lines[1]["result"]["tools"].as_array().unwrap().len(), 10);
 }
+
+/// WP2: `task_start` writes contract v2 and records itself as the writer.
+#[test]
+fn task_start_writes_contract_v2() {
+    let d = dir("contract-v2");
+    let s = server(&d);
+    let (is_error, text) = call(&s, "task_start", common::four());
+    assert!(!is_error, "{text}");
+    let task = supervisor_claude_code::lifecycle::active_task(s.state_dir())
+        .unwrap()
+        .unwrap();
+    let c: Value =
+        serde_json::from_str(&std::fs::read_to_string(task.dir.join("contract.json")).unwrap())
+            .unwrap();
+    assert_eq!(c["schema_version"], 2, "{c}");
+    assert_eq!(c["isolation"], "none", "{c}");
+    assert_eq!(c["approval"]["via"], "mcp-task-start", "{c}");
+    // The agent's own environment names the user; that must not read as a person's approval.
+    assert_eq!(c["approval"]["by"], Value::Null, "{c}");
+    // The project is not a git repository here.
+    assert_eq!(c["base_sha"], Value::Null, "{c}");
+}
+
+/// What is saved is what is checked: a malformed v2 field refuses the start and writes nothing.
+#[test]
+fn task_start_refuses_a_contract_that_would_not_load_again() {
+    let d = dir("contract-v2-bad");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["limits"] = json!({"turns": 0});
+    let (is_error, text) = call(&s, "task_start", contract);
+    assert!(is_error, "{text}");
+    assert!(
+        supervisor_claude_code::lifecycle::active_task(s.state_dir())
+            .unwrap()
+            .is_none()
+    );
+    assert!(!s.state_dir().join("tasks").exists());
+}
+
+/// A caller's newer schema is refused, not silently stored as v2.
+#[test]
+fn task_start_refuses_a_newer_schema() {
+    let d = dir("contract-v3");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["schema_version"] = json!(3);
+    let (is_error, text) = call(&s, "task_start", contract);
+    assert!(is_error, "{text}");
+    assert!(text.contains("schema_version 3"), "{text}");
+    assert!(text.contains(env!("CARGO_PKG_VERSION")), "{text}");
+    assert!(!s.state_dir().join("tasks").exists());
+}

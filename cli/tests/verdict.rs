@@ -164,7 +164,15 @@ impl Fixture {
         let contract = json!({"id":"verdict-fixture","goal":"exercise verdict","criteria":criteria,
             "scope":[],"forbidden_effects":[],"max_repair_rounds":1});
         let root = self.state_root();
-        lifecycle::start(&root, &contract, false, None, None).unwrap();
+        lifecycle::start_as(
+            &root,
+            &supervisor_claude_code::state::Writer::task_start(None),
+            &contract,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
         let task = lifecycle::active_task(&root).unwrap().unwrap();
         let (_, digest) = read_contract(&task.dir).unwrap();
         let cwd = canonical_project(&self.project);

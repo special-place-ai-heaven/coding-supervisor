@@ -1516,8 +1516,14 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
             &event["required_criteria"],
         )?;
         contract["event_id"] = format!("autonomy-{id}").into();
-        let (mut response, task_writes) =
-            lifecycle::plan_start(root, &contract, active.is_some(), None, current_id)?;
+        let (mut response, task_writes) = lifecycle::plan_start(
+            root,
+            &state::Writer::agent(project),
+            &contract,
+            active.is_some(),
+            None,
+            current_id,
+        )?;
         writes.extend(task_writes);
         if let (Some(why), Some(active)) = (unverified, &active) {
             let path = PathBuf::from("archives").join(format!("{}.json", active.task_id));
@@ -1675,6 +1681,19 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 if let Some(floor) = metadata.get("requirement_floor") {
                     preserves(floor, &new, event["source"] == "hook")?;
                 }
+                // The agent cannot assert these: a revision keeps the task's approval (WP4 counts
+                // wall clock from approval.at), isolation and base. What is saved is checked.
+                let mut stored = new.clone();
+                if let Some(fields) = stored.as_object_mut() {
+                    fields.insert("schema_version".to_owned(), 2.into());
+                    for key in ["approval", "isolation", "base_sha"] {
+                        match old.get(key) {
+                            Some(kept) => fields.insert(key.to_owned(), kept.clone()),
+                            None => fields.remove(key),
+                        };
+                    }
+                }
+                state::contract_from(&stored)?;
                 let stage = root.join("autonomy-stage");
                 if stage.exists() {
                     fs::remove_dir_all(&stage).map_err(|e| e.to_string())?;
@@ -1713,7 +1732,10 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 }
                 metadata["invalidated_dispatches"] =
                     invalidated.into_iter().collect::<Vec<_>>().into();
-                atomic_write(&stage.join("contract.json"), format!("{new}\n").as_bytes())?;
+                atomic_write(
+                    &stage.join("contract.json"),
+                    format!("{stored}\n").as_bytes(),
+                )?;
                 let (_, new_digest) = state::read_contract(&stage)?;
                 if let Stored::Valid(mut gate) = gate {
                     gate.receipts.clear();

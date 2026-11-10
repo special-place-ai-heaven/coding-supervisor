@@ -103,7 +103,7 @@ fn active_claude_is_conditional_on_hooks_and_codex_stays_advisory() {
     )
     .unwrap();
     let root = PathBuf::from(f.status("claude-code")["project_state"].as_str().unwrap());
-    lifecycle::start(&root,&json!({"id":"fixture","goal":"status fixture","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"fixture-check"}],"scope":[],"forbidden_effects":[],"max_repair_rounds":2}),false,None,None).unwrap();
+    lifecycle::start_as(&root, &supervisor_claude_code::state::Writer::task_start(None),&json!({"id":"fixture","goal":"status fixture","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"fixture-check"}],"scope":[],"forbidden_effects":[],"max_repair_rounds":2}),false,None,None).unwrap();
     lifecycle::observe_connection(&root, "claude-hook").unwrap();
     let claude = f.status("claude-code");
     assert_eq!(claude["task"]["state"], "active");
