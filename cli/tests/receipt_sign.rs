@@ -3,8 +3,9 @@
 //! `XDG_CONFIG_HOME`), so no test touches the Windows Credential Manager entry.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use coding_supervisor::{CandidateId, Checkpoint, CriterionId, TaskState, VerificationReceipt};
 use serde_json::{Value, json};
@@ -42,16 +43,62 @@ impl Fixture {
     /// The binary with this fixture's project state, no user configuration, and the file key
     /// store at `self.key`.
     fn command(&self, args: &[&str]) -> Command {
+        let mut cmd = self.binary();
+        cmd.args(args).arg("--project").arg(&self.project);
+        cmd
+    }
+    fn binary(&self) -> Command {
         let mut cmd = Command::new(BIN);
-        cmd.args(args)
-            .arg("--project")
-            .arg(&self.project)
-            .env("HOME", &self.root)
+        cmd.env("HOME", &self.root)
             .env("SUPERVISOR_CONFIG_DIR", self.root.join("config"))
             .env("SUPERVISOR_STATE_DIR", &self.state)
             .env("SUPERVISOR_SIGNING_KEY_FILE", &self.key)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", self.root.join("gitconfig"))
             .env("GIT_CEILING_DIRECTORIES", &self.root);
         cmd
+    }
+    /// The project as a git repository with one commit, so a hook can observe a candidate.
+    fn git_repository(&self) {
+        fs::write(self.root.join("gitconfig"), "").unwrap();
+        fs::write(self.project.join("README"), "one\n").unwrap();
+        for args in [
+            &["init", "-q"][..],
+            &["add", "README"],
+            &["commit", "-q", "-m", "one"],
+        ] {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&self.project)
+                .args([
+                    "-c",
+                    "user.name=fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                ])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .env("HOME", &self.root)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", self.root.join("gitconfig"))
+                .env("GIT_CEILING_DIRECTORIES", &self.root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        }
+    }
+    /// One hook call through the real binary.
+    fn hook(&self, payload: &Value) -> Output {
+        let mut child = self
+            .binary()
+            .arg("hook")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writeln!(child.stdin.take().unwrap(), "{payload}").unwrap();
+        child.wait_with_output().unwrap()
     }
     fn run(&self, args: &[&str]) -> Output {
         self.command(args).output().unwrap()
@@ -210,7 +257,7 @@ fn a_state_change_after_signing_is_invalid_and_stale() {
     let dir = f.task();
     let signed = f.sign();
     let keys = f.keys_file(json!([entry(&signed, Value::Null)]));
-    assert_eq!(f.status_signature()["state"], "signed");
+    assert_eq!(f.status_signature()["state"], "signed_not_verified");
     f.store_receipts(&dir, 2);
     let (code, value) = f.verify(&keys);
     assert_eq!(
@@ -385,30 +432,45 @@ fn the_private_key_never_leaves_the_key_file() {
         String::from_utf8_lossy(&verify.stderr).into_owned(),
         String::from_utf8_lossy(&status.stdout).into_owned(),
         sidecar,
-    ] {
+    ]
+    .iter()
+    .enumerate()
+    {
+        // The message names the output only: the caught text would print the key.
         assert!(
-            !text.to_lowercase().contains(&secret),
-            "private key leaked: {text}"
+            !text.1.to_lowercase().contains(&secret),
+            "private key hex found in output {}",
+            text.0
         );
     }
 }
 
-/// Status names the signing key and store, then stale, and the human text carries the line.
+/// Status names the signing key and store and says the signature was not checked; a sidecar
+/// without a readable signature is unknown, never signed.
 #[test]
-fn status_shows_signed_with_key_and_storage() {
+fn status_shows_signed_not_verified_with_key_and_storage() {
     let f = Fixture::new("status");
-    f.task();
+    let dir = f.task();
     let signed = f.sign();
     let signature = f.status_signature();
-    assert_eq!(signature["state"], "signed");
+    assert_eq!(signature["state"], "signed_not_verified");
     assert_eq!(signature["key_id"], signed["key_id"]);
     assert_eq!(signature["storage"], "file-fallback");
     let human = String::from_utf8(f.run(&["status"]).stdout).unwrap();
     let line = format!(
-        "signature: signed {} (file-fallback)",
+        "signature: signed (not verified) {} (file-fallback)",
         signed["key_id"].as_str().unwrap()
     );
     assert!(human.lines().any(|l| l == line), "{human}");
+    let good = sidecar(&dir);
+    let mut no_signature = good.clone();
+    no_signature.as_object_mut().unwrap().remove("signature");
+    let mut not_hex = good.clone();
+    not_hex["signature"] = "zz".into();
+    for broken in [no_signature, not_hex] {
+        fs::write(dir.join("signature.json"), broken.to_string()).unwrap();
+        assert_eq!(f.status_signature()["state"], "unknown", "{broken}");
+    }
 }
 
 /// A project that never signs: verdict's output is byte-identical with and without the key
@@ -432,6 +494,177 @@ fn verdict_is_unchanged_by_the_signing_variable() {
     let signed = f.run(&["verdict", "--json"]);
     assert_eq!(with.status.code(), signed.status.code());
     assert_eq!(with.stdout, signed.stdout);
+}
+
+/// A relative override path, or one that resolves inside the project, is refused: unsigned
+/// with a reason and no key file created. Fails if the override were taken as given.
+#[test]
+fn a_relative_or_in_project_key_path_is_refused() {
+    let f = Fixture::new("override");
+    let dir = f.task();
+    let back_in = f.project.join("..").join("project").join("key-c");
+    for (path, lands) in [
+        (PathBuf::from("key-a"), f.project.join("key-a")),
+        (f.project.join("keys").join("key-b"), f.project.join("keys")),
+        (back_in, f.project.join("key-c")),
+    ] {
+        let out = f
+            .command(&["receipt", "sign"])
+            .env("SUPERVISOR_SIGNING_KEY_FILE", &path)
+            .current_dir(&f.project)
+            .output()
+            .unwrap();
+        let (code, value) = parse(&out);
+        assert_eq!(
+            (code, &value["signature"]),
+            (0, &json!("unsigned")),
+            "{} {value}",
+            path.display()
+        );
+        assert!(!lands.exists(), "{} was created", lands.display());
+        assert!(!dir.join("signature.json").exists());
+    }
+}
+
+/// Key ids compare without regard to letter case: an upper-case revoking entry beside the
+/// live lower-case one revokes, and an upper-case live entry alone still verifies.
+#[test]
+fn an_upper_case_revoking_entry_still_revokes() {
+    let f = Fixture::new("case");
+    f.task();
+    let signed = f.sign();
+    let upper = signed["key_id"].as_str().unwrap().to_uppercase();
+    assert_ne!(upper, signed["key_id"].as_str().unwrap(), "id has letters");
+    let mut revoked = entry(&signed, json!("2026-11-10T00:00:00Z"));
+    revoked["key_id"] = upper.clone().into();
+    let (code, value) = f.verify(&f.keys_file(json!([entry(&signed, Value::Null), revoked])));
+    assert_eq!(
+        (code, &value["signature"]),
+        (3, &json!("invalid")),
+        "{value}"
+    );
+    let mut live = entry(&signed, Value::Null);
+    live["key_id"] = upper.into();
+    let (code, value) = f.verify(&f.keys_file(json!([live])));
+    assert_eq!((code, &value["signature"]), (0, &json!("valid")), "{value}");
+}
+
+/// The key store is read before the shared state lock is taken, so a slow store never holds
+/// the lock: with the lock held exclusively by the test, sign still creates the key, then
+/// fails on the busy lock. Fails if the key were read under the lock.
+#[test]
+fn the_key_is_read_before_the_state_lock() {
+    let f = Fixture::new("lock");
+    f.task();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(f.state_root().join("state.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let out = f.run(&["receipt", "sign"]);
+    lock.unlock().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(out.stdout.is_empty());
+    assert!(f.key.exists(), "the key was not read before the lock");
+}
+
+/// An empty key file holds no key and is replaced; a non-empty file that is not a key is
+/// refused and left as it is.
+#[test]
+fn an_empty_key_file_is_replaced_and_a_malformed_one_is_kept() {
+    let f = Fixture::new("empty");
+    f.task();
+    fs::create_dir_all(f.key.parent().unwrap()).unwrap();
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    drop(options.open(&f.key).unwrap());
+    f.sign();
+    assert_eq!(fs::read_to_string(&f.key).unwrap().trim().len(), 64);
+    fs::write(&f.key, "zz\n").unwrap();
+    let (code, value) = parse(&f.run(&["receipt", "sign"]));
+    assert_eq!(
+        (code, &value["signature"]),
+        (0, &json!("unsigned")),
+        "{value}"
+    );
+    assert_eq!(fs::read_to_string(&f.key).unwrap(), "zz\n");
+}
+
+/// A listed id whose public key hashes to another id, a malformed public key, and a
+/// `revoked_at` of `false`, `0` or `""` (anything but null revokes) are each invalid.
+#[test]
+fn a_mismatched_or_malformed_listed_key_and_odd_revocations_are_invalid() {
+    let f = Fixture::new("listed");
+    f.task();
+    let signed = f.sign();
+    let rfc8032 = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+    let mut mismatched = entry(&signed, Value::Null);
+    mismatched["public_key"] = rfc8032.into();
+    let mut malformed = entry(&signed, Value::Null);
+    malformed["public_key"] = "zz".into();
+    let mut cases = vec![mismatched, malformed];
+    for odd in [json!(false), json!(0), json!("")] {
+        cases.push(entry(&signed, odd));
+    }
+    for case in cases {
+        let (code, value) = f.verify(&f.keys_file(json!([case])));
+        assert_eq!(
+            (code, &value["signature"]),
+            (3, &json!("invalid")),
+            "{case} {value}"
+        );
+    }
+}
+
+/// With no active task: sign is unsigned (exit 0) and creates no key, verify is unsigned
+/// (exit 3), and status creates no key either.
+#[test]
+fn no_active_task_signs_nothing_and_creates_no_key() {
+    let f = Fixture::new("notask");
+    let (code, value) = parse(&f.run(&["receipt", "sign"]));
+    assert_eq!(
+        (code, &value["signature"]),
+        (0, &json!("unsigned")),
+        "{value}"
+    );
+    let (code, value) = f.verify(&f.keys_file(json!([])));
+    assert_eq!(
+        (code, &value["signature"]),
+        (3, &json!("unsigned")),
+        "{value}"
+    );
+    assert!(f.run(&["status"]).status.success());
+    assert!(!f.key.exists(), "a key was created with nothing to sign");
+    f.task();
+    assert!(f.run(&["status", "--json"]).status.success());
+    assert!(!f.key.exists(), "status created a key");
+}
+
+/// A real hook call on the task after signing leaves the sidecar as it was, and status then
+/// reads it against the new state. Guards the lifecycle's task-file handling.
+#[test]
+fn the_sidecar_survives_a_hook_transaction() {
+    let f = Fixture::new("hook");
+    f.git_repository();
+    let dir = f.task();
+    f.sign();
+    let before = fs::read(dir.join("signature.json")).unwrap();
+    let events = |dir: &Path| fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+    let journal = events(&dir);
+    let out = f.hook(&json!({"cwd":f.project,"session_id":"session-1",
+        "hook_event_name":"PreToolUse","tool_name":"Write","tool_use_id":"w1",
+        "tool_input":{"file_path":"src/lib.rs","content":"x"}}));
+    assert!(out.status.success(), "{out:?}");
+    assert_ne!(events(&dir), journal, "the hook did not reach the task");
+    assert_eq!(fs::read(dir.join("signature.json")).unwrap(), before);
+    let state = f.status_signature()["state"].clone();
+    assert!(
+        state == "signed_not_verified" || state == "stale",
+        "{state}"
+    );
 }
 
 #[cfg(unix)]
