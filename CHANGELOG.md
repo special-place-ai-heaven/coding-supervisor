@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.18.0...v0.18.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **gate:** a prompt after completion advises a new task (G47) ([fe87ff2](https://github.com/special-place-ai-heaven/coding-supervisor/commit/fe87ff246cd4bc954b9c445eff533c9591e7e005))
+* **gate:** a prompt after completion advises a new task (G47) ([0fa85f4](https://github.com/special-place-ai-heaven/coding-supervisor/commit/0fa85f4cb82ab69647b5458bd185a14119cc05a8))
+
 ## [0.18.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.17.3...v0.18.0) (2026-11-10)
 
 
