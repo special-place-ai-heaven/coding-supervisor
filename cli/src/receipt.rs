@@ -178,10 +178,12 @@ fn verify(current: Result<(PathBuf, Statement), &'static str>, keys: &Path) -> V
     let Some(entries) = listed["keys"].as_array() else {
         return invalid("the keys file has no keys list");
     };
-    let Some(entry) = entries.iter().find(|e| e["key_id"] == key_id) else {
+    let listed: Vec<&Value> = entries.iter().filter(|e| e["key_id"] == key_id).collect();
+    let Some(entry) = listed.first() else {
         return invalid("the signing key is not listed in the keys file");
     };
-    if !entry["revoked_at"].is_null() {
+    // Any entry revoking the id counts, so listing the key again cannot undo a revocation.
+    if listed.iter().any(|e| !e["revoked_at"].is_null()) {
         return invalid("the signing key is revoked");
     }
     let public = entry["public_key"]

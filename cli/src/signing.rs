@@ -70,7 +70,8 @@ pub fn hex(bytes: &[u8]) -> String {
 /// Lowercase or uppercase hex of exactly `N` bytes.
 pub fn unhex<const N: usize>(text: &str) -> Option<[u8; N]> {
     let text = text.as_bytes();
-    if text.len() != 2 * N {
+    // `from_str_radix` alone would also take a leading `+`.
+    if text.len() != 2 * N || !text.iter().all(u8::is_ascii_hexdigit) {
         return None;
     }
     let mut out = [0u8; N];
@@ -342,6 +343,7 @@ mod tests {
         assert_eq!(unhex::<2>("0a"), None);
         assert_eq!(unhex::<1>("zz"), None);
         assert_eq!(unhex::<1>("é"), None);
+        assert_eq!(unhex::<1>("+f"), None);
     }
 
     /// Run by hand only (`--ignored`): stores, reads and deletes a credential under a test-only
