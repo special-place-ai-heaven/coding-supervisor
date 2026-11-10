@@ -1,8 +1,8 @@
 //! `supervisor verdict`: recompute whether every mandatory criterion of the active task has a
 //! current receipt that satisfies the required provenance. It writes nothing: it takes a shared
 //! hold on an existing state lock, recovers no transaction, and runs git without optional locks.
-//! The stored gate state is never consulted; only receipts, the hook run journal and the live git
-//! candidate are.
+//! Receipts, the hook run journal and the live git candidate decide; the stored gate state is read
+//! only to fail a budget_exhausted task.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};

@@ -459,11 +459,12 @@ fn limits_line(limits: &Value) -> String {
         return "unknown (task journal or clock unreadable)".to_owned();
     }
     let number = |key: &str| limits.get(key).and_then(Value::as_u64);
-    let used = number("turns_used").map_or("unknown".to_owned(), |n| n.to_string());
-    let mut parts = vec![match number("turns") {
-        Some(max) => format!("{used} of {max} turns used"),
-        None => format!("{used} turns used (no turn limit)"),
-    }];
+    let mut parts = Vec::new();
+    // Without a turn limit the journal is not read, so there is no count to show.
+    if let Some(max) = number("turns") {
+        let used = number("turns_used").map_or("unknown".to_owned(), |n| n.to_string());
+        parts.push(format!("{used} of {max} turns used"));
+    }
     if let Some(max) = number("wall_clock_s") {
         parts.push(match number("elapsed_s") {
             Some(elapsed) if limits["clock_behind_approval"] == true => {

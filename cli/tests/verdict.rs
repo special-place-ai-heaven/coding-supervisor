@@ -1233,7 +1233,8 @@ fn t22b_verdict_usage_and_task_mismatch_with_positive_control() {
     );
 }
 
-/// T24: the stored gate state is never consulted, in either direction.
+/// T24: the stored gate state decides nothing, in either direction; it is read only to fail a
+/// budget_exhausted task (t40, t41).
 #[test]
 fn t24_verdict_ignores_stored_gate_state() {
     let blocked = Fixture::git("t24-blocked");

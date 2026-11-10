@@ -23,7 +23,8 @@ use serde_json::{Value, json};
 /// What a task has used against the limits its contract sets.
 pub struct Usage {
     pub limits: Limits,
-    pub turns_used: u64,
+    /// `None` without a turn limit: the journal is then not read.
+    pub turns_used: Option<u64>,
     /// `None` when the contract records no approval time.
     pub elapsed_s: Option<u64>,
     /// The clock reads earlier than `approval.at`; `elapsed_s` is then 0.
@@ -54,7 +55,7 @@ pub fn turns_used(dir: &Path) -> Result<u64, String> {
     Ok(turns as u64)
 }
 
-/// `None` when the contract sets no limit; the journal is not read then.
+/// `None` when the contract sets no limit. The journal is read only for a turn limit.
 pub fn usage(dir: &Path, contract: &TaskContract, now: u64) -> Result<Option<Usage>, String> {
     let limits = &contract.limits;
     if !limits.is_set() {
@@ -65,18 +66,18 @@ pub fn usage(dir: &Path, contract: &TaskContract, now: u64) -> Result<Option<Usa
     if limits.wall_clock_s.is_some() && at.is_some() && now == 0 {
         return Err("system clock unavailable".to_owned());
     }
-    let turns_used = turns_used(dir)?;
+    let turns_used = limits.turns.map(|_| turns_used(dir)).transpose()?;
     let elapsed_s = at.map(|at| now.saturating_sub(at));
     Ok(Some(Usage {
         limits: limits.clone(),
         turns_used,
         elapsed_s,
         clock_behind: at.is_some_and(|at| now < at),
-        reached: limits.reached(turns_used, elapsed_s),
+        reached: limits.reached(turns_used.unwrap_or(0), elapsed_s),
     }))
 }
 
-/// For `supervisor status`, `supervisor verdict` and MCP `task_state`: `None` without a limit,
+/// For `supervisor status` and MCP `task_state`: `None` without a limit,
 /// `{"state":"unknown"}` when the journal or clock cannot be read; a display never fails.
 pub fn usage_json(dir: &Path, contract: &TaskContract, now: u64) -> Option<Value> {
     match usage(dir, contract, now) {
@@ -167,7 +168,9 @@ mod tests {
         .unwrap();
         let usage = usage(&dir, &contract, 1_700);
         let _ = fs::remove_dir_all(&dir);
-        let usage = usage.expect("the journal was read").expect("a limit is set");
+        let usage = usage
+            .expect("the journal was read")
+            .expect("a limit is set");
         assert!(usage.reached.is_some());
     }
 }

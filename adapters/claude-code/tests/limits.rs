@@ -803,7 +803,10 @@ fn a_refused_call_after_the_last_turn_does_not_stop_certification() {
     let mut env = env(&d, &contract(json!({"turns":2})));
     assert_eq!(handle(&write(&env, "t1"), &mut env), Decision::None);
     run_check(&mut env, "c1");
-    assert!(limit_denial(&handle(&bash(&env, "g1", "git status"), &mut env)));
+    assert!(limit_denial(&handle(
+        &bash(&env, "g1", "git status"),
+        &mut env
+    )));
     let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
     assert!(
         !matches!(&decision, Decision::Block(_))
@@ -862,7 +865,10 @@ fn a_stop_released_for_a_limit_spends_no_repair_round() {
             "{rounds}: {report}"
         );
         let gate = task_gate(&env, &id);
-        assert_eq!(gate.checkpoint.consumed_repair_rounds, 0, "{rounds}: {report}");
+        assert_eq!(
+            gate.checkpoint.consumed_repair_rounds, 0,
+            "{rounds}: {report}"
+        );
         assert_eq!(gate.repair_charged, None, "{rounds}: {report}");
     }
 }
@@ -923,7 +929,12 @@ fn a_memory_save_with_unreadable_task_state_fails_closed() {
         "{ not json",
     )
     .unwrap();
-    let save = tool(&env, "m1", "mcp__everos__memory_add", json!({"content":"x"}));
+    let save = tool(
+        &env,
+        "m1",
+        "mcp__everos__memory_add",
+        json!({"content":"x"}),
+    );
     let decision = handle(&save, &mut env);
     assert!(
         matches!(&decision, Decision::Deny(why) if why.contains("fails closed")),
@@ -937,15 +948,20 @@ fn a_memory_save_with_unreadable_task_state_fails_closed() {
 fn the_proposal_path_cannot_lift_a_limit() {
     let d = dir("proposal-at-limit");
     let (mut env, id) = production(&d, json!({"turns":1}));
-    assert_eq!(handle(&bash(&env, "g1", "git status"), &mut env), Decision::None);
+    assert_eq!(
+        handle(&bash(&env, "g1", "git status"), &mut env),
+        Decision::None
+    );
     assert!(limit_denial(&handle(&write(&env, "w1"), &mut env)));
     let prompt = json!({"hook_event_name":"UserPromptSubmit","cwd":d.0,"session_id":"session",
         "prompt_id":"p2","prompt":"Keep going with the change"});
-    assert!(matches!(handle(&prompt, &mut env), Decision::Context { .. }));
-    let store: Value = serde_json::from_str(
-        &fs::read_to_string(env.state_dir.join("intents.json")).unwrap(),
-    )
-    .unwrap();
+    assert!(matches!(
+        handle(&prompt, &mut env),
+        Decision::Context { .. }
+    ));
+    let store: Value =
+        serde_json::from_str(&fs::read_to_string(env.state_dir.join("intents.json")).unwrap())
+            .unwrap();
     let latest = store["latest"]["session"].as_str().unwrap().to_owned();
     let event = &store["events"][&latest];
     for action in ["cancel", "pause"] {

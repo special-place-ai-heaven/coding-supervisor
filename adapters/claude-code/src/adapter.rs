@@ -1365,7 +1365,16 @@ fn process(
     let decision = match event {
         _ if let Some(denial) = refused_for_limit => denial,
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
-        "Stop" => session.stop(payload, &env.state_dir, agent, now, reasons)?,
+        // WP4: at a reached limit the stop is released whatever the judgement, so it spends no
+        // repair round on a refusal nobody sees.
+        "Stop" => session.stop(
+            payload,
+            &env.state_dir,
+            agent,
+            now,
+            reached.is_none(),
+            reasons,
+        )?,
         "PreToolUse" => session.pre_tool_use(payload)?,
         "PostToolUse" if text(payload, "tool_name") == Some("Agent") => {
             session.agent_result(payload)
@@ -1379,10 +1388,16 @@ fn process(
     };
     // WP4: a stop the gate refuses goes ahead at a reached limit, NOT certified, and the refusal
     // it never showed is not counted; one it lets through, a completion included, is untouched.
+    let uncertified = match &decision {
+        Decision::Block(_) => true,
+        // The refusal cap and a pending job let a stop through uncertified; a completed task's
+        // warning that the tree moved on is not that.
+        Decision::System(_) => session.task.state() != TaskState::Completed,
+        _ => false,
+    };
+    let release = matches!(event, "Stop" | "SubagentStop") && uncertified;
     let decision = match (decision, reached, &usage) {
-        (Decision::Block(_), Some(reached), Some(usage))
-            if matches!(event, "Stop" | "SubagentStop") =>
-        {
+        (_, Some(reached), Some(usage)) if release => {
             (session.gate.continuations, session.gate.handback_refusals) = refusals.clone();
             session.limit_release(event, reached, usage, &env.state_dir, reasons)?
         }
@@ -2208,10 +2223,9 @@ impl Session {
     }
 
     /// WP4: a PreToolUse at a reached limit that is not [`limit_exempt`] is refused whatever the
-    /// task state. A task that is not terminal moves to `budget_exhausted`; a terminal one, a
-    /// completed one included, keeps its state.
-    fn limit_denial(&mut self, reached: LimitReached, reasons: &mut Vec<String>) -> Decision {
-        let _ = self.task.exhaust_limit(reached);
+    /// task state, and changes no task state: both limits are recomputed at every call, so a
+    /// task whose evidence is complete still completes at its next Stop.
+    fn limit_denial(&self, reached: LimitReached, reasons: &mut Vec<String>) -> Decision {
         let what = crate::limits::reached_text(&reached);
         reasons.push(format!("task limit reached: {what}"));
         Decision::Deny(format!(
@@ -2230,23 +2244,36 @@ impl Session {
         dir: &Path,
         reasons: &mut Vec<String>,
     ) -> Result<Decision, String> {
+        let completed = self.task.state() == TaskState::Completed;
         let _ = self.task.exhaust_limit(reached);
         let what = crate::limits::reached_text(&reached);
-        reasons.push(format!(
-            "task limit reached: {what}; released NOT certified"
-        ));
+        let released = if completed {
+            "the task stays completed on the candidate it completed on"
+        } else {
+            "NOT certified"
+        };
+        reasons.push(format!("task limit reached: {what}; released, {released}"));
         if event == "SubagentStop" {
             return Ok(Decision::None);
         }
         let remaining = self.remaining_criteria();
+        let stop = if completed {
+            "this stop goes ahead; the task stays completed on the candidate it completed on, and the current work is NOT certified"
+        } else {
+            "this stop goes ahead NOT certified"
+        };
         Ok(Decision::System(blocking_words(&format!(
-            "GATE: task limit reached ({what}); this stop goes ahead NOT certified; elapsed {}; turns used {}; remaining criteria: {}; the work tree and logs are kept; for new work, {}",
+            "GATE: task limit reached ({what}); {stop}; elapsed {}; {}; remaining criteria: {}; the work tree and logs are kept; for new work, {}",
             usage
                 .elapsed_s
                 .map_or("unknown (no approval time)".to_owned(), |s| format!(
                     "{s} s"
                 )),
-            usage.turns_used,
+            usage
+                .turns_used
+                .map_or("turns not counted (no turn limit)".to_owned(), |n| format!(
+                    "turns used {n}"
+                )),
             if remaining.is_empty() {
                 "none".to_owned()
             } else {
@@ -2275,16 +2302,21 @@ impl Session {
             .collect()
     }
 
-    /// A stored, hook-linked receipt for baseline `c` that failed on the starting candidate.
+    /// Baseline `c` reproduced: its latest hook-observed receipt failed on the starting
+    /// candidate, the rule [`Self::observed_evidence`] applies in strict mode.
     fn reproduced(&self, c: &Criterion) -> bool {
-        let starting = self.task.starting_candidate();
-        self.gate.receipts.iter().any(|r| {
-            r.criterion == c.id
-                && Some(&r.candidate) == starting
-                && !r.output_ref.starts_with(MCP_ASSERTED)
-                && r.claim_supported
-                && r.exit_code.is_some_and(|code| code != 0)
-        })
+        let Some(dir) = self.evidence_dir.as_ref() else {
+            return false;
+        };
+        self.gate
+            .receipts
+            .iter()
+            .rev()
+            .find(|r| r.criterion == c.id && receipt_is_observed(dir, &self.task_id, r))
+            .is_some_and(|r| {
+                Some(&r.candidate) == self.task.starting_candidate()
+                    && r.exit_code.is_some_and(|code| code != 0)
+            })
     }
 
     /// A stored receipt for `c` on the task's candidate that the acceptance path would count:
@@ -2537,6 +2569,7 @@ impl Session {
         dir: &Path,
         agent: &str,
         now: u64,
+        repair: bool,
         reasons: &mut Vec<String>,
     ) -> Result<Decision, String> {
         let message = text(payload, "last_assistant_message").unwrap_or_default();
@@ -2609,6 +2642,7 @@ impl Session {
                 reasons.push(why.clone());
                 let mut round = "";
                 if autonomous
+                    && repair
                     && matches!(
                         self.task.state(),
                         TaskState::Verifying | TaskState::ReadyForReview
