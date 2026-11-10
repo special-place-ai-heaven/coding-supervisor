@@ -114,8 +114,10 @@ fn legacy_pending(root: &Path) -> Result<(), String> {
 }
 
 /// Start or replace an active task. The contract ID remains caller-owned; task_id is generated.
-pub fn start(
+/// `writer` is recorded in the stored contract's approval and supplies its base_sha.
+pub fn start_as(
     root: &Path,
+    writer: &state::Writer,
     contract: &Value,
     next: bool,
     requested: Option<&str>,
@@ -127,9 +129,12 @@ pub fn start(
     if let Some(active) = active_task(root)?
         && crate::autonomy::is_autonomous_task(&active.dir)?
     {
-        return Err("autonomous tasks require a prompt-bound cancellation proposal".to_owned());
+        return Err(format!(
+            "autonomous tasks require a prompt-bound cancellation proposal; a person can run `supervisor task cancel --project <dir> --task {} --reason <text>`",
+            active.task_id
+        ));
     }
-    let (response, writes) = plan_start(root, contract, next, requested, expected)?;
+    let (response, writes) = plan_start(root, writer, contract, next, requested, expected)?;
     tx.commit(writes)?;
     Ok(response)
 }
@@ -137,12 +142,22 @@ pub fn start(
 /// Caller holds the project transaction lock; allows prompt consumption and activation to commit together.
 pub(crate) fn plan_start(
     root: &Path,
+    writer: &state::Writer,
     contract: &Value,
     next: bool,
     requested: Option<&str>,
     expected: Option<&str>,
 ) -> Result<(Value, Vec<(PathBuf, String)>), String> {
-    let parsed = state::contract_from(contract)?;
+    // The caller's own contract is checked first, so a newer schema is refused rather than
+    // stamped over. What is saved is checked too: a v1-shaped request is stored as v2, so its
+    // v2 fields must load as v2 now rather than fail every later read. The request digests
+    // below stay over the caller's contract, so a replay still matches.
+    state::contract_from(contract)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let stored = state::stamp_v2(contract, writer, now);
+    let parsed = state::contract_from(&stored)?;
     legacy_pending(root)?;
     let previous = active_task(root)?;
     if let Some(previous) = &previous {
@@ -219,18 +234,34 @@ pub(crate) fn plan_start(
         ));
     }
     let prefix = PathBuf::from("tasks").join(&id);
-    writes.push((prefix.join("contract.json"), format!("{contract}\n")));
+    writes.push((prefix.join("contract.json"), format!("{stored}\n")));
     writes.push((prefix.join("task.json"), format!("{}\n", json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"recovery_of":recovery_of,"start_event_id":contract.get("event_id"),"start_request_digest":crate::sha256::hex(contract.to_string().as_bytes())}))));
     writes.push((
         PathBuf::from("active.json"),
         format!("{}\n", json!({"schema":2,"task_id":id})),
     ));
     let mut response = json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"state":"queued","recovery_of":recovery_of});
+    let mut warnings = Vec::new();
     if !parsed.forbidden_effects.is_empty() {
         // F13b: only typed entries in strict mode become refusals (M5); a reviewer checks the rest.
-        response["warnings"] = json!([
-            "forbidden_effects are recorded but not enforced, except typed entries (deny_path:, deny_git:, deny_argv_prefix:, deny_git_push_target:, deny_git_force_push) in strict mode; a reviewer must check the rest. Pushes to main, master or origin/HEAD, force-pushes and npm publish are refused by default from enforce up"
-        ]);
+        warnings.push("forbidden_effects are recorded but not enforced, except typed entries (deny_path:, deny_git:, deny_argv_prefix:, deny_git_push_target:, deny_git_force_push) in strict mode; a reviewer must check the rest. Pushes to main, master or origin/HEAD, force-pushes and npm publish are refused by default from enforce up".to_owned());
+    }
+    let replaced: Vec<&str> = ["isolation", "approval", "base_sha"]
+        .into_iter()
+        .filter(|key| {
+            contract
+                .get(*key)
+                .is_some_and(|v| Some(v) != stored.get(*key))
+        })
+        .collect();
+    if !replaced.is_empty() {
+        warnings.push(format!(
+            "{} replaced by the writer's own record: the gate stores who started the task, the repository head and isolation none (until WP3)",
+            replaced.join(", ")
+        ));
+    }
+    if !warnings.is_empty() {
+        response["warnings"] = warnings.into();
     }
     Ok((response, writes))
 }
@@ -285,7 +316,7 @@ pub fn reset_rounds(root: &Path, expected: &str, reason: &str) -> Result<Value, 
     if active.task_id != expected {
         return Err("active task changed".to_owned());
     }
-    let (_, digest) = state::read_contract(&active.dir)?;
+    let (contract, digest) = state::read_contract(&active.dir)?;
     let mut gate = match state::load_gate(&active.dir, &digest)? {
         Stored::Valid(gate) => gate,
         Stored::Absent => {
@@ -301,13 +332,25 @@ pub fn reset_rounds(root: &Path, expected: &str, reason: &str) -> Result<Value, 
             "task is {before}; only a budget_exhausted task can have its rounds reset"
         ));
     }
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // WP4: a reached task limit is recomputed at every hook call, so reopening the rounds would
+    // not reopen the task; a new contract does.
+    if let Some(contract) = &contract
+        && let Some(reached) =
+            crate::limits::usage(&active.dir, contract, t)?.and_then(|usage| usage.reached)
+    {
+        return Err(format!(
+            "task limit reached: {}; reset-rounds does not lift a task limit; for new work, {}",
+            crate::limits::reached_text(&reached),
+            crate::limits::way_out(&active.dir, &active.task_id)?
+        ));
+    }
     let rounds_before = gate.checkpoint.consumed_repair_rounds;
     gate.checkpoint.state = coding_supervisor::TaskState::Repairing;
     gate.checkpoint.consumed_repair_rounds = 0;
     gate.continuations = 0;
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
     let line = json!({"t":t,"event":"reset_rounds","task_id":active.task_id,"reason":reason,"rounds_before":rounds_before,"state_before":before,"state":"repairing"});
     let prefix = PathBuf::from("tasks").join(&active.task_id);
     let mut journal = match fs::read_to_string(active.dir.join("events.jsonl")) {
@@ -379,6 +422,11 @@ pub fn migrate(root: &Path, legacy: &Path) -> Result<Value, String> {
     Ok(json!({"task_id":id,"contract_id":contract.id.0,"migrated":true,"legacy_preserved":true}))
 }
 
+/// Legacy task state that a person must move with `task migrate --legacy` before hooks use it.
+pub fn legacy_migration_pending(root: &Path) -> bool {
+    root.join("legacy-location.json").exists() && !root.join("active.json").exists()
+}
+
 /// Mutate a task under one OS lock and one recoverable commit, including every task journal.
 /// Cached responses make replayed event IDs idempotent. A changed payload under one ID is refused.
 pub fn with_task(
@@ -390,10 +438,7 @@ pub fn with_task(
 ) -> Result<Value, String> {
     let tx = Transaction::open(root)?;
     let active = active_task(root)?;
-    if active.is_none()
-        && root.join("legacy-location.json").exists()
-        && !root.join("active.json").exists()
-    {
+    if active.is_none() && legacy_migration_pending(root) {
         return Err(
             "legacy task state found; explicitly task migrate --legacy <directory> before use"
                 .to_owned(),

@@ -21,6 +21,8 @@ pub struct Trace {
     pub level_source: Option<&'static str>,
     /// The level the user asked for, when the call ran at another one (M2); else `level`.
     pub requested: Option<Level>,
+    /// The call judged a v1 contract migrated in memory; journaled as a reason, not a field.
+    pub contract_v1: bool,
 }
 
 fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {

@@ -240,7 +240,14 @@ impl Server {
             };
         }
         let started = if tool == "task_start" {
-            match lifecycle::start(&self.state_dir, args, false, None, None) {
+            match lifecycle::start_as(
+                &self.state_dir,
+                &state::Writer::mcp(&self.project),
+                args,
+                false,
+                None,
+                None,
+            ) {
                 Ok(started) => Some(started),
                 Err(what) => {
                     return tool_result(
@@ -342,6 +349,9 @@ impl Server {
             Ok(text) => (text, false),
             Err(why) => (format!("GATE (advisory): {tool} refused: {why}"), true),
         };
+        if trace.contract_v1 {
+            reasons.push(state::V1_MIGRATED_REASON.to_owned());
+        }
         let payload = obj([("hook_event_name", format!("mcp:{tool}").into())]);
         let decision = is_error.then(|| obj([("systemMessage", text.clone().into())]));
         let mut line = journal::line(
@@ -382,6 +392,7 @@ impl Server {
             return Err("autonomous task requires observed hook evidence; MCP assertions cannot accept or complete it".into());
         }
         let (contract, digest) = state::read_contract(dir)?;
+        trace.contract_v1 = contract.as_ref().is_some_and(|c| c.migrated_from_v1);
         trace.task_id = contract
             .as_ref()
             .map(|c| lifecycle::task_identity(dir, &c.id.0))
@@ -439,6 +450,11 @@ impl Server {
                 return Err(refusal);
             }
         }
+        // WP4: shown by task_state only; this advisory server never moves a task at a limit.
+        let limits = match op {
+            Op::State => supervisor_claude_code::limits::usage_json(dir, &contract, now()),
+            _ => None,
+        };
         let mut session = Session::open(contract, stored, observed, true, reasons)?;
         let result = apply(&op, &mut session, reasons);
         session.gate.checkpoint = session.task.checkpoint();
@@ -459,6 +475,9 @@ impl Server {
                 supervisor_claude_code::autonomy::pending_jobs(dir, &task_id)?;
             details["paused"] = supervisor_claude_code::autonomy::is_paused(dir)?.into();
             details["worktree"] = supervisor_claude_code::binding::bound_root(dir).into();
+            if let Some(limits) = limits {
+                details["limits"] = limits;
+            }
             // G30: a criterion Stop will count from an observed run (also across a commit of
             // identical content) is not "missing" here.
             for id in supervisor_claude_code::adapter::observed_criteria(dir, &self.project)? {

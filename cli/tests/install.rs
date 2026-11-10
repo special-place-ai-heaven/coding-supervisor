@@ -206,6 +206,13 @@ fn claude_settings_keep_foreign_hooks_and_permissions_and_gain_the_fixture_hooks
             "{event} matcher"
         );
         assert_eq!(ours[0]["hooks"][0]["type"], "command");
+        // WP1: a PreToolUse hook that crashes or times out refuses the call, as in the plugin.
+        let on_failure = (event == "PreToolUse").then_some("block");
+        assert_eq!(
+            ours[0]["hooks"][0]["onFailure"].as_str(),
+            on_failure,
+            "{event} onFailure"
+        );
     }
 }
 

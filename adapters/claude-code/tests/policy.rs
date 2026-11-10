@@ -458,7 +458,7 @@ impl supervisor_claude_code::candidate::CandidateProvider for FixedCandidate {
 #[test]
 fn nonheader_completion_refuses_until_adapter_cap_without_marking_completed() {
     let f = Fixture::new("cap");
-    let started=supervisor_claude_code::lifecycle::start(&f.0,&json!({"id":"fixture","goal":"fixture","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"fixture-check"}],"scope":[],"forbidden_effects":[],"max_repair_rounds":2}),false,None,None).unwrap();
+    let started=supervisor_claude_code::lifecycle::start_as(&f.0, &supervisor_claude_code::state::Writer::task_start(None),&json!({"id":"fixture","goal":"fixture","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"fixture-check"}],"scope":[],"forbidden_effects":[],"max_repair_rounds":2}),false,None,None).unwrap();
     let mut env = supervisor_claude_code::adapter::Env {
         state_dir: f.0.clone(),
         state_location: "test",

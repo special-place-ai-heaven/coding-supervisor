@@ -24,8 +24,9 @@ pub fn run(command: &str, flags: &Flags) -> Result<(), Failure> {
                 .map_err(|e| Failure::Error(format!("{}: {e}", path.display())))?;
             let contract: Value = serde_json::from_str(&text)
                 .map_err(|_| Failure::Error("contract is not valid JSON".to_owned()))?;
-            lifecycle::start(
+            lifecycle::start_as(
                 &root,
+                &supervisor_claude_code::state::Writer::task_start(Some(&project)),
                 &contract,
                 command == "next",
                 flags.value("--disposition"),

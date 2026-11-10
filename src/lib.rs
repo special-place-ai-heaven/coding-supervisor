@@ -37,13 +37,93 @@ pub struct TaskContract {
     pub id: TaskId,
     pub goal: String,
     pub criteria: Vec<Criterion>,
-    /// Declared only. Not enforced by the gate in this slice: nothing observes
-    /// effects, so a forbidden effect neither blocks acceptance nor is prevented.
-    /// Enforcement needs adapter-supplied observations and an effect history
-    /// that survives candidate changes and resume; see T1-T2-RESULTS.md.
+    /// The core state machine does not observe effects. The Claude Code adapter refuses the
+    /// typed entries (`deny_path:`, `deny_git:`, `deny_argv_prefix:`, `deny_git_push_target:`,
+    /// `deny_git_force_push`) at PreToolUse in strict mode; any other entry is recorded only.
     pub forbidden_effects: Vec<String>,
     pub scope: Vec<String>,
     pub budget: Budget,
+    /// Contract v2: the commit the task started from; `None` outside a git repository and
+    /// for a migrated v1 contract.
+    pub base_sha: Option<String>,
+    /// Who or what applied the contract. Recorded, not proven.
+    pub approval: Option<Approval>,
+    pub limits: Limits,
+    /// Repository-relative paths the task must leave behind. Stored, not yet enforced.
+    pub artifacts: Vec<String>,
+    pub review: Review,
+    pub isolation: Isolation,
+    /// Loaded from a v1 file through the in-memory migration; the file itself stays v1.
+    pub migrated_from_v1: bool,
+}
+/// Recorded, not proven: the writer's own account of who applied a contract.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Approval {
+    pub by: Option<String>,
+    /// Seconds since the Unix epoch.
+    pub at: Option<u64>,
+    /// The writer, e.g. `task-start`, `agent-proposal`, `v1-migration`.
+    pub via: String,
+}
+/// Per-task ceilings. A turn is one PreToolUse call judged for the task; wall clock runs from
+/// `approval.at`. The caller counts both; the core only compares (see [`Limits::reached`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Limits {
+    pub wall_clock_s: Option<std::num::NonZeroU64>,
+    pub turns: Option<std::num::NonZeroU64>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LimitKind {
+    Turns,
+    WallClock,
+}
+/// A limit at or past its maximum: `used` turns or elapsed seconds against `max`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LimitReached {
+    pub kind: LimitKind,
+    pub used: u64,
+    pub max: u64,
+}
+impl Limits {
+    pub fn is_set(&self) -> bool {
+        self.turns.is_some() || self.wall_clock_s.is_some()
+    }
+    /// `turns_used` judged calls before this one, `elapsed_s` since approval (`None` when the
+    /// approval time is unknown, which means no wall-clock limit). `turns: n` admits exactly n
+    /// calls; the turn limit is reported first when both are reached.
+    pub fn reached(&self, turns_used: u64, elapsed_s: Option<u64>) -> Option<LimitReached> {
+        let turns = self.turns.map(|max| LimitReached {
+            kind: LimitKind::Turns,
+            used: turns_used,
+            max: max.get(),
+        });
+        let clock = self
+            .wall_clock_s
+            .zip(elapsed_s)
+            .map(|(max, used)| LimitReached {
+                kind: LimitKind::WallClock,
+                used,
+                max: max.get(),
+            });
+        [turns, clock]
+            .into_iter()
+            .flatten()
+            .find(|l| l.used >= l.max)
+    }
+}
+/// Stored, not yet enforced.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Review {
+    pub required: bool,
+    pub independent: bool,
+}
+/// Stored, not yet enforced.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Isolation {
+    /// `"none"` in contract.json: the task works in the shared checkout.
+    #[default]
+    Shared,
+    Worktree,
 }
 
 /// File scopes are exact; directory scopes end with `/`. Git paths must be normalized
@@ -482,6 +562,22 @@ impl Task {
     }
     pub fn cancel(&mut self) -> Result<(), GateError> {
         self.stop(TaskState::Cancelled, "cancel", String::new())
+    }
+    /// A task limit was reached: no further work. Like `block`, this needs no observed
+    /// candidate, and a terminal task (a completed one included) never changes.
+    pub fn exhaust_limit(&mut self, reached: LimitReached) -> Result<(), GateError> {
+        let what = match reached.kind {
+            LimitKind::Turns => "turns",
+            LimitKind::WallClock => "seconds",
+        };
+        self.stop(
+            TaskState::BudgetExhausted,
+            "exhaust_limit",
+            format!(
+                "task limit reached: {} of {} {what}",
+                reached.used, reached.max
+            ),
+        )
     }
     pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint {

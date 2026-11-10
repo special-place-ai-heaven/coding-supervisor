@@ -738,6 +738,10 @@ fn merge_settings(before: Option<&str>, command: Option<&str>) -> Result<String,
         if event == "SessionEnd" {
             hook["timeout"] = SESSION_END_TIMEOUT.into();
         }
+        // As in hooks/hooks.json: a hook that crashes or times out refuses the tool call.
+        if event == "PreToolUse" {
+            hook["onFailure"] = "block".into();
+        }
         group.insert("hooks".into(), json!([hook]));
         groups.push(Value::Object(group));
     }

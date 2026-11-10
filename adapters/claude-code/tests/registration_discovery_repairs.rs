@@ -601,7 +601,7 @@ fn continue_on_an_operator_task_says_it_converted_the_task() {
     let f = Fixture::new();
     let root = f.0.join("state");
     let project = f.0.join("project");
-    let started = lifecycle::start(&root, &json!({"id":"operator","goal":"fixture","criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}],"scope":["src/"],"forbidden_effects":[],"max_repair_rounds":2}), false, None, None).unwrap();
+    let started = lifecycle::start_as(&root, &supervisor_claude_code::state::Writer::task_start(None), &json!({"id":"operator","goal":"fixture","criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}],"scope":["src/"],"forbidden_effects":[],"max_repair_rounds":2}), false, None, None).unwrap();
     let task = started["task_id"].as_str().unwrap();
     for (id, converted) in [("first", true), ("second", false)] {
         let event = prompt(&root, &project, id);

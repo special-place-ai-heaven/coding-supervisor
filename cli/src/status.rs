@@ -301,6 +301,14 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
             }
             _ => active["lifecycle_state"] = "unknown".into(),
         }
+        if let Ok((Some(contract), _)) = read_contract(&task.dir) {
+            let now = supervisor_claude_code::adapter::now();
+            if let Some(limits) =
+                supervisor_claude_code::limits::usage_json(&task.dir, &contract, now)
+            {
+                active["limits"] = limits;
+            }
+        }
     }
     let hooks = if harness == "claude-code" {
         hook_configuration(project)
@@ -354,7 +362,7 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
         "registration":configuration(project,harness),"hooks":hooks,
         "connection":connection(root,harness),
         "action_policy":supervisor_claude_code::policy::configuration_status(root),
-        "task":active,"mode":mode,"effective_level":effective.name(),"requested_level":requested.name(),"level_note":level_note,"level_source":level_source,"receipt_provenance":provenance,
+        "task":active,"mode":mode,"effective_level":effective.name(),"requested_level":requested.name(),"failure_mode":if level::failure_open(root) {"open"} else {"closed"},"level_note":level_note,"level_source":level_source,"receipt_provenance":provenance,
         "coverage":{"completion":completion,"basis":"supported unrestricted project hook configuration; adapter fixtures and recorded Claude 2.1.312 trials; global settings and current model loading unproven","action_policy":"configured simple commands and exact tools only; see COVERAGE.md","same_user_security_boundary":false}
     })
 }
@@ -405,7 +413,7 @@ fn human(report: &Value) -> String {
         })
         .unwrap_or_else(|| "unknown".to_owned());
     let mut text = format!(
-        "supervisor {} ({})\nharness: {}\nproject: {}\nregistration: {} (configured binary: {}; configured version: {})\nconnection: {}; model session loaded: {}\ntask: {} (gate: {}; id: {})\nmode: {}\nlevel: {} ({})\nreceipts: {} observed; {} reconstructed; {} asserted; {} unverified\ncompletion coverage: {}\nbasis: {}\naction policy: {}\ncoverage: {}; same-user security boundary: false",
+        "supervisor {} ({})\nharness: {}\nproject: {}\nregistration: {} (configured binary: {}; configured version: {})\nconnection: {}; model session loaded: {}\ntask: {} (gate: {}; id: {})\nmode: {}\nlevel: {} ({})\nfailure: {}\nreceipts: {} observed; {} reconstructed; {} asserted; {} unverified\ncompletion coverage: {}\nbasis: {}\naction policy: {}\ncoverage: {}; same-user security boundary: false",
         s("/reporting_binary/version"),
         s("/reporting_binary/path"),
         s("/harness"),
@@ -424,6 +432,10 @@ fn human(report: &Value) -> String {
         s("/mode"),
         s("/effective_level"),
         s("/level_source"),
+        match s("/failure_mode") {
+            "open" => "open (advisory)",
+            other => other,
+        },
         count("/receipt_provenance/observed"),
         count("/receipt_provenance/reconstructed"),
         count("/receipt_provenance/asserted"),
@@ -436,7 +448,37 @@ fn human(report: &Value) -> String {
     if let Some(worktree) = report.pointer("/task/worktree").and_then(Value::as_str) {
         text.push_str(&format!("\nbound worktree: {worktree}"));
     }
+    if let Some(limits) = report.pointer("/task/limits") {
+        text.push_str(&format!("\nlimits: {}", limits_line(limits)));
+    }
     text
+}
+
+/// Counts only: hook payloads carry no cost data, so no spend is ever shown.
+fn limits_line(limits: &Value) -> String {
+    if limits.get("state").is_some() {
+        return "unknown (task journal or clock unreadable)".to_owned();
+    }
+    let number = |key: &str| limits.get(key).and_then(Value::as_u64);
+    let mut parts = Vec::new();
+    // Without a turn limit the journal is not read, so there is no count to show.
+    if let Some(max) = number("turns") {
+        let used = number("turns_used").map_or("unknown".to_owned(), |n| n.to_string());
+        parts.push(format!("{used} of {max} turns used"));
+    }
+    if let Some(max) = number("wall_clock_s") {
+        parts.push(match number("elapsed_s") {
+            Some(elapsed) if limits["clock_behind_approval"] == true => {
+                format!("elapsed {elapsed} s (clock behind approval) of {max} s")
+            }
+            Some(elapsed) => format!("elapsed {elapsed} s of {max} s"),
+            None => format!("no wall clock without an approval time ({max} s set)"),
+        });
+    }
+    if let Some(reached) = limits.get("reached").and_then(Value::as_str) {
+        parts.push(format!("reached: {reached}"));
+    }
+    parts.join("; ")
 }
 
 #[cfg(test)]
@@ -506,7 +548,15 @@ mod tests {
             "forbidden_effects":[],
             "max_repair_rounds":1
         });
-        lifecycle::start(&root, &contract, false, None, None).unwrap();
+        lifecycle::start_as(
+            &root,
+            &supervisor_claude_code::state::Writer::task_start(None),
+            &contract,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
         let task = lifecycle::active_task(&root).unwrap().unwrap();
         let (_, contract_digest) = read_contract(&task.dir).unwrap();
         let cwd = canonical_project(&project);

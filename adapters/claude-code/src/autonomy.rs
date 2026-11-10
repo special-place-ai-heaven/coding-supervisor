@@ -1317,6 +1317,16 @@ fn preserves(old: &Value, new: &Value, allow_scope_change: bool) -> Result<(), S
             "contract revision changed the repair budget or removed a forbidden effect".into(),
         );
     }
+    // WP4: an agent may lower or add a task limit, never raise or remove one.
+    if [
+        (old.limits.turns, new.limits.turns),
+        (old.limits.wall_clock_s, new.limits.wall_clock_s),
+    ]
+    .into_iter()
+    .any(|(old, new)| old.is_some_and(|old| new.is_none_or(|new| new > old)))
+    {
+        return Err("contract revision raised or removed a task limit".into());
+    }
     if !allow_scope_change
         && new
             .scope
@@ -1624,6 +1634,18 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         {
             unverified = Some(why);
         }
+        // WP4: a person's task (no autonomy.json) completed without observed evidence, e.g. on
+        // caller-asserted MCP receipts, is not replaced by an agent's start, which would shed the
+        // limits the person set; the person moves on with `task next`.
+        if let Some(active) = &active
+            && read(&active.dir.join("autonomy.json"))?.is_none()
+            && observed_completion(&active.dir, &active.task_id, project).is_err()
+        {
+            return Err(format!(
+                "the active task was started by a person and its completion rests on no hook-observed evidence, so an agent cannot replace it; a person runs `supervisor task next --task {} --contract <file>`",
+                active.task_id
+            ));
+        }
         let mut contract = add_floor(
             proposal.get("contract").ok_or("start needs a contract")?,
             &event["required_criteria"],
@@ -1633,6 +1655,7 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         // is corrected to `abandoned` below.
         let (mut response, task_writes) = lifecycle::plan_start(
             root,
+            &state::Writer::agent(project),
             &contract,
             active.is_some(),
             abandoned.as_ref().map(|_| "cancelled"),
@@ -1812,6 +1835,19 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 if let Some(floor) = metadata.get("requirement_floor") {
                     preserves(floor, &new, event["source"] == "hook")?;
                 }
+                // The agent cannot assert these: a revision keeps the task's approval (WP4 counts
+                // wall clock from approval.at), isolation and base. What is saved is checked.
+                let mut stored = new.clone();
+                if let Some(fields) = stored.as_object_mut() {
+                    fields.insert("schema_version".to_owned(), 2.into());
+                    for key in ["approval", "isolation", "base_sha"] {
+                        match old.get(key) {
+                            Some(kept) => fields.insert(key.to_owned(), kept.clone()),
+                            None => fields.remove(key),
+                        };
+                    }
+                }
+                state::contract_from(&stored)?;
                 let stage = root.join("autonomy-stage");
                 if stage.exists() {
                     fs::remove_dir_all(&stage).map_err(|e| e.to_string())?;
@@ -1850,7 +1886,10 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 }
                 metadata["invalidated_dispatches"] =
                     invalidated.into_iter().collect::<Vec<_>>().into();
-                atomic_write(&stage.join("contract.json"), format!("{new}\n").as_bytes())?;
+                atomic_write(
+                    &stage.join("contract.json"),
+                    format!("{stored}\n").as_bytes(),
+                )?;
                 let (_, new_digest) = state::read_contract(&stage)?;
                 if let Stored::Valid(mut gate) = gate {
                     gate.receipts.clear();

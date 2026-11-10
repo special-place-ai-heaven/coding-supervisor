@@ -1,6 +1,6 @@
 [package]
 name = "supervisor-claude-code"
-version = "0.13.4"
+version = "0.16.0"
 edition = "2024"
 
 [dependencies]
