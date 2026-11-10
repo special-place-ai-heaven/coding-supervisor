@@ -92,30 +92,84 @@ fn identity(input: &Value, tool: &str) -> Option<(Value, String)> {
 fn execution_profile(input: &Value) -> Value {
     let mut approved = input.get("shell").is_none_or(Value::is_null);
     let mut target_digest = None;
+    // G46: the names of what was refused (never a value), so the refusal can say which.
+    let mut refused: Vec<Value> = Vec::new();
     match input.get("env") {
         None | Some(Value::Null) => {}
-        Some(Value::Array(values)) if values.is_empty() => {}
-        Some(Value::Array(values)) if values.len() == 1 => {
-            let value = &values[0];
+        Some(Value::Array(values)) => {
             let inherited = std::env::var("CARGO_TARGET_DIR")
                 .ok()
                 .filter(|v| !v.is_empty());
-            if value.as_object().is_some_and(|fields| fields.len() == 2)
-                && text(value, "key") == Some("CARGO_TARGET_DIR")
-                && inherited
-                    .as_deref()
-                    .is_some_and(|target| text(value, "value") == Some(target))
-            {
-                // This setting is nonsecret and already approved by the host. Its
-                // digest binds dispatch to completion without storing its value.
-                target_digest = inherited.map(|target| crate::sha256::hex(target.as_bytes()));
-            } else {
-                approved = false;
+            for value in values {
+                let key = value
+                    .as_object()
+                    .filter(|fields| fields.len() == 2 && text(value, "value").is_some())
+                    .and_then(|_| text(value, "key"));
+                match key {
+                    Some(key) if HARMLESS_ENV.contains(&key) => {}
+                    Some("CARGO_TARGET_DIR") if inherited.as_deref() == text(value, "value") => {
+                        // This setting is nonsecret and already approved by the host. Its
+                        // digest binds dispatch to completion without storing its value.
+                        target_digest = inherited
+                            .as_deref()
+                            .map(|target| crate::sha256::hex(target.as_bytes()));
+                    }
+                    _ => {
+                        approved = false;
+                        let name = text(value, "key").filter(|key| {
+                            (1..=64).contains(&key.len())
+                                && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                        });
+                        refused.push(name.into());
+                    }
+                }
             }
         }
         _ => approved = false,
     }
-    json!({"name":"local-default-v1", "approved":approved, "cargo_target_sha256":target_digest})
+    let mut profile = json!({"name":"local-default-v1", "approved":approved, "cargo_target_sha256":target_digest});
+    if !refused.is_empty() {
+        profile["unapproved_env"] = refused.into();
+    }
+    profile
+}
+
+/// G46: environment variables that change how a check runs or prints (job and thread counts,
+/// colour, progress), never what it builds or tests. Approved with any value, in every project.
+// shortcut: one built-in list; add a per-project list when a project needs a name outside it.
+pub(crate) const HARMLESS_ENV: &[&str] = &[
+    "CARGO_BUILD_JOBS",
+    "CARGO_TERM_COLOR",
+    "CARGO_TERM_PROGRESS_WHEN",
+    "CARGO_TERM_PROGRESS_WIDTH",
+    "RAYON_NUM_THREADS",
+    "RUST_TEST_THREADS",
+    "NEXTEST_TEST_THREADS",
+    "NO_COLOR",
+    "FORCE_COLOR",
+    "CLICOLOR",
+    "CLICOLOR_FORCE",
+    "NPM_CONFIG_COLOR",
+    "NPM_CONFIG_PROGRESS",
+];
+
+/// What an unapproved dispatch set, for the refusal: names as journaled, the rest counted.
+pub(crate) fn unapproved_env(record: &Value) -> Option<String> {
+    let refused = record
+        .get("execution_profile")?
+        .get("unapproved_env")?
+        .as_array()?;
+    let mut parts: Vec<String> = refused
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    let unnamed = refused.len() - parts.len();
+    if unnamed > 0 {
+        let plural = if unnamed == 1 { "" } else { "s" };
+        parts.push(format!("{unnamed} unnamed variable{plural}"));
+    }
+    (!parts.is_empty()).then(|| parts.join(" and "))
 }
 
 /// Validate stored approval without reapproving old records from today's environment.

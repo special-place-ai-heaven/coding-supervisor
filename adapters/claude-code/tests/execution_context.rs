@@ -121,6 +121,32 @@ fn argv_command_start_environment_requires_approval() {
 fn shell_execution_environment_requires_approval() {
     refused_override("shell_exec");
 }
+/// G46 (field brief 2026-11-09, change 4d): a job count or a colour setting does not change
+/// what a check proves.
+#[test]
+fn a_harmless_variable_keeps_the_check() {
+    let (_fixture, mut env) = setup("cargo test");
+    let mut event = payload(&env, "run_and_watch", "jobs");
+    event["tool_input"]["env"] =
+        json!([{"key":"CARGO_BUILD_JOBS", "value":"8"}, {"key":"NO_COLOR", "value":"1"}]);
+    finish(&mut env, event, "exited", Some(0));
+    assert_eq!(stop(&mut env), Decision::None);
+}
+#[test]
+fn a_refused_variable_is_named() {
+    let (_fixture, mut env) = setup("cargo test");
+    let mut event = payload(&env, "run_and_watch", "modified");
+    event["tool_input"]["env"] = json!([{"key":"CARGO_BUILD_JOBS", "value":"8"},
+        {"key":"NODE_OPTIONS", "value":"--no-warnings"}, {"key":"not a name", "value":"x"}]);
+    finish(&mut env, event, "exited", Some(0));
+    let refusal = stop(&mut env);
+    assert!(
+        matches!(&refusal, Decision::Block(why) if why.contains("execution context")
+            && why.contains("set NODE_OPTIONS and 1 unnamed variable")
+            && !why.contains("not a name")),
+        "{refusal:?}"
+    );
+}
 #[test]
 fn explicit_shell_override_requires_approval() {
     let (_fixture, mut env) = setup("cargo test");

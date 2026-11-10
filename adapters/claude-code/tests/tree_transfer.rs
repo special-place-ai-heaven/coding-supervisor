@@ -290,6 +290,117 @@ fn with_a_docs_paths_list_a_code_edit_makes_the_evidence_stale() {
     refused(&f, &mut env);
 }
 
+/// G46: a clean checkout whose committed CI list names the documentation paths, and the task as
+/// a writer stores it: v2, based on that commit, with the discovered floor plus `extra`.
+fn docs_task(extra: &[Value]) -> (Fixture, Env) {
+    let (f, env) = setup();
+    git(&f.project, &["checkout", "-q", "--", "."]);
+    docs_paths_file(&f);
+    git(&f.project, &["add", "-A"]);
+    git(&f.project, &["commit", "-q", "-m", "list"]);
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(&f.project)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let floor = |id: &str, command: &str| json!({"id":id, "check":"repository_validation", "mandatory":true, "command":command});
+    let mut criteria = vec![
+        floor("AUTO_TEST", "cargo test"),
+        floor("AUTO_DIFF", "git diff --check"),
+    ];
+    criteria.extend(extra.iter().cloned());
+    fs::write(
+        env.state_dir.join("contract.json"),
+        json!({"schema_version":2, "isolation":"none",
+            "base_sha":String::from_utf8_lossy(&head.stdout).trim(),
+            "id":"tree", "goal":"docs", "scope":["src/","docs/","README.md",".github/"],
+            "forbidden_effects":[], "max_repair_rounds":2, "criteria":criteria})
+        .to_string(),
+    )
+    .unwrap();
+    (f, env)
+}
+
+fn diff_check(f: &Fixture, env: &mut Env) {
+    let mut pre = payload(f, "PreToolUse");
+    pre["tool_use_id"] = "diff".into();
+    pre["tool_input"]["command"] = "git diff --check".into();
+    assert_eq!(handle(&pre, env), Decision::None);
+    let mut post = pre.clone();
+    post["hook_event_name"] = "PostToolUse".into();
+    post["tool_response"] = json!({"interrupted":false});
+    assert_eq!(handle(&post, env), Decision::None);
+}
+
+/// G46 (field brief 2026-11-09, change 4a): a candidate that differs from the task's base only
+/// in what the base's CI list calls documentation needs no build or test, committed or not.
+#[test]
+fn a_docs_only_candidate_needs_only_the_diff_check() {
+    let (f, mut env) = docs_task(&[]);
+    docs_edit(&f);
+    diff_check(&f, &mut env);
+    accepted(&f, &mut env);
+    git(&f.project, &["add", "-A"]);
+    git(&f.project, &["commit", "-q", "-m", "docs"]);
+    assert_eq!(stop(&f, &mut env), Decision::None);
+}
+
+#[test]
+fn a_docs_only_candidate_still_needs_the_diff_check() {
+    let (f, mut env) = docs_task(&[]);
+    docs_edit(&f);
+    refused(&f, &mut env);
+}
+
+#[test]
+fn a_source_edit_beside_the_docs_keeps_the_full_floor() {
+    let (f, mut env) = docs_task(&[]);
+    docs_edit(&f);
+    fs::write(f.project.join("src/a.rs"), "a3\n").unwrap();
+    diff_check(&f, &mut env);
+    refused(&f, &mut env);
+}
+
+/// The list is read from the task's base commit, so a candidate cannot widen it.
+#[test]
+fn a_candidate_that_widens_the_docs_list_keeps_the_full_floor() {
+    let (f, mut env) = docs_task(&[]);
+    fs::write(
+        f.project.join(".github/docs-paths.txt"),
+        "docs/**\nsrc/**\n",
+    )
+    .unwrap();
+    fs::write(f.project.join("src/a.rs"), "a3\n").unwrap();
+    diff_check(&f, &mut env);
+    refused(&f, &mut env);
+}
+
+/// Review of G46: an index entry marked skip-worktree (or assume-unchanged) hides its edit from
+/// the tree, so a project with one keeps every check.
+#[test]
+fn a_source_edit_hidden_from_the_index_keeps_the_full_floor() {
+    for flag in ["--skip-worktree", "--assume-unchanged"] {
+        let (f, mut env) = docs_task(&[]);
+        git(&f.project, &["update-index", flag, "src/a.rs"]);
+        fs::write(f.project.join("src/a.rs"), "a3\n").unwrap();
+        docs_edit(&f);
+        diff_check(&f, &mut env);
+        refused(&f, &mut env);
+    }
+}
+
+/// Only the discovered floor scales; a criterion the contract's author wrote stays required.
+#[test]
+fn a_docs_only_candidate_keeps_a_hand_written_criterion() {
+    let (f, mut env) = docs_task(&[
+        json!({"id":"C2", "check":"repository_validation", "mandatory":true, "command":"make check"}),
+    ]);
+    docs_edit(&f);
+    diff_check(&f, &mut env);
+    refused(&f, &mut env);
+}
+
 /// Review of G28: a project whose CI names no documentation paths keeps the exact rule.
 #[test]
 fn without_a_ci_docs_list_a_docs_edit_invalidates() {
