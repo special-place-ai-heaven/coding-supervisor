@@ -145,9 +145,11 @@ pub(crate) fn plan_start(
     requested: Option<&str>,
     expected: Option<&str>,
 ) -> Result<(Value, Vec<(PathBuf, String)>), String> {
-    // What is saved is what is checked: a v1-shaped request is stored as v2, so its v2 fields
-    // must load as v2 now rather than fail every later read. The request digests below stay
-    // over the caller's contract, so a replay still matches.
+    // The caller's own contract is checked first, so a newer schema is refused rather than
+    // stamped over. What is saved is checked too: a v1-shaped request is stored as v2, so its
+    // v2 fields must load as v2 now rather than fail every later read. The request digests
+    // below stay over the caller's contract, so a replay still matches.
+    state::contract_from(contract)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
