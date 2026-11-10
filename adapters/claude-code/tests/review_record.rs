@@ -437,7 +437,9 @@ fn the_model_comes_from_the_agent_tool() {
     let (mut env, _) = setup(&d, &contract(required()));
     checks_pass(&mut env, "c1");
     agent_post(&mut env, "r2", "async_launched", "claude-opus-5-5");
-    reviewer(&mut env, "r2", "REVIEW: APPROVED");
+    // A rejection: outside git the launch content is unknown, so an approval would be dropped.
+    reviewer(&mut env, "r2", "REVIEW: REJECTED
+FINDING: x");
     assert_eq!(reviews(&env)[0]["model"], "claude-opus-5-5");
 }
 
@@ -1299,5 +1301,22 @@ fn a_rejection_after_an_edit_since_the_launch_is_recorded() {
     launch_in_background(&mut env, "r1");
     fs::write(project_of(&env).join("src/a.rs"), "a3\n").unwrap();
     git_review(&mut env, "r1", "REVIEW: REJECTED\nFINDING: wrong");
+    assert_eq!(reviews(&env)[0]["decision"], "rejected");
+}
+
+/// Round 3: with a launch row, content that could not be read on either side counts as changed.
+/// Outside a git repository the content tree is unavailable at the launch and at the stop, so a
+/// background approval is not stored; a rejection still is.
+#[test]
+fn a_background_approval_with_unreadable_content_is_not_counted() {
+    let d = dir("launch-unreadable");
+    let (mut env, _) = setup(&d, &contract(required()));
+    checks_pass(&mut env, "c1");
+    agent_post(&mut env, "r1", "async_launched", "claude-haiku-5-5");
+    assert_eq!(reviewer(&mut env, "r1", "REVIEW: APPROVED"), Decision::None);
+    assert!(reviews(&env).is_empty(), "{:?}", reviews(&env));
+    assert!(last_reasons(&env).contains("could not be read"), "{}", last_reasons(&env));
+    agent_post(&mut env, "r2", "async_launched", "claude-haiku-5-5");
+    reviewer(&mut env, "r2", "REVIEW: REJECTED\nFINDING: wrong");
     assert_eq!(reviews(&env)[0]["decision"], "rejected");
 }

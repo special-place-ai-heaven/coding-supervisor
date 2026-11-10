@@ -2885,15 +2885,16 @@ impl Session {
             return Ok(parsed.rest);
         };
         // An approval binds to the content a background reviewer was launched on: an edit since the
-        // launch is work it never saw. A caller-asserted approval would still meet `required`, so
-        // it is dropped, not downgraded. A foreground reviewer and the chair bind to this stop.
+        // launch is work it never saw, and content that could not be read on either side counts
+        // as changed. A caller-asserted approval would still meet `required`, so it is dropped,
+        // not downgraded. A foreground reviewer and the chair bind to this stop.
         if decision == coding_supervisor::ReviewDecision::Approved
             && agent != "main"
             && let Some(launch) = observation::delegated_content(dir, agent)?
-            && launch.as_deref() != self.tree.content()
+            && (launch.is_none() || launch.as_deref() != self.tree.content())
         {
             reasons.push(format!(
-                "approval by {agent} dropped: the content changed after the reviewer was launched"
+                "approval by {agent} dropped: the content changed or could not be read after the reviewer was launched"
             ));
             return Ok(parsed.rest);
         }
