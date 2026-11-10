@@ -741,3 +741,17 @@ fn a_reproduced_baseline_is_not_a_remaining_criterion() {
     };
     assert!(report.contains("remaining criteria: C2;"), "{report}");
 }
+
+/// With prompts registered a memory save is answered before the task gate; at a reached limit
+/// it goes on to the gate and is refused there.
+#[test]
+fn a_memory_save_is_refused_at_the_limit_in_the_production_layout() {
+    let d = dir("production-memory");
+    let (mut env, _) = production(&d, json!({"turns":1}));
+    let save = tool(&env, "m1", "mcp__everos__memory_add", json!({"content":"x"}));
+    assert_eq!(handle(&save, &mut env), Decision::None, "a save before the limit");
+    assert_eq!(handle(&bash(&env, "g1", "git status"), &mut env), Decision::None);
+    let save = tool(&env, "m2", "mcp__everos__memory_add", json!({"content":"x"}));
+    let decision = handle(&save, &mut env);
+    assert!(limit_denial(&decision), "{decision:?}");
+}
