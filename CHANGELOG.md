@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.17.3...v0.18.0) (2026-11-10)
+
+
+### Features
+
+* **receipt:** signed receipts and a dependency advisory check (WP6) ([d3053eb](https://github.com/special-place-ai-heaven/coding-supervisor/commit/d3053eb0099ccaad0e0ab22d664c03e9382ff4d2))
+
 ## [0.17.3](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.17.2...v0.17.3) (2026-11-10)
 
 
