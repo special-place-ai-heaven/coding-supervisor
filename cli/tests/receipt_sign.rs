@@ -532,9 +532,21 @@ fn a_relative_or_in_project_key_path_is_refused() {
 fn an_upper_case_revoking_entry_still_revokes() {
     let f = Fixture::new("case");
     f.task();
+    // A fixed key (RFC 8032 test 1's public secret), whose id 21fe31dfa154a261 holds letters,
+    // so the upper-case form always differs.
+    fs::create_dir_all(f.key.parent().unwrap()).unwrap();
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options
+        .open(&f.key)
+        .unwrap()
+        .write_all(b"9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60\n")
+        .unwrap();
     let signed = f.sign();
-    let upper = signed["key_id"].as_str().unwrap().to_uppercase();
-    assert_ne!(upper, signed["key_id"].as_str().unwrap(), "id has letters");
+    assert_eq!(signed["key_id"], "21fe31dfa154a261");
+    let upper = "21FE31DFA154A261".to_owned();
     let mut revoked = entry(&signed, json!("2026-11-10T00:00:00Z"));
     revoked["key_id"] = upper.clone().into();
     let (code, value) = f.verify(&f.keys_file(json!([entry(&signed, Value::Null), revoked])));
@@ -693,6 +705,32 @@ mod unix {
         let path = config.join("coding-supervisor").join("signing-key");
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// The default key path is checked like the override: an `XDG_CONFIG_HOME` inside the
+    /// project is refused, unsigned, and nothing is created there.
+    #[test]
+    fn a_default_key_path_inside_the_project_is_refused() {
+        let f = Fixture::new("xdg-inside");
+        let dir = f.task();
+        let config = f.project.join("xdg");
+        let out = f
+            .command(&["receipt", "sign"])
+            .env_remove("SUPERVISOR_SIGNING_KEY_FILE")
+            .env("XDG_CONFIG_HOME", &config)
+            .output()
+            .unwrap();
+        let (code, value) = parse(&out);
+        assert_eq!(
+            (code, &value["signature"]),
+            (0, &json!("unsigned")),
+            "{value}"
+        );
+        assert!(
+            !config.exists(),
+            "the key folder was created in the project"
+        );
+        assert!(!dir.join("signature.json").exists());
     }
 
     /// A key file readable by group or others is refused: unsigned with a reason.
