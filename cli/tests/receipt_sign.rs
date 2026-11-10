@@ -238,6 +238,60 @@ fn a_revoked_key_is_invalid() {
         value["reason"].as_str().unwrap().contains("revoked"),
         "{value}"
     );
+    // The same key listed again, unrevoked and first, does not undo the revocation.
+    let keys = f.keys_file(json!([
+        entry(&signed, Value::Null),
+        entry(&signed, json!("2026-11-10T00:00:00Z"))
+    ]));
+    let (code, value) = f.verify(&keys);
+    assert_eq!(
+        (code, &value["signature"]),
+        (3, &json!("invalid")),
+        "{value}"
+    );
+}
+
+/// A hand-edited contract or gate after signing is tampered state: sign and verify exit 1 with
+/// nothing on stdout, status shows unknown; never valid, never unsigned. A sidecar that is not
+/// JSON is invalid.
+#[test]
+fn tampered_state_is_an_error_and_a_broken_sidecar_is_invalid() {
+    let f = Fixture::new("tampered");
+    let dir = f.task();
+    let signed = f.sign();
+    let keys = f.keys_file(json!([entry(&signed, Value::Null)]));
+    fs::write(dir.join("signature.json"), "{not json").unwrap();
+    let (code, value) = f.verify(&keys);
+    assert_eq!(
+        (code, &value["signature"]),
+        (3, &json!("invalid")),
+        "{value}"
+    );
+    assert_eq!(f.status_signature()["state"], "unknown");
+    f.sign();
+    let contract = dir.join("contract.json");
+    let original = fs::read_to_string(&contract).unwrap();
+    let gate = dir.join("gate.json");
+    let gate_text = fs::read_to_string(&gate).unwrap();
+    let edits: [(&Path, String); 2] = [
+        (&contract, format!("{original} ")),
+        (&gate, gate_text.replacen("\"none\"", "\"nonf\"", 1)),
+    ];
+    for (path, edited) in edits {
+        let before = fs::read_to_string(path).unwrap();
+        assert_ne!(before, edited);
+        fs::write(path, &edited).unwrap();
+        for args in [
+            vec!["receipt", "sign"],
+            vec!["receipt", "verify", "--keys", keys.to_str().unwrap()],
+        ] {
+            let out = f.run(&args);
+            assert_eq!(out.status.code(), Some(1), "{args:?} {}", path.display());
+            assert!(out.stdout.is_empty(), "{args:?}: stdout must be empty");
+        }
+        assert_eq!(f.status_signature()["state"], "unknown");
+        fs::write(path, &before).unwrap();
+    }
 }
 
 /// Key id not listed, keys file absent, keys file not JSON: each invalid, never valid.
@@ -373,6 +427,11 @@ fn verdict_is_unchanged_by_the_signing_variable() {
     assert_eq!(with.stdout, without.stdout);
     assert!(!with.stdout.is_empty());
     assert!(!f.key.exists(), "verdict must not create a key");
+    // A signature beside the task changes no verdict either.
+    f.sign();
+    let signed = f.run(&["verdict", "--json"]);
+    assert_eq!(with.status.code(), signed.status.code());
+    assert_eq!(with.stdout, signed.stdout);
 }
 
 #[cfg(unix)]
