@@ -691,12 +691,14 @@ fn delegation_rows(dir: &Path) -> Result<(Vec<Value>, bool), String> {
     }
 }
 
-/// G16: journal a background Agent launch (PostToolUse `async_launched` names its `agentId`).
+/// G16: journal a background Agent launch (PostToolUse `async_launched` names its `agentId`), with
+/// the model the harness reported, which the agent's SubagentStop has no field for (WP5).
 pub(crate) fn record_delegation(
     dir: &Path,
     payload: &Value,
     task: &str,
     now: u64,
+    content: Option<&str>,
 ) -> Result<(), String> {
     let launched = payload
         .pointer("/tool_response/status")
@@ -714,8 +716,36 @@ pub(crate) fn record_delegation(
     state::append_line(
         &dir.join("delegations.jsonl"),
         &json!({"kind":"delegation","task_id":task,"session_id":text(payload,"session_id"),
-            "agent_id":agent,"tool_use_id":text(payload,"tool_use_id"),"t":now}),
+            "agent_id":agent,"tool_use_id":text(payload,"tool_use_id"),
+            "model":payload.pointer("/tool_response/resolvedModel").and_then(Value::as_str),
+            "content":content,"t":now}),
     )
+}
+
+/// WP5: the full-content tree recorded at the latest background launch of `agent`: `None` with
+/// no launch row (a foreground agent), `Some(None)` when the launch content is unknown or the
+/// records hold a line that cannot be read. A new launch row for the same agent replaces it.
+pub(crate) fn delegated_content(dir: &Path, agent: &str) -> Result<Option<Option<String>>, String> {
+    let (rows, malformed) = delegation_rows(dir)?;
+    // A line that cannot be read may be this agent's latest launch: a launch, content unknown.
+    if malformed {
+        return Ok(Some(None));
+    }
+    Ok(rows
+        .iter()
+        .rev()
+        .find(|r| text(r, "kind") == Some("delegation") && text(r, "agent_id") == Some(agent))
+        .map(|r| text(r, "content").map(str::to_owned)))
+}
+
+/// WP5: the model the launch of background agent `agent` reported, if any.
+pub(crate) fn delegated_model(dir: &Path, agent: &str) -> Result<Option<String>, String> {
+    let (rows, _) = delegation_rows(dir)?;
+    Ok(rows
+        .iter()
+        .rev()
+        .filter(|r| text(r, "kind") == Some("delegation") && text(r, "agent_id") == Some(agent))
+        .find_map(|r| text(r, "model").map(str::to_owned)))
 }
 
 /// G16: the worker named by this SubagentStop has ended, so close its open delegation (the

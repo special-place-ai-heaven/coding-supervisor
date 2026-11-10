@@ -263,3 +263,156 @@ fn task_start_refuses_a_newer_schema() {
     assert!(text.contains(env!("CARGO_PKG_VERSION")), "{text}");
     assert!(!s.state_dir().join("tasks").exists());
 }
+
+/// WP4: task_state shows a task's limits with turns used and elapsed seconds, never a cost.
+#[test]
+fn task_state_shows_limits_and_their_use() {
+    let d = dir("limits");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["limits"] = serde_json::json!({"turns":5,"wall_clock_s":600});
+    common::ok(&s, "task_start", contract);
+    let state = common::task_state(&s);
+    let limits = &state["limits"];
+    assert_eq!(limits["turns"], 5, "{state}");
+    assert_eq!(limits["wall_clock_s"], 600, "{state}");
+    // MCP calls are not turns: only judged PreToolUse hook calls count.
+    assert_eq!(limits["turns_used"], 0, "{state}");
+    assert!(limits["elapsed_s"].as_u64().is_some(), "{state}");
+    assert!(!state.to_string().contains("cost"), "{state}");
+
+    let d = dir("no-limits");
+    let s = server(&d);
+    common::ok(&s, "task_start", common::four());
+    assert_eq!(common::task_state(&s).get("limits"), None);
+}
+
+struct Fake;
+impl supervisor_claude_code::candidate::CandidateProvider for Fake {
+    fn observe(&self) -> Result<coding_supervisor::Candidate, String> {
+        Ok(coding_supervisor::Candidate {
+            id: coding_supervisor::CandidateId {
+                base_commit: "base".into(),
+                dirty_digest: "one".into(),
+            },
+            provenance: "fake".into(),
+            changed_paths: vec!["src/lib.rs".into()],
+        })
+    }
+}
+
+/// WP4 review: completing a person-started task through MCP on caller-asserted receipts does not
+/// lift its limit; the hooks still refuse shell work past it and leave the task completed.
+#[test]
+fn a_task_completed_through_mcp_still_refuses_hook_work_past_its_limit() {
+    use supervisor_claude_code::adapter::{Decision, Env, handle};
+    let d = dir("limits-completed");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["limits"] = json!({"turns":1});
+    common::ok(&s, "task_start", contract);
+    common::observe(&s, "one", &["src/lib.rs"]);
+    for criterion in ["C1", "C2", "C3", "C4"] {
+        common::pass(&s, criterion);
+    }
+    common::ok(&s, "accept_try", json!({}));
+    assert_eq!(
+        common::state(&common::ok(&s, "task_complete", json!({}))),
+        "completed"
+    );
+    let mut env = Env {
+        state_dir: s.state_dir().to_path_buf(),
+        state_location: "test",
+        candidate: Box::new(Fake),
+        clock: supervisor_claude_code::adapter::now,
+        level: supervisor_claude_code::level::Setting {
+            level: supervisor_claude_code::level::Level::Enforce,
+            ..Default::default()
+        },
+    };
+    let bash = |id: &str| {
+        json!({"hook_event_name":"PreToolUse","cwd":d.0.join("project"),"session_id":"session",
+            "agent_id":"main","tool_use_id":id,"tool_name":"Bash",
+            "tool_input":{"command":"echo x > out.txt"}})
+    };
+    assert_eq!(handle(&bash("b1"), &mut env), Decision::None);
+    let denied = handle(&bash("b2"), &mut env);
+    assert!(
+        matches!(&denied, Decision::Deny(why) if why.contains("task limit reached: 1 of 1 turns used")),
+        "{denied:?}"
+    );
+    assert_eq!(common::state(&common::task_state(&s)), "completed");
+}
+
+/// WP4 review round 3: a wall-clock-only contract shows no turn count.
+#[test]
+fn task_state_shows_no_turn_count_for_a_wall_clock_only_limit() {
+    let d = dir("limits-wall-only");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["limits"] = json!({"wall_clock_s":600});
+    common::ok(&s, "task_start", contract);
+    let state = common::task_state(&s);
+    assert_eq!(state["limits"]["wall_clock_s"], 600, "{state}");
+    assert_eq!(state["limits"]["turns"], Value::Null, "{state}");
+    assert_eq!(state["limits"]["turns_used"], Value::Null, "{state}");
+}
+
+/// WP5: `task_state` shows the review policy and the latest review for the checkpoint's
+/// candidate; the MCP server records no review, so a review-required task does not reach review.
+#[test]
+fn task_state_shows_the_review_policy_and_the_latest_review() {
+    use coding_supervisor::{ReviewDecision, ReviewProvenance, ReviewRecord};
+    use supervisor_claude_code::state::{
+        Stored, StoredReview, load_gate, read_contract, save_gate,
+    };
+    let d = dir("review");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["review"] = json!({"required":true,"independent":false});
+    common::ok(&s, "task_start", contract);
+    common::observe(&s, "one", &["src/lib.rs"]);
+    for c in ["C1", "C2", "C3", "C4"] {
+        common::pass(&s, c);
+    }
+    let why = common::refused(&s, "accept_try", json!({}));
+    assert!(why.contains("review"), "{why}");
+    let state = common::task_state(&s);
+    assert_eq!(
+        state["review"],
+        json!({"required":true,"independent":false,"met":false,"reason":"review_required","latest":null}),
+        "{state}"
+    );
+    let task = supervisor_claude_code::lifecycle::active_task(s.state_dir())
+        .unwrap()
+        .unwrap();
+    let (_, digest) = read_contract(&task.dir).unwrap();
+    let Stored::Valid(mut gate) = load_gate(&task.dir, &digest).unwrap() else {
+        panic!("no valid gate");
+    };
+    let candidate = gate.checkpoint.candidate.clone().unwrap();
+    let review = |reviewer: &str, decision, at| StoredReview {
+        review: ReviewRecord {
+            reviewer: reviewer.into(),
+            model: Some("claude-haiku-5-5".into()),
+            decision,
+            findings: vec![],
+            at,
+            candidate: candidate.clone(),
+            provenance: ReviewProvenance::Observed,
+        },
+        tree: None,
+    };
+    gate.reviews.push(review("r1", ReviewDecision::Rejected, 5));
+    gate.reviews.push(review("r2", ReviewDecision::Approved, 6));
+    save_gate(&task.dir, &gate, &digest).unwrap();
+    let state = common::task_state(&s);
+    assert_eq!(
+        state["review"],
+        json!({"required":true,"independent":false,"met":false,"reason":"review_rejected",
+            "latest":{"reviewer":"r2","model":"claude-haiku-5-5","decision":"approved","provenance":"observed","findings":0,"at":6}}),
+        "{state}"
+    );
+    let why = common::refused(&s, "accept_try", json!({}));
+    assert!(why.contains("rejected"), "{why}");
+}
