@@ -760,11 +760,16 @@ impl Production {
         .unwrap()
     }
     fn review_in(&mut self, session: &str, agent: &str, message: &str) -> Decision {
-        self.hook(json!({"hook_event_name":"SubagentStop","session_id":session,
-            "agent_id":agent,"stop_hook_active":false,"last_assistant_message":message}))
+        self.hook(
+            json!({"hook_event_name":"SubagentStop","session_id":session,
+            "agent_id":agent,"stop_hook_active":false,"last_assistant_message":message}),
+        )
     }
     fn reviews(&self) -> Vec<Value> {
-        self.gate()["reviews"].as_array().cloned().unwrap_or_default()
+        self.gate()["reviews"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
     }
     fn written(&self) -> Value {
         let dir = self.env.state_dir.join("tasks").join(&self.task);
@@ -907,9 +912,14 @@ fn a_hand_edit_of_a_stored_review_reads_as_tampered() {
     reviewer(&mut env, "r1", "REVIEW: REJECTED\nFINDING: off by one");
     let sealed = fs::read_to_string(task_dir(&env).join("gate.json")).unwrap();
     let (_, digest) = state::read_contract(&task_dir(&env)).unwrap();
-    let edits: [(&str, fn(&mut Value)); 3] = [
-        ("finding", |g| g["reviews"][0]["findings"][0] = json!("fine")),
-        ("decision", |g| g["reviews"][0]["decision"] = json!("approved")),
+    type Edit = fn(&mut Value);
+    let edits: [(&str, Edit); 3] = [
+        ("finding", |g| {
+            g["reviews"][0]["findings"][0] = json!("fine")
+        }),
+        ("decision", |g| {
+            g["reviews"][0]["decision"] = json!("approved")
+        }),
         ("removed", |g| {
             g.as_object_mut().unwrap().remove("reviews");
         }),
@@ -962,7 +972,10 @@ fn a_rejection_is_not_carried_onto_a_docs_only_fix() {
     let mut p = production_with("docs-fix", required(), true);
     p.checks("c1");
     assert_eq!(
-        p.review("r1", "REVIEW: REJECTED\nFINDING: the README names the wrong flag"),
+        p.review(
+            "r1",
+            "REVIEW: REJECTED\nFINDING: the README names the wrong flag"
+        ),
         Decision::None
     );
     fs::write(p.project.join("README.md"), "fixed\n").unwrap();
@@ -1004,7 +1017,10 @@ fn an_approval_is_not_carried_onto_a_docs_only_edit() {
     );
     let r = handle(&stop, &mut env);
     let why = blocked(&r);
-    assert!(why.contains("review required"), "the receipts carried, the review did not: {why}");
+    assert!(
+        why.contains("review required"),
+        "the receipts carried, the review did not: {why}"
+    );
     assert_ne!(gate(&env)["state"], "completed");
 }
 
@@ -1015,7 +1031,11 @@ fn an_approval_is_not_carried_onto_a_docs_only_edit() {
 fn a_rejection_is_recorded_on_a_pending_or_discussion_turn() {
     for discussion in [false, true] {
         let mut p = production(
-            if discussion { "discussion-reject" } else { "pending-reject" },
+            if discussion {
+                "discussion-reject"
+            } else {
+                "pending-reject"
+            },
             required(),
         );
         p.checks("c1");
@@ -1029,7 +1049,11 @@ fn a_rejection_is_recorded_on_a_pending_or_discussion_turn() {
             )
             .unwrap();
         } else {
-            assert!(autonomy::pending(&p.env.state_dir, "session").unwrap().is_some());
+            assert!(
+                autonomy::pending(&p.env.state_dir, "session")
+                    .unwrap()
+                    .is_some()
+            );
         }
         assert_eq!(p.review("a1", "REVIEW: APPROVED"), Decision::None);
         assert!(p.reviews().is_empty(), "an approval here stays dropped");
@@ -1073,7 +1097,10 @@ impl CandidateProvider for Unobservable {
 fn a_rejection_on_an_unobserved_candidate_fails_closed() {
     let d = dir("unobserved");
     let mut env = env_with(&d, &contract(required()), Box::new(Unobservable));
-    assert_eq!(subagent_stop(&mut env, "a1", "REVIEW: APPROVED"), Decision::None);
+    assert_eq!(
+        subagent_stop(&mut env, "a1", "REVIEW: APPROVED"),
+        Decision::None
+    );
     let r = subagent_stop(&mut env, "r1", "REVIEW: REJECTED\nFINDING: wrong");
     let why = blocked(&r);
     assert!(why.contains("fails closed"), "{why}");
@@ -1087,7 +1114,10 @@ fn a_revision_drops_approvals_and_keeps_rejections() {
     let mut p = production("revision-reviews", required());
     p.checks("c1");
     assert_eq!(p.review("a1", "REVIEW: APPROVED"), Decision::None);
-    assert_eq!(p.review("r1", "REVIEW: REJECTED\nFINDING: no"), Decision::None);
+    assert_eq!(
+        p.review("r1", "REVIEW: REJECTED\nFINDING: no"),
+        Decision::None
+    );
     assert_eq!(p.reviews().len(), 2);
     let mut revised = p.written();
     revised["artifacts"] = json!(["src/lib.rs", "src/extra.rs"]);

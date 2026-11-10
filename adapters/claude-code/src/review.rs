@@ -157,7 +157,8 @@ mod tests {
     /// reach gate.json, and they do not count toward the cap.
     #[test]
     fn control_characters_are_stripped_from_findings() {
-        let message = "REVIEW: REJECTED\nFINDING: \u{1b}[31mred\u{1b}[0m text\u{7}\u{9b}2J end \u{1b}";
+        let message =
+            "REVIEW: REJECTED\nFINDING: \u{1b}[31mred\u{1b}[0m text\u{7}\u{9b}2J end \u{1b}";
         let p = parse(message).unwrap();
         assert_eq!(p.findings, ["[31mred[0m text2J end"]);
         let long = format!("FINDING: {}{}", "\u{1b}".repeat(50), "x".repeat(400));

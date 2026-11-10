@@ -1207,7 +1207,6 @@ fn handle_inner(
         payload,
         env,
         observed,
-        event,
         agent,
         review_only,
         &mut reasons,
@@ -1253,12 +1252,12 @@ fn process(
     payload: &Value,
     env: &mut Env,
     observed: Result<Candidate, String>,
-    event: &str,
     agent: &str,
     review_only: bool,
     reasons: &mut Vec<String>,
     trace: &mut Trace,
 ) -> Result<Decision, String> {
+    let event = text(payload, "hook_event_name").unwrap_or_default();
     if event == "PreToolUse"
         && let Some(denial) = guard::state_write_denial(payload, &env.state_dir)
     {
@@ -2837,7 +2836,8 @@ impl Session {
                         .to_owned(),
                 );
             }
-            reasons.push("review not recorded: candidate identity could not be observed".to_owned());
+            reasons
+                .push("review not recorded: candidate identity could not be observed".to_owned());
             return Ok(parsed.rest);
         };
         // The chair and any agent that changed something in this task review their own work.
