@@ -438,8 +438,12 @@ fn the_model_comes_from_the_agent_tool() {
     checks_pass(&mut env, "c1");
     agent_post(&mut env, "r2", "async_launched", "claude-opus-5-5");
     // A rejection: outside git the launch content is unknown, so an approval would be dropped.
-    reviewer(&mut env, "r2", "REVIEW: REJECTED
-FINDING: x");
+    reviewer(
+        &mut env,
+        "r2",
+        "REVIEW: REJECTED
+FINDING: x",
+    );
     assert_eq!(reviews(&env)[0]["model"], "claude-opus-5-5");
 }
 
@@ -1319,7 +1323,11 @@ fn a_background_approval_with_unreadable_content_is_not_counted() {
     agent_post(&mut env, "r1", "async_launched", "claude-haiku-5-5");
     assert_eq!(reviewer(&mut env, "r1", "REVIEW: APPROVED"), Decision::None);
     assert!(reviews(&env).is_empty(), "{:?}", reviews(&env));
-    assert!(last_reasons(&env).contains("could not be read"), "{}", last_reasons(&env));
+    assert!(
+        last_reasons(&env).contains("could not be read"),
+        "{}",
+        last_reasons(&env)
+    );
     agent_post(&mut env, "r2", "async_launched", "claude-haiku-5-5");
     reviewer(&mut env, "r2", "REVIEW: REJECTED\nFINDING: wrong");
     assert_eq!(reviews(&env)[0]["decision"], "rejected");
@@ -1350,7 +1358,10 @@ fn no_review_rule_and_no_review_text_build_no_content_tree() {
     handle(&first, &mut env);
     let before = loose_objects(&project);
     launch_in_background(&mut env, "r1");
-    assert_eq!(git_review(&mut env, "r1", "Looked around, nothing to add."), Decision::None);
+    assert_eq!(
+        git_review(&mut env, "r1", "Looked around, nothing to add."),
+        Decision::None
+    );
     let stop = in_project(
         &env,
         json!({"hook_event_name":"Stop","session_id":"session","stop_hook_active":false,
@@ -1360,5 +1371,8 @@ fn no_review_rule_and_no_review_text_build_no_content_tree() {
     assert_eq!(loose_objects(&project), before, "a content tree was built");
     // Control: a review line computes the content tree, which the counter sees.
     git_review(&mut env, "r2", "REVIEW: REJECTED\nFINDING: x");
-    assert!(loose_objects(&project) > before, "the counter cannot see a content tree");
+    assert!(
+        loose_objects(&project) > before,
+        "the counter cannot see a content tree"
+    );
 }

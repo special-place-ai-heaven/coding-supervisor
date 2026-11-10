@@ -630,8 +630,8 @@ fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) -> Option
                 Ok(false) => return None,
                 Err(e) => {
                     let why = blocking_words(&format!(
-                    "GATE: the gate could not journal this tool ({e}); retry"
-                ));
+                        "GATE: the gate could not journal this tool ({e}); retry"
+                    ));
                     return Some(match env.level.level {
                         Level::Audit => Decision::System(why),
                         _ => Decision::Deny(why),
@@ -3615,8 +3615,10 @@ mod mutation_row_tests {
     /// `Transaction::open` fail with a text that names it "missing".
     #[test]
     fn a_lock_failure_refusal_is_worded_like_other_fail_closed_texts() {
-        let root: PathBuf = std::env::temp_dir()
-            .join(format!("supervisor-mutation-wording-{}", std::process::id()));
+        let root: PathBuf = std::env::temp_dir().join(format!(
+            "supervisor-mutation-wording-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&root);
         let state = root.join("state");
         fs::create_dir_all(root.join("src")).unwrap();
