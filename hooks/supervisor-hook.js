@@ -5,8 +5,8 @@
 // its stdout through byte for byte. `supervisor` is looked up in the absolute PATH entries only,
 // so a file an agent writes in the project directory is never run in its place. When the gate
 // cannot answer, PreToolUse, Stop, SubagentStop and any unrecognised payload are refused with
-// exit 2 and the reason on stderr; UserPromptSubmit, PostToolUse and PostToolUseFailure go ahead
-// with a systemMessage. A Stop or SubagentStop that Claude Code already continued once
+// exit 2 and the reason on stderr; UserPromptSubmit, PostToolUse, PostToolUseFailure and
+// SessionEnd go ahead with a systemMessage. A Stop or SubagentStop that Claude Code already continued once
 // (stop_hook_active) goes ahead with a NOT certified systemMessage, so a broken gate cannot loop
 // the session. The reason never says a file is missing: Claude Code treats exit 2 with such text
 // on Stop as non-blocking.
@@ -16,7 +16,7 @@ const fs = require("fs");
 const path = require("path");
 
 const TIMEOUT_MS = 20000;
-const FAIL_OPEN = ["UserPromptSubmit", "PostToolUse", "PostToolUseFailure"];
+const FAIL_OPEN = ["UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "SessionEnd"];
 const STOPS = ["Stop", "SubagentStop"];
 const UNSTARTABLE = "the supervisor command could not be started from PATH; install the gate with npm install -g coding-supervisor";
 

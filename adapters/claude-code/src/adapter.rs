@@ -439,8 +439,37 @@ pub fn handle(payload: &Value, env: &mut Env) -> Decision {
     note_agent_effects(payload, env, &decision).unwrap_or(decision)
 }
 
+/// G43: the owner's SessionEnd releases its unfinished task to a later session; any other call
+/// from that session shows it is back, at every level, `off` included. Returns the refusal for
+/// a release that could not be taken back at a call that can refuse (used from `enforce` up;
+/// the other calls and levels retry at the next one), and `Decision::None` for SessionEnd
+/// itself, whose output Claude Code discards.
+fn session_mark(payload: &Value, env: &Env) -> Option<Decision> {
+    let event = text(payload, "hook_event_name").unwrap_or_default();
+    let ended = (event == "SessionEnd").then(|| text(payload, "reason").unwrap_or("unknown"));
+    let marked = crate::autonomy::mark_session(
+        &env.state_dir,
+        text(payload, "session_id").unwrap_or_default(),
+        ended,
+    );
+    match (event, marked) {
+        ("SessionEnd", _) => Some(Decision::None),
+        ("PreToolUse", Err(what)) => Some(Decision::Deny(format!(
+            "GATE: session state unavailable: {what}"
+        ))),
+        ("Stop" | "SubagentStop", Err(what)) => Some(Decision::Block(format!(
+            "GATE: session state unavailable: {what}"
+        ))),
+        _ => None,
+    }
+}
+
 fn handle_at_level(payload: &Value, env: &mut Env) -> Decision {
     JOURNAL.set(Journal::StateUnproven);
+    let unmarked = session_mark(payload, env);
+    if unmarked == Some(Decision::None) {
+        return Decision::None;
+    }
     match env.level.level {
         Level::Off => protection(payload, env).unwrap_or(Decision::None),
         Level::Audit => match protection(payload, env) {
@@ -454,7 +483,7 @@ fn handle_at_level(payload: &Value, env: &mut Env) -> Decision {
             }
         },
         Level::Enforce | Level::Strict => {
-            let decision = judge(payload, env);
+            let decision = unmarked.unwrap_or_else(|| judge(payload, env));
             journal_refusal(payload, env, decision)
         }
     }
@@ -615,6 +644,16 @@ fn foreign_task(root: &Path, payload: &Value) -> bool {
         .is_some_and(|active| crate::autonomy::owns_session(&active.dir, session) == Ok(false))
 }
 
+/// Whether the active task's other-session owner has reported its end; `None` when this
+/// session owns the task, there is none, or ownership cannot be read.
+fn foreign_owner_ended(root: &Path, payload: &Value) -> Option<bool> {
+    let session = text(payload, "session_id").unwrap_or_default();
+    let active = lifecycle::active_task(root).ok().flatten()?;
+    crate::autonomy::foreign_owner_ended(&active.dir, session)
+        .ok()
+        .flatten()
+}
+
 fn judge(payload: &Value, env: &mut Env) -> Decision {
     let root = env.state_dir.clone();
     let event = text(payload, "hook_event_name").unwrap_or_default();
@@ -695,12 +734,21 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                         "Next call for new work: intent_apply {call} plus \"contract\": a scoped contract, at least {}; for a question, the same fields with \"action\":\"discussion\".",
                         crate::autonomy::MINIMAL_CONTRACT
                     )
+                } else if foreign_owner_ended(&root, payload) == Some(true) {
+                    // The owner reported its end: this session may start the next task.
+                    call["action"] = "start".into();
+                    format!(
+                        "The active task {} belonged to a session that has ended. If the user asked to resume that task, send \"action\":\"resume\". For new work: intent_apply {call} plus \"contract\": a scoped contract, at least {}; that archives the old task as abandoned. If its working tree has uncommitted changes the start is refused until the user chooses; then add \"abandon_previous\":true. For a question, the same fields with \"action\":\"discussion\".",
+                        intent["task_id"].as_str().unwrap_or_default(),
+                        crate::autonomy::MINIMAL_CONTRACT
+                    )
                 } else if foreign_task(&root, payload) {
-                    // `continue`, `start` and `cancel` are all refused for another session's
-                    // task; only a direct resume prompt or a person's cancel ends the block.
+                    // `continue`, `start` and `cancel` are all refused for a task whose session
+                    // has not reported ending; only a direct resume prompt or a person's cancel
+                    // ends the block, and the cancel is for a session known to be closed.
                     call["action"] = "discussion".into();
                     format!(
-                        "The active task {} belongs to another session; continue, start and cancel are refused from this one. If the user asked to resume that task, send \"action\":\"resume\". Otherwise call intent_apply {call} and tell the user that {}.",
+                        "The active task {} belongs to another session that has not ended, so it may be live and stays protected; continue, start and cancel are refused from this one. If the user asked to resume that task, send \"action\":\"resume\". Otherwise call intent_apply {call} and tell the user that the task is protected while that session may be running and, only if that session is closed, {}.",
                         intent["task_id"].as_str().unwrap_or_default(),
                         crate::autonomy::person_cancel(
                             &intent,

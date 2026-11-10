@@ -141,15 +141,20 @@ trusted folder; if the tools are missing, start once with `--trust` or run\n\
     },
 ];
 
-/// The six events and matchers of the proven fixture `.claude/settings-adapter.json`.
-const HOOK_EVENTS: [(&str, Option<&str>); 6] = [
+/// The six events and matchers of the proven fixture `.claude/settings-adapter.json`, and
+/// SessionEnd, which tells the gate that a task's owning session is gone.
+const HOOK_EVENTS: [(&str, Option<&str>); 7] = [
     ("UserPromptSubmit", None),
     ("PreToolUse", None),
     ("PostToolUse", None),
     ("PostToolUseFailure", None),
     ("SubagentStop", None),
     ("Stop", None),
+    ("SessionEnd", None),
 ];
+
+/// Claude Code gives a SessionEnd hook 1.5 s unless the hook names its own timeout (seconds).
+const SESSION_END_TIMEOUT: u64 = 30;
 
 /// Claude Code permission rule that allows every tool of the MCP server `supervisor`.
 const MCP_ALLOW: &str = "mcp__supervisor";
@@ -729,10 +734,11 @@ fn merge_settings(before: Option<&str>, command: Option<&str>) -> Result<String,
         if let Some(m) = matcher {
             group.insert("matcher".into(), m.into());
         }
-        group.insert(
-            "hooks".into(),
-            json!([{ "type": "command", "command": command }]),
-        );
+        let mut hook = json!({ "type": "command", "command": command });
+        if event == "SessionEnd" {
+            hook["timeout"] = SESSION_END_TIMEOUT.into();
+        }
+        group.insert("hooks".into(), json!([hook]));
         groups.push(Value::Object(group));
     }
     if command.is_none() && !had_hooks {

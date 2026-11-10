@@ -143,6 +143,7 @@ fn hook_configuration(project: &Path) -> Value {
         "PostToolUseFailure",
         "SubagentStop",
         "Stop",
+        "SessionEnd",
     ];
     let mut events = Vec::new();
     let mut restricted = Vec::new();
