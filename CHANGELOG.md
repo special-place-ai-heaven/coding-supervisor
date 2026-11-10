@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.16.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.15.0...v0.16.0) (2026-11-10)
+
+
+### Features
+
+* **gate:** enforce task time and turn limits ([6719066](https://github.com/special-place-ai-heaven/coding-supervisor/commit/67190666b2db1a666929c3d3e37336bb6095d274))
+* **gate:** enforce task time and turn limits ([0f103a1](https://github.com/special-place-ai-heaven/coding-supervisor/commit/0f103a1687779552e5f792325d0e46dafa1d6650))
+
+
+### Bug Fixes
+
+* **gate:** task limits review round 1 ([e874ace](https://github.com/special-place-ai-heaven/coding-supervisor/commit/e874ace6570fa40593facf6406b53a4d1d6e6fe3))
+* **gate:** task limits review round 2 ([94e4510](https://github.com/special-place-ai-heaven/coding-supervisor/commit/94e451004d06b4ef23a3dab44bdb12a3319076ec))
+* **gate:** task limits review round 3 ([5326954](https://github.com/special-place-ai-heaven/coding-supervisor/commit/532695466bed00d04252e9138097a336adbd1874))
+
 ## [0.15.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.14.0...v0.15.0) (2026-11-10)
 
 
