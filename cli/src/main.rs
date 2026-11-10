@@ -4,6 +4,8 @@
 mod init;
 mod install;
 mod level;
+mod receipt;
+mod signing;
 mod status;
 mod task;
 mod verdict;
@@ -29,6 +31,8 @@ const USAGE: &str = "usage: supervisor mcp [--project <dir>]  (serve the gate as
        supervisor level [off|audit|enforce|strict] [--project <dir>] [--global] [--failure open|closed]  (no level: show the effective one and the failure mode; a level: write it for the project, or with --global for the user; --failure open makes adapter errors advisory for the project instead of failing closed; lite, full and ultra are accepted aliases; exit 0 done, 1 error, 2 usage)
        supervisor status [--project <dir>] [--harness <claude-code|codex>] [--json]
        supervisor verdict [--project <dir>] [--task <active-id>] [--require <observed|asserted>] [--json]  (exit 0 pass, 3 fail, 1 could not answer, 2 usage; stdout empty on 1 and 2)
+       supervisor receipt sign [--project <dir>]  (sign the active task's stored state with this machine's key, created at the first sign: Windows Credential Manager, else a 0600 file under $XDG_CONFIG_HOME or ~/.config; SUPERVISOR_SIGNING_KEY_FILE=<path> selects a key file instead; prints the supervisor-keys.json entry to add, or unsigned with a reason; an agent running as the same OS user can reach the key, so a signature says this machine's supervisor signed this state, not proof)
+       supervisor receipt verify [--project <dir>] [--keys <file>]  (check signature.json against the current stored state and the listed keys, default <project>/supervisor-keys.json; exit 0 valid, 3 invalid or unsigned, 1 could not answer, 2 usage)
        supervisor install --harness <claude-code|codex|cursor|omp|grok> [--project <dir>] [--home <dir>] [--binary <path>] [--dry-run]
        supervisor --version
 
@@ -80,6 +84,16 @@ fn main() -> ExitCode {
                 parse_flags(rest, &["--project", "--proposal"], &[]).and_then(|f| intent(&f))
             }
             _ => Err(Failure::Usage("intent requires apply".to_owned())),
+        },
+        Some((command, rest)) if command == "receipt" => match rest.split_first() {
+            Some((action, rest)) if action == "sign" => {
+                parse_flags(rest, &["--project"], &[]).and_then(|f| receipt::run(action, &f))
+            }
+            Some((action, rest)) if action == "verify" => {
+                parse_flags(rest, &["--project", "--keys"], &[])
+                    .and_then(|f| receipt::run(action, &f))
+            }
+            _ => Err(Failure::Usage("receipt requires sign or verify".to_owned())),
         },
         Some((command, rest)) if command == "level" => level::run(rest),
         Some((command, rest)) if command == "status" => {
