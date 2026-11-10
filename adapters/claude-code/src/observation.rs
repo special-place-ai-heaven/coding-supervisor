@@ -723,10 +723,14 @@ pub(crate) fn record_delegation(
 }
 
 /// WP5: the full-content tree recorded at the latest background launch of `agent`: `None` with
-/// no launch row (a foreground agent), `Some(None)` when the launch content is unknown. A new
-/// launch row for the same agent replaces it.
+/// no launch row (a foreground agent), `Some(None)` when the launch content is unknown or the
+/// records hold a line that cannot be read. A new launch row for the same agent replaces it.
 pub(crate) fn delegated_content(dir: &Path, agent: &str) -> Result<Option<Option<String>>, String> {
-    let (rows, _) = delegation_rows(dir)?;
+    let (rows, malformed) = delegation_rows(dir)?;
+    // A line that cannot be read may be this agent's latest launch: a launch, content unknown.
+    if malformed {
+        return Ok(Some(None));
+    }
     Ok(rows
         .iter()
         .rev()

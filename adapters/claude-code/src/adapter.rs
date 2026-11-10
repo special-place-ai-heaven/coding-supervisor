@@ -3651,5 +3651,6 @@ mod mutation_row_tests {
             why.contains("retry") && !why.to_lowercase().contains("missing"),
             "{why}"
         );
+        assert!(why.contains("absent"), "{why}");
     }
 }

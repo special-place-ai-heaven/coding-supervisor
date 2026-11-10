@@ -1376,3 +1376,36 @@ fn no_review_rule_and_no_review_text_build_no_content_tree() {
         "the counter cannot see a content tree"
     );
 }
+
+/// A launch record that cannot be read counts as a launch with unknown content: the background
+/// reviewer's approval is dropped (a caller-asserted one would still meet `required`), and its
+/// rejection is kept.
+#[test]
+fn an_unreadable_launch_row_drops_the_approval() {
+    let (_d, mut env) = repository("launch-unparseable");
+    git_checks(&mut env, "c1");
+    launch_in_background(&mut env, "r1");
+    let path = task_dir(&env).join("delegations.jsonl");
+    let rows: Vec<String> = fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|l| {
+            if l.contains("\"delegation\"") && l.contains("\"r1\"") {
+                "{\"kind\":\"delegation\",".to_owned()
+            } else {
+                l.to_owned()
+            }
+        })
+        .collect();
+    fs::write(&path, rows.join("\n") + "\n").unwrap();
+    // The unreadable line also makes r1 count as a builder (G21), so its handback is judged.
+    git_review(&mut env, "r1", "REVIEW: APPROVED");
+    assert!(reviews(&env).is_empty(), "{:?}", reviews(&env));
+    assert!(
+        last_reasons(&env).contains("could not be read"),
+        "{}",
+        last_reasons(&env)
+    );
+    git_review(&mut env, "r1", "REVIEW: REJECTED\nFINDING: wrong");
+    assert_eq!(reviews(&env)[0]["decision"], "rejected");
+}
