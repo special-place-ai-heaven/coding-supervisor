@@ -544,7 +544,7 @@ fn load(dir: &Path, digest: &str, trace: &mut Trace) -> Result<Option<Gate>, Str
                 "gate state tampered ({what}); restore the state from the journal or start a new task"
             ))
         }
-        Stored::Valid(gate) => Ok(Some(gate)),
+        Stored::Valid(gate) => Ok(Some(*gate)),
         Stored::Absent => Ok(None),
     }
 }

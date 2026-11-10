@@ -1258,7 +1258,7 @@ fn process(
             reasons.push(format!("state tampered: {what}"));
             return Ok(tampered(payload, event, &what));
         }
-        Stored::Valid(gate) => Some(gate),
+        Stored::Valid(gate) => Some(*gate),
         Stored::Absent => None,
     };
     let Some(contract) = contract else {

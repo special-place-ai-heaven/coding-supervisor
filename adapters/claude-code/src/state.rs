@@ -595,7 +595,8 @@ pub fn min_tests(dir: &Path) -> Result<BTreeMap<String, u64>, String> {
 /// What gate.json holds after its hash chain was checked.
 pub enum Stored {
     Absent,
-    Valid(Gate),
+    /// Boxed: the gate is far larger than the other variants.
+    Valid(Box<Gate>),
     /// Names the broken link: `receipt <index>` or `checkpoint`.
     Tampered(String),
 }
@@ -612,8 +613,10 @@ pub fn load_gate(dir: &Path, contract_sha256: &str) -> Result<Stored, String> {
     if let Err(what) = chain::verify(&v, contract_sha256) {
         return Ok(Stored::Tampered(what));
     }
-    Ok(Gate::from_json(&v)
-        .map_or_else(|_| Stored::Tampered("checkpoint".to_owned()), Stored::Valid))
+    Ok(Gate::from_json(&v).map_or_else(
+        |_| Stored::Tampered("checkpoint".to_owned()),
+        |gate| Stored::Valid(Box::new(gate)),
+    ))
 }
 
 pub fn save_gate(dir: &Path, gate: &Gate, contract_sha256: &str) -> Result<(), String> {
