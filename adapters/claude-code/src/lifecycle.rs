@@ -129,7 +129,10 @@ pub fn start_as(
     if let Some(active) = active_task(root)?
         && crate::autonomy::is_autonomous_task(&active.dir)?
     {
-        return Err("autonomous tasks require a prompt-bound cancellation proposal".to_owned());
+        return Err(format!(
+            "autonomous tasks require a prompt-bound cancellation proposal; a person can run `supervisor task cancel --project <dir> --task {} --reason <text>`",
+            active.task_id
+        ));
     }
     let (response, writes) = plan_start(root, writer, contract, next, requested, expected)?;
     tx.commit(writes)?;
@@ -339,9 +342,9 @@ pub fn reset_rounds(root: &Path, expected: &str, reason: &str) -> Result<Value, 
             crate::limits::usage(&active.dir, contract, t)?.and_then(|usage| usage.reached)
     {
         return Err(format!(
-            "task limit reached: {}; reset-rounds does not lift a task limit; start new work with a new contract: supervisor task next --task {} --contract <file>",
+            "task limit reached: {}; reset-rounds does not lift a task limit; for new work, {}",
             crate::limits::reached_text(&reached),
-            active.task_id
+            crate::limits::way_out(&active.dir, &active.task_id)?
         ));
     }
     let rounds_before = gate.checkpoint.consumed_repair_rounds;

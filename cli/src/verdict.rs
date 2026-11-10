@@ -7,9 +7,9 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use coding_supervisor::{CandidateId, Criterion, VerificationReceipt};
+use coding_supervisor::{CandidateId, Criterion, TaskState, VerificationReceipt};
 use serde_json::{Value, json};
-use supervisor_claude_code::adapter::{MCP_ASSERTED, receipts_observed};
+use supervisor_claude_code::adapter::{MCP_ASSERTED, now, receipts_observed};
 use supervisor_claude_code::candidate::{GitCandidate, Unobserved};
 use supervisor_claude_code::level::{self, Level};
 use supervisor_claude_code::lifecycle;
@@ -243,6 +243,8 @@ struct TaskRef<'a> {
     contract_id: &'a str,
     /// SHA-256 of contract.json's bytes.
     contract_digest: &'a str,
+    /// `Some` for a budget_exhausted task, with the task limit it reached, if any.
+    exhausted: Option<Option<String>>,
 }
 
 /// The whole verdict as JSON, plus its exit code (0 pass, [`EXIT_UNMET`] fail). Every key is
@@ -293,6 +295,8 @@ fn report(
         Some("no_active_task")
     } else if matches!(head, Head::Unknown(_)) {
         Some("head_unknown")
+    } else if task.is_some_and(|t| t.exhausted.is_some()) {
+        Some("budget_exhausted")
     } else if !verdicts.iter().any(|v| v.criterion.mandatory) {
         Some("no_mandatory_criteria")
     } else if !unmet.is_empty() {
@@ -454,6 +458,7 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
             "verdict: --task is not the active task".to_owned(),
         ));
     }
+    let mut exhausted_note = None;
     let (value, exit_code) = match task {
         None => report(None, &head, require, &[], stamp),
         Some(task) => {
@@ -462,9 +467,9 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
             })?;
             let contract = contract
                 .ok_or_else(|| Failure::Error("verdict: active contract missing".to_owned()))?;
-            let receipts = match load_gate(&task.dir, &digest) {
-                Ok(Stored::Valid(gate)) => gate.receipts,
-                Ok(Stored::Absent) => Vec::new(),
+            let (receipts, gate_state) = match load_gate(&task.dir, &digest) {
+                Ok(Stored::Valid(gate)) => (gate.receipts, Some(gate.checkpoint.state)),
+                Ok(Stored::Absent) => (Vec::new(), None),
                 Ok(Stored::Tampered(what)) => {
                     return Err(Failure::Error(format!(
                         "verdict: task checkpoint tampered ({what})"
@@ -488,10 +493,20 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
                 .iter()
                 .map(|c| judge(c, &judged, &head))
                 .collect();
+            // WP4: a budget_exhausted task never passes; human output names its limit.
+            let exhausted = (gate_state == Some(TaskState::BudgetExhausted)).then(|| {
+                supervisor_claude_code::limits::usage(&task.dir, &contract, now())
+                    .ok()
+                    .flatten()
+                    .and_then(|usage| usage.reached)
+                    .map(|reached| supervisor_claude_code::limits::reached_text(&reached))
+            });
+            exhausted_note = exhausted.clone();
             let task_ref = TaskRef {
                 task_id: &task.task_id,
                 contract_id: &contract.id.0,
                 contract_digest: &digest,
+                exhausted,
             };
             report(Some(&task_ref), &head, require, &verdicts, stamp)
         }
@@ -499,7 +514,18 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
     if flags.switch("--json") {
         println!("{value}");
     } else {
-        println!("{}", human(&value));
+        let mut text = human(&value);
+        if let Some(limit) = exhausted_note {
+            let note = match limit {
+                Some(limit) => {
+                    format!("task state: budget_exhausted (task limit reached: {limit})")
+                }
+                None => "task state: budget_exhausted".to_owned(),
+            };
+            let at = text.rfind('\n').map_or(0, |i| i + 1);
+            text.insert_str(at, &format!("{note}\n"));
+        }
+        println!("{text}");
     }
     if exit_code == 0 {
         Ok(())

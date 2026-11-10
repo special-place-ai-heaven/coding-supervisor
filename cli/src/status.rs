@@ -302,10 +302,10 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
         }
         if let Ok((Some(contract), _)) = read_contract(&task.dir) {
             let now = supervisor_claude_code::adapter::now();
-            match supervisor_claude_code::limits::usage(&task.dir, &contract, now) {
-                Ok(Some(usage)) => active["limits"] = usage.json(),
-                Ok(None) => {}
-                Err(_) => active["limits"] = json!({"state":"unknown"}),
+            if let Some(limits) =
+                supervisor_claude_code::limits::usage_json(&task.dir, &contract, now)
+            {
+                active["limits"] = limits;
             }
         }
     }
@@ -466,6 +466,9 @@ fn limits_line(limits: &Value) -> String {
     }];
     if let Some(max) = number("wall_clock_s") {
         parts.push(match number("elapsed_s") {
+            Some(elapsed) if limits["clock_behind_approval"] == true => {
+                format!("elapsed {elapsed} s (clock behind approval) of {max} s")
+            }
             Some(elapsed) => format!("elapsed {elapsed} s of {max} s"),
             None => format!("no wall clock without an approval time ({max} s set)"),
         });

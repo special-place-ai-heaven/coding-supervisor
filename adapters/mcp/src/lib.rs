@@ -451,8 +451,8 @@ impl Server {
             }
         }
         // WP4: shown by task_state only; this advisory server never moves a task at a limit.
-        let usage = match op {
-            Op::State => supervisor_claude_code::limits::usage(dir, &contract, now())?,
+        let limits = match op {
+            Op::State => supervisor_claude_code::limits::usage_json(dir, &contract, now()),
             _ => None,
         };
         let mut session = Session::open(contract, stored, observed, true, reasons)?;
@@ -475,8 +475,8 @@ impl Server {
                 supervisor_claude_code::autonomy::pending_jobs(dir, &task_id)?;
             details["paused"] = supervisor_claude_code::autonomy::is_paused(dir)?.into();
             details["worktree"] = supervisor_claude_code::binding::bound_root(dir).into();
-            if let Some(usage) = &usage {
-                details["limits"] = usage.json();
+            if let Some(limits) = limits {
+                details["limits"] = limits;
             }
             // G30: a criterion Stop will count from an observed run (also across a commit of
             // identical content) is not "missing" here.

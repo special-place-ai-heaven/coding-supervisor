@@ -216,7 +216,12 @@ fn only_read_only_tools_proposals_and_status_run_at_the_limit() {
         ),
         (
             "x7",
-            tool(&env, "x7", "mcp__everos__memory_add", json!({"content":"x"})),
+            tool(
+                &env,
+                "x7",
+                "mcp__everos__memory_add",
+                json!({"content":"x"}),
+            ),
         ),
     ] {
         let decision = handle(&payload, &mut env);
@@ -308,7 +313,10 @@ fn run_check(env: &mut Env, id: &str) {
     pre["hook_event_name"] = "PostToolUse".into();
     pre["tool_response"] = json!({"stdout":"ok","stderr":"","interrupted":false});
     let after = handle(&pre, env);
-    assert!(!matches!(after, Decision::Deny(_) | Decision::Block(_)), "{after:?}");
+    assert!(
+        !matches!(after, Decision::Deny(_) | Decision::Block(_)),
+        "{after:?}"
+    );
 }
 
 /// The N-th admitted call may be the passing check: the task still completes, certified.
@@ -662,8 +670,13 @@ fn production(d: &Dir, limits: Value) -> (Env, String) {
     fs::create_dir_all(&env.state_dir).unwrap();
     let prompt = json!({"hook_event_name":"UserPromptSubmit","cwd":d.0,"session_id":"session",
         "prompt_id":"p1","prompt":"Implement the requested behavior"});
-    assert!(matches!(handle(&prompt, &mut env), Decision::Context { .. }));
-    let event = autonomy::pending(&env.state_dir, "session").unwrap().unwrap();
+    assert!(matches!(
+        handle(&prompt, &mut env),
+        Decision::Context { .. }
+    ));
+    let event = autonomy::pending(&env.state_dir, "session")
+        .unwrap()
+        .unwrap();
     let contract = json!({"id":"wp4","goal":"limits","scope":["src/"],"forbidden_effects":[],
         "max_repair_rounds":2,"limits":limits,
         "criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}]});
@@ -699,7 +712,11 @@ fn an_autonomous_task_in_the_production_layout_stops_at_its_turn_limit() {
         handle(&bash(&env, "g1", "git status"), &mut env),
         Decision::None
     );
-    assert_eq!(task_turns(&env, &id), 1, "a judged shell read was not counted");
+    assert_eq!(
+        task_turns(&env, &id),
+        1,
+        "a judged shell read was not counted"
+    );
     let decision = handle(&write(&env, "w1"), &mut env);
     assert!(limit_denial(&decision), "{decision:?}");
     let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
@@ -721,7 +738,10 @@ fn an_autonomous_task_in_the_production_layout_stops_at_its_turn_limit() {
         None,
     )
     .unwrap_err();
-    assert!(why.contains("supervisor task cancel --project <dir> --task"), "{why}");
+    assert!(
+        why.contains("supervisor task cancel --project <dir> --task"),
+        "{why}"
+    );
 }
 
 /// In strict mode a baseline criterion is met by the reported failure reproducing (exit not 0)
@@ -754,10 +774,27 @@ fn a_reproduced_baseline_is_not_a_remaining_criterion() {
 fn a_memory_save_is_refused_at_the_limit_in_the_production_layout() {
     let d = dir("production-memory");
     let (mut env, _) = production(&d, json!({"turns":1}));
-    let save = tool(&env, "m1", "mcp__everos__memory_add", json!({"content":"x"}));
-    assert_eq!(handle(&save, &mut env), Decision::None, "a save before the limit");
-    assert_eq!(handle(&bash(&env, "g1", "git status"), &mut env), Decision::None);
-    let save = tool(&env, "m2", "mcp__everos__memory_add", json!({"content":"x"}));
+    let save = tool(
+        &env,
+        "m1",
+        "mcp__everos__memory_add",
+        json!({"content":"x"}),
+    );
+    assert_eq!(
+        handle(&save, &mut env),
+        Decision::None,
+        "a save before the limit"
+    );
+    assert_eq!(
+        handle(&bash(&env, "g1", "git status"), &mut env),
+        Decision::None
+    );
+    let save = tool(
+        &env,
+        "m2",
+        "mcp__everos__memory_add",
+        json!({"content":"x"}),
+    );
     let decision = handle(&save, &mut env);
     assert!(limit_denial(&decision), "{decision:?}");
 }
