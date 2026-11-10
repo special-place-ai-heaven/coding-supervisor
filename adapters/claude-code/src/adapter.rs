@@ -1578,6 +1578,40 @@ fn process(
         None
     };
     let reached = usage.as_ref().and_then(|usage| usage.reached);
+    let tree_at = text(payload, "cwd")
+        .map(|cwd| crate::binding::bound_root(&env.state_dir).unwrap_or_else(|| cwd.to_owned()));
+    // G46: a candidate that differs from the task's base only in documentation is judged on the
+    // whitespace check alone. Only the discovered floor scales (a criterion the contract's
+    // author wrote stays), only for this judgement, and not in strict.
+    let mut contract = contract;
+    // `AUTO_` ids belong to discovery; an author's criterion never carries one.
+    let scales = |c: &Criterion| {
+        c.mandatory
+            && c.id.0.starts_with("AUTO_")
+            && c.check.0 == "repository_validation"
+            && !c.accepts("git diff --check")
+    };
+    // Asked only when a check could be skipped: the answer costs several git processes.
+    if matches!(event, "Stop" | "SubagentStop")
+        && env.level.level != Level::Strict
+        && contract.criteria.iter().any(scales)
+        && let (Some(root), Some(base)) = (&tree_at, &contract.base_sha)
+        && crate::git::only_docs_changed_since(Path::new(root), &env.state_dir, base)
+    {
+        let skipped: Vec<&str> = contract
+            .criteria
+            .iter_mut()
+            .filter(|c| scales(c))
+            .map(|c| {
+                c.mandatory = false;
+                c.id.0.as_str()
+            })
+            .collect();
+        reasons.push(format!(
+            "documentation-only candidate: not required: {}",
+            skipped.join(", ")
+        ));
+    }
     let mut session = Session::open_with_observed(
         contract,
         stored,
@@ -1587,9 +1621,8 @@ fn process(
         Some(&env.state_dir),
         env.level.level == Level::Strict,
     )?;
-    if let Some(cwd) = text(payload, "cwd") {
-        let tree_at = crate::binding::bound_root(&env.state_dir).unwrap_or_else(|| cwd.to_owned());
-        session.tree = CurrentTree::new(Path::new(&tree_at), &env.state_dir);
+    if let Some(tree_at) = &tree_at {
+        session.tree = CurrentTree::new(Path::new(tree_at), &env.state_dir);
     }
     if let Some(content) = content {
         let _ = session.tree.content.set(content);
@@ -2472,9 +2505,13 @@ impl Session {
             });
             let Some(latest) = latest else { continue };
             if !observation::approved_context(latest) {
+                let set = observation::unapproved_env(latest)
+                    .map(|names| format!(" (it set {names})"))
+                    .unwrap_or_default();
                 return Err(format!(
-                    "{} latest execution has unapproved or legacy execution context: rerun it without extra environment or shell; a CARGO_TARGET_DIR passed to the command counts only when the hook's own environment has the same value (set it in the harness settings env or cargo's [build] target-dir instead)",
-                    criterion.id.0
+                    "{} latest execution has unapproved or legacy execution context{set}: rerun it without extra environment or shell; job and thread counts, colour and progress variables are approved ({}); a CARGO_TARGET_DIR passed to the command counts only when the hook's own environment has the same value (set it in the harness settings env or cargo's [build] target-dir instead)",
+                    criterion.id.0,
+                    observation::HARMLESS_ENV.join(", ")
                 ));
             }
             let dispatch = text(latest, "dispatch_id").ok_or("command dispatch has no identity")?;

@@ -100,53 +100,90 @@ pub fn run_with_env(
 /// candidate rule, so a tree that cannot be computed never causes a refusal. Writes unreachable
 /// loose objects. The tree is of the worktree whose top level is `cwd`'s.
 pub fn worktree_tree(cwd: &Path, state_dir: &Path) -> Option<String> {
-    // The gate's own fallback state directory inside the project is not content, and neither
-    // is what the project's CI treats as documentation only (G28).
+    // What the project's CI treats as documentation only is not content (G28).
     let docs = crate::location::worktree_root(cwd)
-        .map(|top| ci_docs_only(&top))
+        .map(|top| ci_docs_only(|file| std::fs::read_to_string(top.join(file)).ok()))
         .unwrap_or_default();
-    tree_without(cwd, state_dir, &docs)
+    tree(cwd, state_dir, None, &docs)
 }
 
 /// WP5: the tree of the whole worktree content, documentation included, for reviews: a
 /// reviewer may have judged the README. Leaves out only the gate's own fallback state
 /// directory, and never reads the documentation list.
 pub fn content_tree(cwd: &Path, state_dir: &Path) -> Option<String> {
-    tree_without(cwd, state_dir, &[])
+    tree(cwd, state_dir, None, &[])
 }
 
-/// The worktree tree with the `docs` globs left out (none for [`content_tree`]).
-fn tree_without(cwd: &Path, state_dir: &Path, docs: &[String]) -> Option<String> {
+/// G46: whether the worktree differs from commit `base` only in what `base`'s own CI list calls
+/// documentation. The list is read from `base`, as CI reads it, so a candidate cannot widen it.
+/// `false` when the project names no documentation or anything cannot be computed, so the
+/// caller then keeps every check.
+pub fn only_docs_changed_since(cwd: &Path, state_dir: &Path, base: &str) -> bool {
+    if base.len() < 7 || !base.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return false;
+    }
+    let docs = ci_docs_only(|file| {
+        run(cwd, &["show", &format!("{base}:{file}")])
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+    });
+    // An index entry marked skip-worktree or assume-unchanged hides an edit from `git add`, so
+    // the worktree's tree would not show it: every entry must be a plain cached one (`H`).
+    let plain_index = run(cwd, &["ls-files", "-v"])
+        .ok()
+        .filter(|out| out.status.success())
+        .is_some_and(|out| {
+            out.stdout
+                .split(|b| *b == b'\n')
+                .all(|line| line.first().is_none_or(|tag| *tag == b'H'))
+        });
+    !docs.is_empty()
+        && plain_index
+        && tree(cwd, state_dir, Some(base), &docs)
+            .is_some_and(|was| tree(cwd, state_dir, None, &docs) == Some(was))
+}
+
+/// The tree of `commit`, or of the worktree, without the `docs` globs.
+fn tree(cwd: &Path, state_dir: &Path, commit: Option<&str>, docs: &[String]) -> Option<String> {
     let ok = |args: &[&str], env: &[(&str, &std::ffi::OsStr)]| {
         run_with_env(cwd, args, env)
             .ok()
             .filter(|out| out.status.success())
     };
-    let real = ok(&["rev-parse", "--git-path", "index"], &[])?;
-    let real = cwd.join(String::from_utf8_lossy(&real.stdout).trim());
     // Per process: parallel hook calls must not share one scratch index.
     let scratch = state_dir.join(format!("scratch-index-{}", std::process::id()));
     let _ = std::fs::remove_file(&scratch);
-    // An absent index (nothing staged yet) starts the scratch one empty.
-    if real.is_file() {
-        std::fs::copy(&real, &scratch).ok()?;
-        // Racy git: an entry no older than the index file is re-read, because a same-size edit
-        // in that second leaves its stat unchanged. A copy dated now (Linux) would make git
-        // trust that entry and miss the edit, so the copy keeps the real index's time.
-        let time = std::fs::metadata(&real).and_then(|m| m.modified()).ok()?;
-        std::fs::File::options()
-            .write(true)
-            .open(&scratch)
-            .and_then(|f| f.set_modified(time))
-            .ok()?;
+    if commit.is_none() {
+        let real = ok(&["rev-parse", "--git-path", "index"], &[])?;
+        let real = cwd.join(String::from_utf8_lossy(&real.stdout).trim());
+        // An absent index (nothing staged yet) starts the scratch one empty.
+        if real.is_file() {
+            std::fs::copy(&real, &scratch).ok()?;
+            // Racy git: an entry no older than the index file is re-read, because a same-size
+            // edit in that second leaves its stat unchanged. A copy dated now (Linux) would make
+            // git trust that entry and miss the edit, so the copy keeps the real index's time.
+            let time = std::fs::metadata(&real).and_then(|m| m.modified()).ok()?;
+            std::fs::File::options()
+                .write(true)
+                .open(&scratch)
+                .and_then(|f| f.set_modified(time))
+                .ok()?;
+        }
     }
     let env = [("GIT_INDEX_FILE", scratch.as_os_str())];
-    let mut add = vec!["add", "-A", "--", ":/", ":(top,exclude).supervisor/"];
     let excludes: Vec<String> = docs
         .iter()
         .map(|p| format!(":(top,exclude,glob){p}"))
         .collect();
-    add.extend(excludes.iter().map(String::as_str));
+    let mut add = match commit {
+        Some(commit) => vec!["read-tree", commit],
+        // The gate's own fallback state directory inside the project is not content.
+        None => vec!["add", "-A", "--", ":/", ":(top,exclude).supervisor/"],
+    };
+    if commit.is_none() {
+        add.extend(excludes.iter().map(String::as_str));
+    }
     // Tracked and committed documentation leaves the scratch index too, so a committed docs
     // edit does not change the tree either.
     let includes: Vec<String> = docs.iter().map(|p| format!(":(top,glob){p}")).collect();
@@ -170,9 +207,9 @@ fn tree_without(cwd: &Path, state_dir: &Path, docs: &[String]) -> Option<String>
 /// G28: what the project's CI treats as documentation only, as git glob patterns. The lines of
 /// `.github/docs-paths.txt` when that file exists (one list that CI reads too; blank lines and
 /// `#` comments skipped), otherwise the `paths-ignore` entries of `.github/workflows/ci.yml`.
-/// Empty when neither names a path.
-fn ci_docs_only(top: &Path) -> Vec<String> {
-    if let Ok(text) = std::fs::read_to_string(top.join(".github/docs-paths.txt")) {
+/// Empty when neither names a path. `read` gives a repository file's text by its path.
+fn ci_docs_only(read: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    if let Some(text) = read(".github/docs-paths.txt") {
         // A negated or absolute entry is not a plain path; leave it counted.
         return text
             .lines()
@@ -181,7 +218,7 @@ fn ci_docs_only(top: &Path) -> Vec<String> {
             .map(str::to_owned)
             .collect();
     }
-    let Ok(text) = std::fs::read_to_string(top.join(".github/workflows/ci.yml")) else {
+    let Some(text) = read(".github/workflows/ci.yml") else {
         return Vec::new();
     };
     let mut found: Vec<String> = Vec::new();
