@@ -1079,3 +1079,21 @@ fn a_rejection_on_an_unobserved_candidate_fails_closed() {
     assert!(why.contains("fails closed"), "{why}");
     plain(why);
 }
+
+/// A contract revision clears the receipts; it drops the approvals too (the reviewed contract
+/// changed) and keeps the rejections, so a revision cannot shed one.
+#[test]
+fn a_revision_drops_approvals_and_keeps_rejections() {
+    let mut p = production("revision-reviews", required());
+    p.checks("c1");
+    assert_eq!(p.review("a1", "REVIEW: APPROVED"), Decision::None);
+    assert_eq!(p.review("r1", "REVIEW: REJECTED\nFINDING: no"), Decision::None);
+    assert_eq!(p.reviews().len(), 2);
+    let mut revised = p.written();
+    revised["artifacts"] = json!(["src/lib.rs", "src/extra.rs"]);
+    let task = p.task.clone();
+    p.apply("revise", Some(&task), revised).unwrap();
+    let kept = p.reviews();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0]["decision"], "rejected");
+}

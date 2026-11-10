@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use coding_supervisor::TaskState;
+use coding_supervisor::{ReviewDecision, TaskState};
 use serde_json::{Value, json};
 
 use crate::lifecycle;
@@ -1770,6 +1770,9 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 let (_, new_digest) = state::read_contract(&stage)?;
                 if let Stored::Valid(mut gate) = gate {
                     gate.receipts.clear();
+                    // WP5: an approval was of the old contract; a rejection stays sticky.
+                    gate.reviews
+                        .retain(|s| s.review.decision == ReviewDecision::Rejected);
                     if gate.checkpoint.state == TaskState::ReadyForReview {
                         gate.checkpoint.state = TaskState::Verifying;
                     }
