@@ -1521,6 +1521,18 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         {
             unverified = Some(why);
         }
+        // WP4: a person's task (no autonomy.json) completed without observed evidence, e.g. on
+        // caller-asserted MCP receipts, is not replaced by an agent's start, which would shed the
+        // limits the person set; the person moves on with `task next`.
+        if let Some(active) = &active
+            && read(&active.dir.join("autonomy.json"))?.is_none()
+            && observed_completion(&active.dir, &active.task_id, project).is_err()
+        {
+            return Err(format!(
+                "the active task was started by a person and its completion rests on no hook-observed evidence, so an agent cannot replace it; a person runs `supervisor task next --task {} --contract <file>`",
+                active.task_id
+            ));
+        }
         let mut contract = add_floor(
             proposal.get("contract").ok_or("start needs a contract")?,
             &event["required_criteria"],

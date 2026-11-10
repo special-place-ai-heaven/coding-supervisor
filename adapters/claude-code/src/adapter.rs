@@ -1386,8 +1386,9 @@ fn process(
         }
         _ => Decision::None,
     };
-    // WP4: a stop the gate refuses goes ahead at a reached limit, NOT certified, and the refusal
-    // it never showed is not counted; one it lets through, a completion included, is untouched.
+    // WP4: at a reached limit a stop the gate would refuse, or let through uncertified (the
+    // refusal cap, a pending job), goes ahead NOT certified, and the refusal it never showed is
+    // not counted; a completion, and a completed task's warning, are untouched.
     let uncertified = match &decision {
         Decision::Block(_) => true,
         // The refusal cap and a pending job let a stop through uncertified; a completed task's
@@ -2233,9 +2234,11 @@ impl Session {
         ))
     }
 
-    /// WP4: a Stop or SubagentStop the gate refused, at a reached limit, goes ahead NOT
-    /// certified, and a task that is not terminal moves to `budget_exhausted`. A Stop says so in
-    /// a report; a SubagentStop says nothing, because any output there keeps the worker running.
+    /// WP4: a Stop or SubagentStop the gate refused or let through uncertified, at a reached
+    /// limit, goes ahead. A SubagentStop is released silently (any output there keeps the worker
+    /// running) and changes no task state, so the chair's own Stop still decides. A Stop says so
+    /// in a report and moves a task that is not terminal to `budget_exhausted`; a completed task
+    /// stays completed.
     fn limit_release(
         &mut self,
         event: &str,
@@ -2245,7 +2248,6 @@ impl Session {
         reasons: &mut Vec<String>,
     ) -> Result<Decision, String> {
         let completed = self.task.state() == TaskState::Completed;
-        let _ = self.task.exhaust_limit(reached);
         let what = crate::limits::reached_text(&reached);
         let released = if completed {
             "the task stays completed on the candidate it completed on"
@@ -2256,6 +2258,7 @@ impl Session {
         if event == "SubagentStop" {
             return Ok(Decision::None);
         }
+        let _ = self.task.exhaust_limit(reached);
         let remaining = self.remaining_criteria();
         let stop = if completed {
             "this stop goes ahead; the task stays completed on the candidate it completed on, and the current work is NOT certified"
@@ -2319,18 +2322,23 @@ impl Session {
             })
     }
 
-    /// A stored receipt for `c` on the task's candidate that the acceptance path would count:
-    /// exit 0, claim supported, not caller-asserted.
+    /// The rule of [`Self::observed_evidence`]: the latest hook-observed receipt for `c` on the
+    /// task's candidate exited 0, so a check that passed and then failed is not met.
     fn passing_on_checkpoint(&self, c: &Criterion) -> bool {
-        self.task.candidate().is_some_and(|candidate| {
-            self.gate.receipts.iter().any(|r| {
+        let (Some(candidate), Some(dir)) = (self.task.candidate(), self.evidence_dir.as_ref())
+        else {
+            return false;
+        };
+        self.gate
+            .receipts
+            .iter()
+            .rev()
+            .find(|r| {
                 r.criterion == c.id
                     && &r.candidate == candidate
-                    && !r.output_ref.starts_with(MCP_ASSERTED)
-                    && r.exit_code == Some(0)
-                    && r.claim_supported
+                    && receipt_is_observed(dir, &self.task_id, r)
             })
-        })
+            .is_some_and(|r| r.exit_code == Some(0))
     }
 
     fn subagent_stop(

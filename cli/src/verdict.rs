@@ -243,8 +243,9 @@ struct TaskRef<'a> {
     contract_id: &'a str,
     /// SHA-256 of contract.json's bytes.
     contract_digest: &'a str,
-    /// `Some` for a budget_exhausted task, with the task limit it reached, if any.
-    exhausted: Option<Option<String>>,
+    /// `Some` for a budget_exhausted task: whether a limit is its recorded cause, and the task
+    /// limit reached now, if any.
+    exhausted: Option<(bool, Option<String>)>,
 }
 
 /// The whole verdict as JSON, plus its exit code (0 pass, [`EXIT_UNMET`] fail). Every key is
@@ -467,9 +468,13 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
             })?;
             let contract = contract
                 .ok_or_else(|| Failure::Error("verdict: active contract missing".to_owned()))?;
-            let (receipts, gate_state) = match load_gate(&task.dir, &digest) {
-                Ok(Stored::Valid(gate)) => (gate.receipts, Some(gate.checkpoint.state)),
-                Ok(Stored::Absent) => (Vec::new(), None),
+            let (receipts, gate_state, next_action) = match load_gate(&task.dir, &digest) {
+                Ok(Stored::Valid(gate)) => (
+                    gate.receipts,
+                    Some(gate.checkpoint.state),
+                    gate.checkpoint.next_action,
+                ),
+                Ok(Stored::Absent) => (Vec::new(), None, String::new()),
                 Ok(Stored::Tampered(what)) => {
                     return Err(Failure::Error(format!(
                         "verdict: task checkpoint tampered ({what})"
@@ -493,13 +498,16 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
                 .iter()
                 .map(|c| judge(c, &judged, &head))
                 .collect();
-            // WP4: a budget_exhausted task never passes; human output names its limit.
+            // WP4: a budget_exhausted task never passes. The text output names a limit as the
+            // cause only when the gate recorded it as one (`Task::exhaust_limit`); a limit that
+            // is merely reached now is shown apart.
             let exhausted = (gate_state == Some(TaskState::BudgetExhausted)).then(|| {
-                supervisor_claude_code::limits::usage(&task.dir, &contract, now())
+                let reached = supervisor_claude_code::limits::usage(&task.dir, &contract, now())
                     .ok()
                     .flatten()
                     .and_then(|usage| usage.reached)
-                    .map(|reached| supervisor_claude_code::limits::reached_text(&reached))
+                    .map(|reached| supervisor_claude_code::limits::reached_text(&reached));
+                (next_action.starts_with("task limit reached"), reached)
             });
             exhausted_note = exhausted.clone();
             let task_ref = TaskRef {
@@ -515,11 +523,12 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         println!("{value}");
     } else {
         let mut text = human(&value);
-        if let Some(limit) = exhausted_note {
-            let note = match limit {
-                Some(limit) => {
+        if let Some((limit_caused, reached)) = exhausted_note {
+            let note = match reached {
+                Some(limit) if limit_caused => {
                     format!("task state: budget_exhausted (task limit reached: {limit})")
                 }
+                Some(limit) => format!("task state: budget_exhausted\nlimit usage now: {limit}"),
                 None => "task state: budget_exhausted".to_owned(),
             };
             let at = text.rfind('\n').map_or(0, |i| i + 1);
