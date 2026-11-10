@@ -318,6 +318,45 @@ fn a_link_inside_the_repository_pointing_outside_is_out_of_scope() {
     let _ = fs::remove_dir(&link);
 }
 
+/// A link whose target does not exist cannot be resolved, so its name inside the scope proves
+/// nothing: writing through it creates the target, wherever that is.
+#[test]
+fn a_dangling_link_inside_the_scope_is_out_of_scope() {
+    let d = dir("dangling");
+    let outside = dir("dangling-outside");
+    fs::create_dir_all(d.0.join("src")).unwrap();
+    #[cfg(unix)]
+    let target = {
+        let link = d.0.join("src").join("out.rs");
+        std::os::unix::fs::symlink(outside.0.join("new.rs"), &link).unwrap();
+        link
+    };
+    #[cfg(windows)]
+    let target = {
+        let link = d.0.join("src").join("out");
+        let gone = outside.0.join("gone");
+        fs::create_dir_all(&gone).unwrap();
+        assert!(
+            Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&gone)
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "mklink /J failed"
+        );
+        fs::remove_dir(&gone).unwrap();
+        link.join("x.rs")
+    };
+    let mut env = env(&d, &v2(), Level::Strict);
+    let decision = handle(&write(&env, "t1", &target), &mut env);
+    assert!(denied_for_scope(&decision), "{decision:?}");
+    #[cfg(windows)]
+    let _ = fs::remove_dir(d.0.join("src").join("out"));
+}
+
 fn written(dir: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(dir.join("contract.json")).unwrap()).unwrap()
 }
