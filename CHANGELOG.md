@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.15.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.14.0...v0.15.0) (2026-11-10)
+
+
+### Features
+
+* **gate:** canonical scope paths refuse unresolvable links ([e235347](https://github.com/special-place-ai-heaven/coding-supervisor/commit/e23534706058a98faee116b80ebb23c6db62b6db))
+* **gate:** contract v2 with explicit v1 migration ([96ed255](https://github.com/special-place-ai-heaven/coding-supervisor/commit/96ed2553e1aa3df72b7b1d32dc70b1ed4798a86d))
+* **gate:** task contract v2 with explicit v1 migration ([ef0211e](https://github.com/special-place-ai-heaven/coding-supervisor/commit/ef0211eec64bd9771c3981341152f8574a0f4fef))
+
+
+### Bug Fixes
+
+* **gate:** check the saved contract and keep v1 loading as on main ([073c2af](https://github.com/special-place-ai-heaven/coding-supervisor/commit/073c2af88968c4f609c73f994d1bb29c3bc8df6f))
+* **gate:** refuse a caller's newer schema before stamping at start ([942422f](https://github.com/special-place-ai-heaven/coding-supervisor/commit/942422f54501fd46e84df6de25e85bf94212ce65))
+
 ## [0.14.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.13.4...v0.14.0) (2026-11-10)
 
 
