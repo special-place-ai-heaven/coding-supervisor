@@ -1127,3 +1127,17 @@ fn a_revision_drops_approvals_and_keeps_rejections() {
     assert_eq!(kept.len(), 1, "{kept:?}");
     assert_eq!(kept[0]["decision"], "rejected");
 }
+
+/// Item 3 through the hook: a loosely written rejection is recorded, a loosely written approval
+/// is not.
+#[test]
+fn a_loose_rejection_counts_and_a_loose_approval_does_not() {
+    let d = dir("loose");
+    let (mut env, _) = setup(&d, &contract(required()));
+    checks_pass(&mut env, "c1");
+    reviewer(&mut env, "a1", "**REVIEW: APPROVED**");
+    reviewer(&mut env, "a2", "REVIEW: APPROVED - with caveats");
+    assert!(reviews(&env).is_empty());
+    reviewer(&mut env, "r1", "**Review: rejected** - see below\nFINDING: wrong");
+    assert_eq!(reviews(&env)[0]["decision"], "rejected");
+}

@@ -1,5 +1,5 @@
-//! WP5 reviewer protocol: a final message whose first non-empty line is `REVIEW: APPROVED` or
-//! `REVIEW: REJECTED`, with `FINDING: <text>` lines directly below it. The rest of the message is
+//! WP5 reviewer protocol: a final message whose first non-empty line is `REVIEW: APPROVED`
+//! (exactly) or `REVIEW: REJECTED` (read loosely), with `FINDING: <text>` lines directly below it. The rest of the message is
 //! left for the handback header, so a builder can review its own work and report as usual.
 
 use coding_supervisor::{CandidateId, GateError, Review, ReviewDecision, review_met};
@@ -28,10 +28,23 @@ pub fn parse(message: &str) -> Option<Parsed<'_>> {
         (start, line.trim())
     });
     let (_, first) = lines.by_ref().find(|(_, line)| !line.is_empty())?;
-    let decision = match first.strip_prefix("REVIEW:")?.trim() {
-        "APPROVED" => Some(ReviewDecision::Approved),
-        "REJECTED" => Some(ReviewDecision::Rejected),
-        _ => None,
+    // A review line is read loosely (markdown marks, any case), and so is a rejection, so a
+    // refusal written a little differently is not lost; an approval must be exact.
+    let plain: String = first
+        .chars()
+        .filter(|c| !matches!(c, '*' | '_' | '`'))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let value = plain.trim().strip_prefix("review:")?.trim_start();
+    let rejected = value
+        .strip_prefix("rejected")
+        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric()));
+    let decision = if first == "REVIEW: APPROVED" {
+        Some(ReviewDecision::Approved)
+    } else if rejected {
+        Some(ReviewDecision::Rejected)
+    } else {
+        None
     };
     let mut findings = Vec::new();
     let mut rest = "";
@@ -151,6 +164,37 @@ mod tests {
         ] {
             assert_eq!(parse(line).unwrap().decision, None, "{line}");
         }
+    }
+
+    /// Loose forms count for a rejection only: a refusal written a little differently must not
+    /// be lost, while an approval has to be exact.
+    #[test]
+    fn a_rejection_is_read_loosely_and_an_approval_exactly() {
+        for line in [
+            "**REVIEW: REJECTED**",
+            "REVIEW: REJECTED.",
+            "REVIEW: REJECTED - see below",
+            "Review: rejected",
+            "`review: Rejected`",
+            "__REVIEW:__ REJECTED",
+        ] {
+            let message = format!("{line}\nFINDING: x");
+            let p = parse(&message).unwrap_or_else(|| panic!("{line}"));
+            assert_eq!(p.decision, Some(ReviewDecision::Rejected), "{line}");
+            assert_eq!(p.findings, ["x"], "{line}");
+        }
+        for line in [
+            "REVIEW: APPROVED - with caveats",
+            "**REVIEW: APPROVED**",
+            "Review: approved",
+            "REVIEW: REJECTEDNESS",
+        ] {
+            assert_eq!(parse(line).map(|p| p.decision), Some(None), "{line}");
+        }
+        assert_eq!(
+            parse("REVIEW: APPROVED").unwrap().decision,
+            Some(ReviewDecision::Approved)
+        );
     }
 
     /// A finding is shown in a terminal by `status`; control characters (ESC included) never
