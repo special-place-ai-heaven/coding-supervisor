@@ -301,6 +301,8 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
             }
             _ => active["lifecycle_state"] = "unknown".into(),
         }
+        // WP6: whether a signature covers the stored state; never reads the key store.
+        active["signature"] = crate::receipt::status(root);
         if let Ok((Some(contract), digest)) = read_contract(&task.dir) {
             // WP5: the policy and the latest review for the candidate the task last observed.
             let (reviews, candidate) = match load_gate(&task.dir, &digest) {
@@ -457,6 +459,18 @@ fn human(report: &Value) -> String {
     );
     if let Some(worktree) = report.pointer("/task/worktree").and_then(Value::as_str) {
         text.push_str(&format!("\nbound worktree: {worktree}"));
+    }
+    if let Some(signature) = report.pointer("/task/signature") {
+        let state = signature["state"].as_str().unwrap_or("unknown");
+        text.push_str(&match state {
+            // Status compares the statement only; `supervisor receipt verify` checks the signature.
+            "signed_not_verified" => format!(
+                "\nsignature: signed (not verified) {} ({})",
+                signature["key_id"].as_str().unwrap_or("unknown"),
+                signature["storage"].as_str().unwrap_or("unknown")
+            ),
+            other => format!("\nsignature: {other}"),
+        });
     }
     if let Some(limits) = report.pointer("/task/limits") {
         text.push_str(&format!("\nlimits: {}", limits_line(limits)));

@@ -671,19 +671,29 @@ pub enum Stored {
 /// gate.json is only ever written whole by `save_gate` (temp file then rename), so a file that
 /// does not parse or does not match its chain was edited by something else.
 pub fn load_gate(dir: &Path, contract_sha256: &str) -> Result<Stored, String> {
+    load_gate_head(dir, contract_sha256).map(|(stored, _)| stored)
+}
+
+/// WP6: [`load_gate`] plus the chain head it verified (`checkpoint_hash`), from one read. The
+/// head is `Some` exactly when the gate is `Valid`.
+pub fn load_gate_head(
+    dir: &Path,
+    contract_sha256: &str,
+) -> Result<(Stored, Option<String>), String> {
     let Some(text) = read_optional(&dir.join("gate.json"))? else {
-        return Ok(Stored::Absent);
+        return Ok((Stored::Absent, None));
     };
+    let tampered = |what: String| Ok((Stored::Tampered(what), None));
     let Ok(v) = serde_json::from_str::<Value>(&text) else {
-        return Ok(Stored::Tampered("checkpoint".to_owned()));
+        return tampered("checkpoint".to_owned());
     };
     if let Err(what) = chain::verify(&v, contract_sha256) {
-        return Ok(Stored::Tampered(what));
+        return tampered(what);
     }
-    Ok(Gate::from_json(&v).map_or_else(
-        |_| Stored::Tampered("checkpoint".to_owned()),
-        |gate| Stored::Valid(Box::new(gate)),
-    ))
+    match (Gate::from_json(&v), v["checkpoint_hash"].as_str()) {
+        (Ok(gate), Some(head)) => Ok((Stored::Valid(Box::new(gate)), Some(head.to_owned()))),
+        _ => tampered("checkpoint".to_owned()),
+    }
 }
 
 pub fn save_gate(dir: &Path, gate: &Gate, contract_sha256: &str) -> Result<(), String> {
