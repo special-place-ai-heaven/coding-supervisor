@@ -162,26 +162,65 @@ fn the_turn_limit_admits_exactly_its_number_of_judged_calls() {
         why.contains("task limit reached: 3 of 3 turns used"),
         "{why}"
     );
-    assert!(why.contains("read-only tools still work"), "{why}");
+    assert!(why.contains("still allowed: read-only tools"), "{why}");
     plain(why);
     assert_eq!(gate_state(&env), TaskState::BudgetExhausted);
 }
 
+/// At a limit only read-only tools, intent proposals and the supervisor's own read-only status
+/// commands run. Routes that can run a program the agent prepared (git's diff drivers and
+/// textconv, a `--version` found on PATH) and memory saves are refused.
 #[test]
-fn read_only_calls_still_run_at_the_limit() {
+fn only_read_only_tools_proposals_and_status_run_at_the_limit() {
     let d = dir("read-only");
     let mut env = env(&d, &contract(json!({"turns":1})));
     assert_eq!(handle(&write(&env, "t1"), &mut env), Decision::None);
     assert!(limit_denial(&handle(&write(&env, "t2"), &mut env)));
     for (id, payload) in [
         ("r1", read(&env, "r1")),
-        ("r2", bash(&env, "r2", "git status")),
+        (
+            "r2",
+            tool(&env, "r2", "Grep", json!({"pattern":"x","path":"src"})),
+        ),
+        ("r3", bash(&env, "r3", "supervisor status --json")),
+        ("r4", bash(&env, "r4", "supervisor level")),
+        (
+            "r5",
+            bash(&env, "r5", "supervisor intent apply --proposal '{}'"),
+        ),
     ] {
         let decision = handle(&payload, &mut env);
         assert!(
             !matches!(decision, Decision::Deny(_)),
             "{id} denied: {decision:?}"
         );
+    }
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap();
+    let note = Path::new(&home)
+        .join(".claude")
+        .join("projects")
+        .join("limits-fixture")
+        .join("memory")
+        .join("note.md");
+    for (id, payload) in [
+        ("x1", bash(&env, "x1", "git status")),
+        ("x2", bash(&env, "x2", "git diff")),
+        ("x3", bash(&env, "x3", "git log -1")),
+        ("x4", bash(&env, "x4", "git show HEAD")),
+        ("x5", bash(&env, "x5", "node --version")),
+        (
+            "x6",
+            tool(&env, "x6", "Write", json!({"file_path":note,"content":"x"})),
+        ),
+        (
+            "x7",
+            tool(&env, "x7", "mcp__everos__memory_add", json!({"content":"x"})),
+        ),
+    ] {
+        let decision = handle(&payload, &mut env);
+        assert!(limit_denial(&decision), "{id} ran: {decision:?}");
     }
 }
 
@@ -239,8 +278,9 @@ fn a_stop_at_the_turn_limit_goes_ahead_with_the_report_every_time() {
     let mut env = env(&d, &contract(json!({"turns":1,"wall_clock_s":3600})));
     assert_eq!(handle(&write(&env, "t1"), &mut env), Decision::None);
     set_clock(APPROVED_AT + 42);
-    for message in ["Done. All checks pass.", "Stopping here."] {
-        let decision = handle(&stop(&env, message), &mut env);
+    // A stop the gate would refuse is released at the limit, every time.
+    for _ in 0..2 {
+        let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
         let Decision::System(report) = &decision else {
             panic!("stop not released with a report: {decision:?}");
         };
@@ -248,8 +288,61 @@ fn a_stop_at_the_turn_limit_goes_ahead_with_the_report_every_time() {
         assert!(report.contains("elapsed 42 s"), "{report}");
         assert!(report.contains("turns used 1"), "{report}");
         assert!(report.contains("remaining criteria: C2"), "{report}");
+        assert!(
+            report.contains("supervisor task next --task ")
+                && report.contains("--contract <file> --disposition budget_exhausted"),
+            "{report}"
+        );
         plain(report);
     }
+    // A stop the gate would let through anyway (no completion claim) is not a limit release.
+    assert_eq!(
+        handle(&stop(&env, "Stopping here."), &mut env),
+        Decision::None
+    );
+}
+
+fn run_check(env: &mut Env, id: &str) {
+    let mut pre = bash(env, id, "cargo test");
+    assert_eq!(handle(&pre, env), Decision::None, "{id} denied");
+    pre["hook_event_name"] = "PostToolUse".into();
+    pre["tool_response"] = json!({"stdout":"ok","stderr":"","interrupted":false});
+    let after = handle(&pre, env);
+    assert!(!matches!(after, Decision::Deny(_) | Decision::Block(_)), "{after:?}");
+}
+
+/// The N-th admitted call may be the passing check: the task still completes, certified.
+#[test]
+fn a_task_that_uses_every_turn_on_passing_work_still_completes() {
+    let d = dir("last-turn");
+    let mut env = env(&d, &contract(json!({"turns":2})));
+    assert_eq!(handle(&write(&env, "t1"), &mut env), Decision::None);
+    run_check(&mut env, "c1");
+    assert_eq!(pre_tool_lines(&env), 2);
+    let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
+    assert!(
+        !matches!(&decision, Decision::Block(_))
+            && !matches!(&decision, Decision::System(text) if text.contains("NOT certified")),
+        "{decision:?}"
+    );
+    assert_eq!(gate_state(&env), TaskState::Completed);
+}
+
+/// The wall clock may pass while the evidence is already complete: the stop is certified.
+#[test]
+fn a_task_with_full_evidence_completes_after_the_wall_clock_expired() {
+    let d = dir("late-stop");
+    let mut env = env(&d, &contract(json!({"wall_clock_s":600})));
+    assert_eq!(handle(&write(&env, "t1"), &mut env), Decision::None);
+    run_check(&mut env, "c1");
+    set_clock(APPROVED_AT + 900);
+    let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
+    assert!(
+        !matches!(&decision, Decision::Block(_))
+            && !matches!(&decision, Decision::System(text) if text.contains("NOT certified")),
+        "{decision:?}"
+    );
+    assert_eq!(gate_state(&env), TaskState::Completed);
 }
 
 #[test]
@@ -281,15 +374,22 @@ fn repair_round_exhaustion_keeps_its_refusal_when_no_limit_is_reached() {
     }
 }
 
+/// A completed task keeps its state, but the limit still refuses new work: completing a task
+/// (for example through MCP) does not lift it.
 #[test]
-fn a_completed_task_never_exhausts() {
+fn a_completed_task_never_exhausts_and_still_refuses_work_past_the_limit() {
     let d = dir("completed");
     let mut env = env(&d, &contract(json!({"turns":1,"wall_clock_s":10})));
     assert_eq!(handle(&write(&env, "t1"), &mut env), Decision::None);
     set_gate_state(&env, TaskState::Completed);
     set_clock(APPROVED_AT + 100);
-    let decision = handle(&write(&env, "t2"), &mut env);
-    assert!(!limit_denial(&decision), "{decision:?}");
+    for (id, payload) in [
+        ("t2", write(&env, "t2")),
+        ("b1", bash(&env, "b1", "echo x > src/out.txt")),
+    ] {
+        let decision = handle(&payload, &mut env);
+        assert!(limit_denial(&decision), "{id}: {decision:?}");
+    }
     let decision = handle(&stop(&env, "Stopping here."), &mut env);
     assert!(
         !matches!(&decision, Decision::System(text) if text.contains("limit")),
@@ -353,11 +453,36 @@ fn a_cached_replay_is_not_a_turn() {
     assert!(limit_denial(&handle(&write(&env, "t3"), &mut env)));
 }
 
+/// Item 4 evidence: `task_digest` covers gate.json but not events.jsonl, so a replay of an
+/// earlier call is still served after a later judged call. A turn mark stored in gate.json
+/// would change it on every call and refuse this replay; the count stays a pure recount.
 #[test]
-fn an_unreadable_journal_fails_closed_when_a_turn_limit_is_set() {
-    let d = dir("unreadable");
+fn a_replay_after_a_later_call_is_still_served() {
+    let d = dir("replay-later");
     let mut env = env(&d, &contract(json!({"turns":5})));
-    fs::write(env.state_dir.join("events.jsonl"), "not a journal line\n").unwrap();
+    let first = write(&env, "t1");
+    assert_eq!(handle(&first, &mut env), Decision::None);
+    assert_eq!(handle(&write(&env, "t2"), &mut env), Decision::None);
+    assert_eq!(handle(&first, &mut env), Decision::None);
+    assert_eq!(pre_tool_lines(&env), 2);
+}
+
+/// A journal line that does not parse is one turn: it never loosens a limit and never locks
+/// the task. A journal that cannot be read at all fails closed.
+#[test]
+fn an_unparsable_journal_line_is_a_turn_and_an_unreadable_journal_fails_closed() {
+    let d = dir("unparsable");
+    let mut env = env(&d, &contract(json!({"turns":2})));
+    fs::write(env.state_dir.join("events.jsonl"), b"not a journal line\n\xff\xfe\n").unwrap();
+    let decision = handle(&write(&env, "t1"), &mut env);
+    assert!(limit_denial(&decision), "{decision:?}");
+    assert!(
+        matches!(&decision, Decision::Deny(why) if why.contains("2 of 2 turns used")),
+        "{decision:?}"
+    );
+    let d = dir("unreadable");
+    let mut env = self::env(&d, &contract(json!({"turns":5})));
+    fs::create_dir(env.state_dir.join("events.jsonl")).unwrap();
     let decision = handle(&write(&env, "t1"), &mut env);
     assert!(
         matches!(&decision, Decision::Deny(why) if why.contains("fails closed")),
@@ -415,7 +540,12 @@ fn reset_rounds_is_refused_while_a_limit_is_reached() {
     .unwrap();
     let why = lifecycle::reset_rounds(&root, &id, "flaky check").unwrap_err();
     assert!(why.contains("1 of 1 turns used"), "{why}");
-    assert!(why.contains("supervisor task next"), "{why}");
+    assert!(
+        why.contains(&format!(
+            "supervisor task next --task {id} --contract <file> --disposition budget_exhausted"
+        )),
+        "{why}"
+    );
     plain(&why);
 }
 
@@ -503,4 +633,111 @@ fn an_agent_revision_cannot_raise_or_remove_a_limit() {
     lowered["limits"] = json!({"turns":5,"wall_clock_s":300});
     apply("revise", Some(&id), lowered).unwrap();
     assert_eq!(written()["limits"], json!({"turns":5,"wall_clock_s":300}));
+}
+
+/// The production layout: prompts registered (`intents.json`), the task under `tasks/<id>`.
+fn production(d: &Dir, limits: Value) -> (Env, String) {
+    set_clock(APPROVED_AT);
+    fs::write(
+        d.0.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let mut env = Env {
+        state_dir: d.0.join("state"),
+        state_location: "test",
+        candidate: Box::new(Fake),
+        clock,
+        level: Setting {
+            level: Level::Enforce,
+            ..Default::default()
+        },
+    };
+    fs::create_dir_all(&env.state_dir).unwrap();
+    let prompt = json!({"hook_event_name":"UserPromptSubmit","cwd":d.0,"session_id":"session",
+        "prompt_id":"p1","prompt":"Implement the requested behavior"});
+    assert!(matches!(handle(&prompt, &mut env), Decision::Context { .. }));
+    let event = autonomy::pending(&env.state_dir, "session").unwrap().unwrap();
+    let contract = json!({"id":"wp4","goal":"limits","scope":["src/"],"forbidden_effects":[],
+        "max_repair_rounds":2,"limits":limits,
+        "criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}]});
+    let started = autonomy::propose(
+        &env.state_dir,
+        &d.0,
+        &json!({"event_id":event["event_id"],"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],
+            "action":"start","task_id":null,"contract":contract}),
+    )
+    .unwrap();
+    (env, started["task_id"].as_str().unwrap().to_owned())
+}
+
+fn task_turns(env: &Env, id: &str) -> usize {
+    let path = env.state_dir.join("tasks").join(id).join("events.jsonl");
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| serde_json::from_str::<Value>(l).unwrap()["event"] == "PreToolUse")
+        .count()
+}
+
+/// With prompts registered, read-only tool calls are answered before the task gate and are not
+/// turns, while a judged shell read is. At the limit an autonomous task is refused, its stop is
+/// released with the report, and every way out names the cancel command.
+#[test]
+fn an_autonomous_task_in_the_production_layout_stops_at_its_turn_limit() {
+    let d = dir("production");
+    let (mut env, id) = production(&d, json!({"turns":1}));
+    assert_eq!(handle(&read(&env, "r1"), &mut env), Decision::None);
+    assert_eq!(task_turns(&env, &id), 0, "a Read was counted");
+    assert_eq!(
+        handle(&bash(&env, "g1", "git status"), &mut env),
+        Decision::None
+    );
+    assert_eq!(task_turns(&env, &id), 1, "a judged shell read was not counted");
+    let decision = handle(&write(&env, "w1"), &mut env);
+    assert!(limit_denial(&decision), "{decision:?}");
+    let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
+    let Decision::System(report) = &decision else {
+        panic!("stop not released with a report: {decision:?}");
+    };
+    let cancel = format!("supervisor task cancel --project <dir> --task {id} --reason <text>");
+    assert!(report.contains("NOT certified"), "{report}");
+    assert!(report.contains(&cancel), "{report}");
+    plain(report);
+    let why = lifecycle::reset_rounds(&env.state_dir, &id, "flaky check").unwrap_err();
+    assert!(why.contains(&cancel), "{why}");
+    let why = lifecycle::start_as(
+        &env.state_dir,
+        &state::Writer::task_start(None),
+        &contract(json!({})),
+        false,
+        None,
+        None,
+    )
+    .unwrap_err();
+    assert!(why.contains("supervisor task cancel --project <dir> --task"), "{why}");
+}
+
+/// In strict mode a baseline criterion is met by the reported failure reproducing (exit not 0)
+/// on the starting candidate, so the report does not list it as remaining.
+#[test]
+fn a_reproduced_baseline_is_not_a_remaining_criterion() {
+    let d = dir("baseline");
+    let mut c = contract(json!({"turns":1}));
+    c["criteria"] = json!([
+        {"id":"C1","check":"baseline_reproduces_reported_failure","mandatory":true,"command":"python repro.py"},
+        {"id":"C2","check":"test","mandatory":true,"command":"cargo test"}
+    ]);
+    let mut env = env(&d, &c);
+    env.level.level = Level::Strict;
+    let mut run = bash(&env, "b1", "python repro.py");
+    assert_eq!(handle(&run, &mut env), Decision::None);
+    run["hook_event_name"] = "PostToolUseFailure".into();
+    run["error"] = "Exit code 1\nfailed".into();
+    handle(&run, &mut env);
+    let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
+    let Decision::System(report) = &decision else {
+        panic!("stop not released with a report: {decision:?}");
+    };
+    assert!(report.contains("remaining criteria: C2;"), "{report}");
 }

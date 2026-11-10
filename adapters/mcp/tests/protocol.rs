@@ -286,3 +286,60 @@ fn task_state_shows_limits_and_their_use() {
     common::ok(&s, "task_start", common::four());
     assert_eq!(common::task_state(&s).get("limits"), None);
 }
+
+struct Fake;
+impl supervisor_claude_code::candidate::CandidateProvider for Fake {
+    fn observe(&self) -> Result<coding_supervisor::Candidate, String> {
+        Ok(coding_supervisor::Candidate {
+            id: coding_supervisor::CandidateId {
+                base_commit: "base".into(),
+                dirty_digest: "one".into(),
+            },
+            provenance: "fake".into(),
+            changed_paths: vec!["src/lib.rs".into()],
+        })
+    }
+}
+
+/// WP4 review: completing a person-started task through MCP on caller-asserted receipts does not
+/// lift its limit; the hooks still refuse shell work past it and leave the task completed.
+#[test]
+fn a_task_completed_through_mcp_still_refuses_hook_work_past_its_limit() {
+    use supervisor_claude_code::adapter::{Decision, Env, handle};
+    let d = dir("limits-completed");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["limits"] = json!({"turns":1});
+    common::ok(&s, "task_start", contract);
+    common::observe(&s, "one", &["src/lib.rs"]);
+    for criterion in ["C1", "C2", "C3", "C4"] {
+        common::pass(&s, criterion);
+    }
+    common::ok(&s, "accept_try", json!({}));
+    assert_eq!(
+        common::state(&common::ok(&s, "task_complete", json!({}))),
+        "completed"
+    );
+    let mut env = Env {
+        state_dir: d.0.join("state"),
+        state_location: "test",
+        candidate: Box::new(Fake),
+        clock: supervisor_claude_code::adapter::now,
+        level: supervisor_claude_code::level::Setting {
+            level: supervisor_claude_code::level::Level::Enforce,
+            ..Default::default()
+        },
+    };
+    let bash = |id: &str| {
+        json!({"hook_event_name":"PreToolUse","cwd":d.0.join("project"),"session_id":"session",
+            "agent_id":"main","tool_use_id":id,"tool_name":"Bash",
+            "tool_input":{"command":"echo x > out.txt"}})
+    };
+    assert_eq!(handle(&bash("b1"), &mut env), Decision::None);
+    let denied = handle(&bash("b2"), &mut env);
+    assert!(
+        matches!(&denied, Decision::Deny(why) if why.contains("task limit reached: 1 of 1 turns used")),
+        "{denied:?}"
+    );
+    assert_eq!(common::state(&common::task_state(&s)), "completed");
+}

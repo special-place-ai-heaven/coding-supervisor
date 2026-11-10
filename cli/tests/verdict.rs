@@ -155,14 +155,28 @@ impl Fixture {
         receipts: &[Rc],
         runs: &[Run<'_>],
     ) -> (String, PathBuf) {
+        self.task_stored_with(stored, criteria, receipts, runs, &json!({}))
+    }
+    /// [`Self::task_stored`] with `extra` contract fields, e.g. `limits`.
+    fn task_stored_with(
+        &self,
+        stored: TaskState,
+        criteria: &[(&str, bool)],
+        receipts: &[Rc],
+        runs: &[Run<'_>],
+        extra: &Value,
+    ) -> (String, PathBuf) {
         let criteria: Vec<Value> = criteria
             .iter()
             .map(|(id, mandatory)| {
                 json!({"id":id,"check":"candidate_passes_reported_test","mandatory":mandatory,"command":"fixture-check"})
             })
             .collect();
-        let contract = json!({"id":"verdict-fixture","goal":"exercise verdict","criteria":criteria,
+        let mut contract = json!({"id":"verdict-fixture","goal":"exercise verdict","criteria":criteria,
             "scope":[],"forbidden_effects":[],"max_repair_rounds":1});
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            contract[key] = value.clone();
+        }
         let root = self.state_root();
         lifecycle::start_as(
             &root,
@@ -1621,4 +1635,38 @@ fn kx06_verdict_foreign_or_invalid_project_json_is_exit_one() {
     assert_exit1_empty(&f.verdict(&["--json"]), "foreign worktree");
     fs::write(&project, "not json").unwrap();
     assert_exit1_empty(&f.verdict(&["--json"]), "invalid project.json");
+}
+
+/// WP4 review: a budget_exhausted task never passes, whatever its receipts say. The verdict
+/// names the state, and the limit when a task limit is reached; the JSON keys are unchanged.
+#[test]
+fn t29_verdict_budget_exhausted_task_fails_and_names_its_limit() {
+    let f = Fixture::git("t29");
+    let head = f.head();
+    let (_, dir) = f.task_stored_with(
+        TaskState::BudgetExhausted,
+        &[("C2", true)],
+        &[rc("C2", "observed:{task}:a", &head, 0)],
+        &[("a", 0, &same)],
+        &json!({"limits":{"turns":1}}),
+    );
+    fs::write(
+        dir.join("events.jsonl"),
+        "{\"v\":1,\"event\":\"PreToolUse\"}\n",
+    )
+    .unwrap();
+    let (code, r) = f.verdict_json(&[]);
+    assert_eq!(code, 3, "{r}");
+    assert_eq!(r["verdict"], "fail", "{r}");
+    assert_eq!(r["reason"], "budget_exhausted", "{r}");
+    assert_eq!(
+        keys(&r["task"]),
+        set(&["task_id", "contract_id", "contract_digest"])
+    );
+    let human = String::from_utf8_lossy(&f.verdict(&[]).stdout).into_owned();
+    assert!(human.contains("task state: budget_exhausted"), "{human}");
+    assert!(
+        human.contains("task limit reached: 1 of 1 turns used"),
+        "{human}"
+    );
 }

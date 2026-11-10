@@ -302,3 +302,32 @@ fn status_shows_task_limits_and_their_use() {
     lifecycle::start_as(&root, &supervisor_claude_code::state::Writer::task_start(None),&json!({"id":"fixture","goal":"no limits","criteria":[{"id":"C2","check":"test","mandatory":true,"command":"fixture-check"}],"scope":[],"forbidden_effects":[],"max_repair_rounds":2}),false,None,None).unwrap();
     assert_eq!(plain.status("claude-code")["task"].get("limits"), None);
 }
+
+/// WP4 review: a clock earlier than `approval.at` is named, not shown as a silent 0 s elapsed.
+#[test]
+fn status_names_a_clock_behind_the_approval_time() {
+    let f = Fixture::new("clock-behind");
+    let root = PathBuf::from(f.status("claude-code")["project_state"].as_str().unwrap());
+    let started = lifecycle::start_as(&root, &supervisor_claude_code::state::Writer::task_start(None),&json!({"id":"fixture","goal":"clock fixture","criteria":[{"id":"C2","check":"test","mandatory":true,"command":"fixture-check"}],"scope":[],"forbidden_effects":[],"max_repair_rounds":2,"limits":{"wall_clock_s":600}}),false,None,None).unwrap();
+    let path = root
+        .join("tasks")
+        .join(started["task_id"].as_str().unwrap())
+        .join("contract.json");
+    let mut contract: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let at = contract["approval"]["at"].as_u64().unwrap();
+    contract["approval"]["at"] = (at + 1_000_000).into();
+    fs::write(&path, format!("{contract}\n")).unwrap();
+    let report = f.status("claude-code");
+    assert_eq!(
+        report["task"]["limits"]["clock_behind_approval"], true,
+        "{report}"
+    );
+    let human = Command::new(BIN)
+        .args(["status", "--harness", "claude-code", "--project"])
+        .arg(f.0.join("project"))
+        .env("SUPERVISOR_STATE_DIR", f.0.join("state"))
+        .output()
+        .unwrap();
+    let human = String::from_utf8_lossy(&human.stdout);
+    assert!(human.contains("clock behind approval"), "{human}");
+}
