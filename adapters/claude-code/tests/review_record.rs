@@ -786,9 +786,11 @@ impl Production {
     /// `agent` edits a file in scope.
     fn write_as(&mut self, agent: &str) {
         let path = self.project.join("src").join("lib.rs");
-        let d = self.hook(json!({"hook_event_name":"PreToolUse","session_id":"session",
+        let d = self.hook(
+            json!({"hook_event_name":"PreToolUse","session_id":"session",
             "agent_id":agent,"tool_use_id":format!("w-{agent}"),"tool_name":"Write",
-            "tool_input":{"file_path":path,"content":"x"}}));
+            "tool_input":{"file_path":path,"content":"x"}}),
+        );
         assert_eq!(d, Decision::None, "{agent} write");
     }
     /// The gate fields a record-only judgement must leave alone.
@@ -1098,7 +1100,11 @@ fn a_rejection_is_recorded_on_a_pending_or_discussion_turn() {
             let handback = "REVIEW: REJECTED\nFINDING: still wrong\nVERDICT: PASS\nCHECKS RUN: 0";
             assert_eq!(p.review("w1", handback), Decision::None);
         }
-        assert_eq!(p.untouched(), before, "discussion={discussion}: record-only");
+        assert_eq!(
+            p.untouched(),
+            before,
+            "discussion={discussion}: record-only"
+        );
         let stored = p.reviews();
         let want = if discussion { 2 } else { 1 };
         assert_eq!(stored.len(), want, "discussion={discussion}: {stored:?}");
@@ -1181,7 +1187,10 @@ fn a_builders_rejection_on_a_pending_turn_is_recorded() {
     p.prompt_only("hold on a moment");
     let before = p.untouched();
     let r = p.review("w1", "REVIEW: REJECTED\nFINDING: the tests fail");
-    assert!(matches!(r, Decision::Block(_)), "the route's refusal stays: {r:?}");
+    assert!(
+        matches!(r, Decision::Block(_)),
+        "the route's refusal stays: {r:?}"
+    );
     assert_eq!(p.untouched(), before);
     let stored = p.reviews();
     assert_eq!(stored.len(), 1, "{stored:?}");
@@ -1199,7 +1208,11 @@ fn a_loose_rejection_counts_and_a_loose_approval_does_not() {
     reviewer(&mut env, "a1", "**REVIEW: APPROVED**");
     reviewer(&mut env, "a2", "REVIEW: APPROVED - with caveats");
     assert!(reviews(&env).is_empty());
-    reviewer(&mut env, "r1", "**Review: rejected** - see below\nFINDING: wrong");
+    reviewer(
+        &mut env,
+        "r1",
+        "**Review: rejected** - see below\nFINDING: wrong",
+    );
     assert_eq!(reviews(&env)[0]["decision"], "rejected");
 }
 
@@ -1251,9 +1264,16 @@ fn an_approval_after_the_chair_edited_during_the_review_is_not_counted() {
     // The chair keeps working while the background reviewer reads.
     fs::write(project_of(&env).join("src/a.rs"), "a3\n").unwrap();
     git_checks(&mut env, "c2");
-    assert_eq!(git_review(&mut env, "r1", "REVIEW: APPROVED"), Decision::None);
+    assert_eq!(
+        git_review(&mut env, "r1", "REVIEW: APPROVED"),
+        Decision::None
+    );
     assert!(reviews(&env).is_empty(), "{:?}", reviews(&env));
-    assert!(last_reasons(&env).contains("launched"), "{}", last_reasons(&env));
+    assert!(
+        last_reasons(&env).contains("launched"),
+        "{}",
+        last_reasons(&env)
+    );
     let why = blocked(&git_stop(&mut env)).to_owned();
     assert!(why.contains("review required"), "{why}");
 }
@@ -1263,7 +1283,10 @@ fn an_approval_with_no_edit_since_the_launch_is_counted() {
     let (_d, mut env) = repository("launch-same");
     git_checks(&mut env, "c1");
     launch_in_background(&mut env, "r1");
-    assert_eq!(git_review(&mut env, "r1", "REVIEW: APPROVED"), Decision::None);
+    assert_eq!(
+        git_review(&mut env, "r1", "REVIEW: APPROVED"),
+        Decision::None
+    );
     assert_eq!(reviews(&env)[0]["decision"], "approved");
     assert_eq!(git_stop(&mut env), Decision::None);
     assert_eq!(gate(&env)["state"], "completed");

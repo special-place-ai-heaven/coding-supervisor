@@ -1202,7 +1202,9 @@ fn needs_content(payload: &Value) -> bool {
         Some("Stop" | "SubagentStop") => true,
         Some("PostToolUse") => {
             text(payload, "tool_name") == Some("Agent")
-                && payload.pointer("/tool_response/status").and_then(Value::as_str)
+                && payload
+                    .pointer("/tool_response/status")
+                    .and_then(Value::as_str)
                     == Some("async_launched")
         }
         _ => false,
@@ -3543,7 +3545,10 @@ mod mutation_row_tests {
         )
         .unwrap();
         // w0 makes delegations.jsonl exist, so the holder's stage copy holds it.
-        assert_eq!(handle(&write(&root, "w0"), &mut env(&state)), Decision::None);
+        assert_eq!(
+            handle(&write(&root, "w0"), &mut env(&state)),
+            Decision::None
+        );
         let (done, appended) = mpsc::channel();
         let mut worker = None;
         crate::lifecycle::with_task(&state, None, Some("session"), None, |_stage| {
@@ -3564,6 +3569,9 @@ mod mutation_row_tests {
         let made = crate::observation::made_mutation(&state, "w1").unwrap();
         let _ = fs::remove_dir_all(&root);
         assert_eq!(refused, None, "the append was refused");
-        assert!(made, "the append landed inside the transaction and was overwritten");
+        assert!(
+            made,
+            "the append landed inside the transaction and was overwritten"
+        );
     }
 }
