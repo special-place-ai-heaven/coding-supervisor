@@ -341,3 +341,42 @@ fn prompt_gate_refusals_are_journaled() {
         );
     }
 }
+
+/// WP2: `task start` writes contract v2 with the repository head the task starts from.
+#[test]
+fn task_start_records_the_repository_head_in_contract_v2() {
+    let f = Fixture::new("contract-v2");
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&f.project)
+            .args([
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+            ])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    git(&["init", "-q"]);
+    fs::write(f.project.join("README"), "one\n").unwrap();
+    git(&["add", "README"]);
+    git(&["commit", "-q", "-m", "one"]);
+    let head = git(&["rev-parse", "HEAD"]);
+    let started = value(f.task("start", &["--contract", f.contract.to_str().unwrap()]));
+    let task = f
+        .state_root()
+        .join("tasks")
+        .join(started["task_id"].as_str().unwrap());
+    let c: Value =
+        serde_json::from_str(&fs::read_to_string(task.join("contract.json")).unwrap()).unwrap();
+    assert_eq!(c["schema_version"], 2, "{c}");
+    assert_eq!(c["base_sha"], head.as_str(), "{c}");
+    assert_eq!(c["approval"]["via"], "task-start", "{c}");
+    assert_eq!(c["isolation"], "none", "{c}");
+}

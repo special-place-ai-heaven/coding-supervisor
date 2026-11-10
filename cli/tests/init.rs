@@ -69,6 +69,11 @@ fn init_writes_the_starting_contract_and_never_overwrites_it() {
     assert_eq!(v["scope"], serde_json::json!(["src/", "tests/"]));
     assert_eq!(v["forbidden_effects"], serde_json::json!([]));
     assert_eq!(v["max_repair_rounds"], 2);
+    // WP2: the draft is contract v2, recorded as written by init; no repository, no base.
+    assert_eq!(v["schema_version"], 2);
+    assert_eq!(v["isolation"], "none");
+    assert_eq!(v["approval"]["via"], "init-draft");
+    assert_eq!(v["base_sha"], Value::Null);
     assert!(!project.join(".supervisor").exists(), "one location only");
 
     fs::write(&path, "edited by hand").unwrap();

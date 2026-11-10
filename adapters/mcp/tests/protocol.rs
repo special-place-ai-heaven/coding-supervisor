@@ -210,3 +210,23 @@ fn serve_answers_line_by_line_over_a_byte_stream() {
     assert_eq!(lines[1]["id"], 2);
     assert_eq!(lines[1]["result"]["tools"].as_array().unwrap().len(), 10);
 }
+
+/// WP2: `task_start` writes contract v2 and records itself as the writer.
+#[test]
+fn task_start_writes_contract_v2() {
+    let d = dir("contract-v2");
+    let s = server(&d);
+    let (is_error, text) = call(&s, "task_start", common::four());
+    assert!(!is_error, "{text}");
+    let task = supervisor_claude_code::lifecycle::active_task(s.state_dir())
+        .unwrap()
+        .unwrap();
+    let c: Value =
+        serde_json::from_str(&std::fs::read_to_string(task.dir.join("contract.json")).unwrap())
+            .unwrap();
+    assert_eq!(c["schema_version"], 2, "{c}");
+    assert_eq!(c["isolation"], "none", "{c}");
+    assert_eq!(c["approval"]["via"], "mcp-task-start", "{c}");
+    // The project is not a git repository here.
+    assert_eq!(c["base_sha"], Value::Null, "{c}");
+}
