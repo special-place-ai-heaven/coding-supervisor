@@ -340,7 +340,11 @@ fn status_shows_a_wall_clock_only_limit_without_a_turn_count() {
     let root = PathBuf::from(f.status("claude-code")["project_state"].as_str().unwrap());
     lifecycle::start_as(&root, &supervisor_claude_code::state::Writer::task_start(None),&json!({"id":"fixture","goal":"wall fixture","criteria":[{"id":"C2","check":"test","mandatory":true,"command":"fixture-check"}],"scope":[],"forbidden_effects":[],"max_repair_rounds":2,"limits":{"wall_clock_s":600}}),false,None,None).unwrap();
     let report = f.status("claude-code");
-    assert_eq!(report["task"]["limits"]["turns_used"], Value::Null, "{report}");
+    assert_eq!(
+        report["task"]["limits"]["turns_used"],
+        Value::Null,
+        "{report}"
+    );
     let human = Command::new(BIN)
         .args(["status", "--harness", "claude-code", "--project"])
         .arg(f.0.join("project"))

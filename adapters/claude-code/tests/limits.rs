@@ -1065,7 +1065,9 @@ fn propose_start(env: &mut Env, d: &Dir) -> Result<Value, String> {
     let prompt = json!({"hook_event_name":"UserPromptSubmit","cwd":d.0,"session_id":"session",
         "prompt_id":"next","prompt":"Implement the next change"});
     assert!(matches!(handle(&prompt, env), Decision::Context { .. }));
-    let event = autonomy::pending(&env.state_dir, "session").unwrap().unwrap();
+    let event = autonomy::pending(&env.state_dir, "session")
+        .unwrap()
+        .unwrap();
     let contract = json!({"id":"wp4-next","goal":"next","scope":["src/"],"forbidden_effects":[],
         "max_repair_rounds":2,
         "criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}]});
