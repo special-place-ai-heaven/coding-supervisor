@@ -360,3 +360,89 @@ fn status_shows_a_wall_clock_only_limit_without_a_turn_count() {
     assert!(line.ends_with(" s of 600 s"), "{line}");
     assert!(!line.contains("turns"), "{line}");
 }
+
+/// WP5: status shows the review policy and the latest review for the task's candidate.
+#[test]
+fn status_shows_the_review_policy_and_the_latest_review() {
+    use coding_supervisor::{
+        CandidateId, Checkpoint, ReviewDecision, ReviewProvenance, ReviewRecord, TaskState,
+    };
+    use supervisor_claude_code::state::{Gate, StoredReview, read_contract, save_gate};
+    let f = Fixture::new("review");
+    let root = PathBuf::from(f.status("claude-code")["project_state"].as_str().unwrap());
+    let started = lifecycle::start_as(&root, &supervisor_claude_code::state::Writer::task_start(None),&json!({"id":"fixture","goal":"review fixture","criteria":[{"id":"C2","check":"test","mandatory":true,"command":"fixture-check"}],"scope":[],"forbidden_effects":[],"max_repair_rounds":2,"review":{"required":true,"independent":true}}),false,None,None).unwrap();
+    let report = f.status("claude-code");
+    assert_eq!(
+        report["task"]["review"],
+        json!({"required":true,"independent":true,"met":null,"reason":null,"latest":null}),
+        "{report}"
+    );
+    let task = root
+        .join("tasks")
+        .join(started["task_id"].as_str().unwrap());
+    let (_, digest) = read_contract(&task).unwrap();
+    let candidate = CandidateId {
+        base_commit: "base".into(),
+        dirty_digest: "one".into(),
+    };
+    let mut gate = Gate::new(
+        "fixture".to_owned(),
+        Checkpoint {
+            state: TaskState::Verifying,
+            candidate: Some(candidate.clone()),
+            open_findings: vec![],
+            consumed_repair_rounds: 0,
+            next_action: String::new(),
+        },
+    );
+    gate.reviews.push(StoredReview {
+        review: ReviewRecord {
+            reviewer: "r1".into(),
+            model: None,
+            decision: ReviewDecision::Rejected,
+            findings: vec!["secret-finding-text".into()],
+            at: 1_000,
+            candidate: candidate.clone(),
+            provenance: ReviewProvenance::Observed,
+        },
+        tree: None,
+    });
+    // A later approval is the latest review, and r1's rejection still refuses.
+    gate.reviews.push(StoredReview {
+        review: ReviewRecord {
+            reviewer: "r2".into(),
+            model: None,
+            decision: ReviewDecision::Approved,
+            findings: vec!["fine".into()],
+            at: 1_001,
+            candidate,
+            provenance: ReviewProvenance::Observed,
+        },
+        tree: None,
+    });
+    save_gate(&task, &gate, &digest).unwrap();
+    let report = f.status("claude-code");
+    assert_eq!(
+        report["task"]["review"],
+        json!({"required":true,"independent":true,"met":false,"reason":"review_rejected",
+            "latest":{"reviewer":"r2","model":null,"decision":"approved","provenance":"observed","findings":1,"at":1001}}),
+        "{report}"
+    );
+    let human = Command::new(BIN)
+        .args(["status", "--harness", "claude-code", "--project"])
+        .arg(f.0.join("project"))
+        .env("SUPERVISOR_STATE_DIR", f.0.join("state"))
+        .output()
+        .unwrap();
+    let human = String::from_utf8_lossy(&human.stdout);
+    let line = human
+        .lines()
+        .find(|l| l.starts_with("review: "))
+        .unwrap_or_else(|| panic!("{human}"));
+    assert!(line.contains("required, independent"), "{line}");
+    assert!(line.contains("approved by r2"), "{line}");
+    assert!(line.contains("not met (review rejected)"), "{line}");
+    assert!(line.contains("model not reported"), "{line}");
+    assert!(line.contains("1 finding"), "{line}");
+    assert!(!human.contains("secret-finding-text"), "{human}");
+}

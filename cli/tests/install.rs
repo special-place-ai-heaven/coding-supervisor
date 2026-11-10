@@ -190,7 +190,8 @@ fn claude_settings_keep_foreign_hooks_and_permissions_and_gain_the_fixture_hooks
     let fixture = read_json(&fixture_path);
     let fixture_hooks = fixture["hooks"].as_object().unwrap();
     assert_eq!(fixture_hooks.len(), 6);
-    assert_eq!(v["hooks"].as_object().unwrap().len(), 6);
+    // The fixture's six, plus SessionEnd (no judgment, so not part of the proven fixture).
+    assert_eq!(v["hooks"].as_object().unwrap().len(), 7);
     for (event, _groups) in fixture_hooks {
         let ours: Vec<&Value> = v["hooks"][event]
             .as_array()
@@ -386,13 +387,14 @@ fn run_install(
     (out.status.success(), text)
 }
 
-const EVENTS: [&str; 6] = [
+const EVENTS: [&str; 7] = [
     "UserPromptSubmit",
     "PreToolUse",
     "PostToolUse",
     "PostToolUseFailure",
     "SubagentStop",
     "Stop",
+    "SessionEnd",
 ];
 
 /// Lab repo, 2026-10-29: settings already held the gate's hooks from another binary path, and
@@ -455,6 +457,16 @@ fn claude_settings_replace_our_hooks_from_another_binary_path() {
             "{event}: the unrelated hook sharing a group stays"
         );
         assert_eq!(groups.len(), 3, "{event}: foreign, shared, ours");
+        // Claude Code gives a SessionEnd hook 1.5 s unless the hook names a timeout.
+        assert_eq!(
+            groups[2]["hooks"][0]["timeout"],
+            if event == "SessionEnd" {
+                json!(30)
+            } else {
+                Value::Null
+            },
+            "{event}"
+        );
     }
     let mcp = read_json(&project.join(".mcp.json"));
     assert_eq!(mcp["mcpServers"]["supervisor"]["command"], FAKE_BINARY);
@@ -693,7 +705,7 @@ fn with_the_plugin_enabled_install_removes_its_hooks_and_keeps_the_mcp_server() 
     )
     .unwrap();
     install(&project, &home, "claude-code", &[]);
-    assert_eq!(gate_hooks(&read_json(&settings)), [OUR_HOOK; 6]);
+    assert_eq!(gate_hooks(&read_json(&settings)), [OUR_HOOK; 7]);
 
     enable_plugin(&home.join(".claude").join("settings.json"), true);
     let out = install(&project, &home, "claude-code", &[]);
@@ -736,7 +748,7 @@ fn the_most_specific_settings_file_decides_whether_the_plugin_runs_the_hooks() {
     let out = install(&project, &home, "claude-code", &[]);
     assert!(!out.contains("plugin is enabled"), "{out}");
     let settings = project.join(".claude").join("settings.json");
-    assert_eq!(gate_hooks(&read_json(&settings)), [OUR_HOOK; 6]);
+    assert_eq!(gate_hooks(&read_json(&settings)), [OUR_HOOK; 7]);
 
     let (project, home) = dirs("plugin-project");
     enable_plugin(&project.join(".claude").join("settings.json"), true);

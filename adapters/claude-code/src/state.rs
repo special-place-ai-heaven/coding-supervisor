@@ -7,8 +7,8 @@ use std::path::Path;
 
 use coding_supervisor::{
     Approval, Budget, CandidateId, CheckName, Checkpoint, Criterion, CriterionId, Disposition,
-    Finding, FindingId, Isolation, Limits, Review, Severity, TaskContract, TaskId, TaskState,
-    VerificationReceipt,
+    Finding, FindingId, Isolation, Limits, Review, ReviewDecision, ReviewProvenance, ReviewRecord,
+    Severity, TaskContract, TaskId, TaskState, VerificationReceipt,
 };
 use serde_json::{Value, json};
 
@@ -37,6 +37,20 @@ const DISPOSITIONS: [(Disposition, &str); 3] = [
     (Disposition::Resolved, "resolved"),
     (Disposition::Accepted, "accepted"),
 ];
+const DECISIONS: [(ReviewDecision, &str); 2] = [
+    (ReviewDecision::Approved, "approved"),
+    (ReviewDecision::Rejected, "rejected"),
+];
+const PROVENANCES: [(ReviewProvenance, &str); 2] = [
+    (ReviewProvenance::Observed, "observed"),
+    (ReviewProvenance::CallerAsserted, "caller-asserted"),
+];
+pub fn decision_name(decision: ReviewDecision) -> &'static str {
+    name(&DECISIONS, decision)
+}
+pub fn provenance_name(provenance: ReviewProvenance) -> &'static str {
+    name(&PROVENANCES, provenance)
+}
 
 fn name<T: PartialEq + Copy>(table: &[(T, &'static str)], value: T) -> &'static str {
     table
@@ -80,6 +94,17 @@ pub struct Gate {
     /// The task's first candidate, which a baseline receipt binds to (K6). Written only when
     /// set, so older gate files read unchanged.
     pub starting: Option<Box<CandidateId>>,
+    /// WP5: every review recorded, each bound to its candidate. Written only when not empty.
+    pub reviews: Vec<StoredReview>,
+}
+
+/// A review as gate.json keeps it: the core record plus the worktree tree when it was recorded,
+/// which lets it follow a commit of identical content. One stored with no tree is shed by a
+/// commit, as a receipt without a tree is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredReview {
+    pub review: ReviewRecord,
+    pub tree: Option<String>,
 }
 
 impl Gate {
@@ -93,6 +118,7 @@ impl Gate {
             handback_refusals: BTreeMap::new(),
             repair_charged: None,
             starting: None,
+            reviews: Vec::new(),
         }
     }
 
@@ -103,6 +129,12 @@ impl Gate {
         }
         if let (Some(c), Some(o)) = (&self.starting, v.as_object_mut()) {
             o.insert("starting_candidate".to_owned(), candidate_json(c));
+        }
+        if let (false, Some(o)) = (self.reviews.is_empty(), v.as_object_mut()) {
+            o.insert(
+                "reviews".to_owned(),
+                self.reviews.iter().map(review_json).collect(),
+            );
         }
         v
     }
@@ -173,6 +205,13 @@ impl Gate {
             starting: match v.get("starting_candidate") {
                 None | Some(Value::Null) => None,
                 Some(c) => Some(Box::new(candidate_from(c)?)),
+            },
+            reviews: match v.get("reviews") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(_) => array(v, "reviews")?
+                    .iter()
+                    .map(review_from)
+                    .collect::<Result<_, _>>()?,
             },
             handback_refusals: refusals
                 .iter()
@@ -268,6 +307,34 @@ fn receipt_from(v: &Value) -> Result<VerificationReceipt, String> {
             .ok_or("claim_supported is not a boolean")?,
         started_at: uint(v, "started_at")?,
         finished_at: uint(v, "finished_at")?,
+    })
+}
+
+fn review_json(s: &StoredReview) -> Value {
+    let r = &s.review;
+    obj([
+        ("reviewer", r.reviewer.clone().into()),
+        ("model", r.model.clone().into()),
+        ("decision", decision_name(r.decision).into()),
+        ("findings", r.findings.clone().into()),
+        ("at", r.at.into()),
+        ("candidate", candidate_json(&r.candidate)),
+        ("provenance", provenance_name(r.provenance).into()),
+        ("tree", s.tree.clone().into()),
+    ])
+}
+fn review_from(v: &Value) -> Result<StoredReview, String> {
+    Ok(StoredReview {
+        review: ReviewRecord {
+            reviewer: string(v, "reviewer")?,
+            model: optional_string(v, "model", "review model")?,
+            decision: lookup(&DECISIONS, &string(v, "decision")?)?,
+            findings: strings(v, "findings")?,
+            at: uint(v, "at")?,
+            candidate: candidate_from(field(v, "candidate")?)?,
+            provenance: lookup(&PROVENANCES, &string(v, "provenance")?)?,
+        },
+        tree: optional_string(v, "tree", "review tree")?,
     })
 }
 
@@ -595,7 +662,8 @@ pub fn min_tests(dir: &Path) -> Result<BTreeMap<String, u64>, String> {
 /// What gate.json holds after its hash chain was checked.
 pub enum Stored {
     Absent,
-    Valid(Gate),
+    /// Boxed: the gate is far larger than the other variants.
+    Valid(Box<Gate>),
     /// Names the broken link: `receipt <index>` or `checkpoint`.
     Tampered(String),
 }
@@ -612,8 +680,10 @@ pub fn load_gate(dir: &Path, contract_sha256: &str) -> Result<Stored, String> {
     if let Err(what) = chain::verify(&v, contract_sha256) {
         return Ok(Stored::Tampered(what));
     }
-    Ok(Gate::from_json(&v)
-        .map_or_else(|_| Stored::Tampered("checkpoint".to_owned()), Stored::Valid))
+    Ok(Gate::from_json(&v).map_or_else(
+        |_| Stored::Tampered("checkpoint".to_owned()),
+        |gate| Stored::Valid(Box::new(gate)),
+    ))
 }
 
 pub fn save_gate(dir: &Path, gate: &Gate, contract_sha256: &str) -> Result<(), String> {

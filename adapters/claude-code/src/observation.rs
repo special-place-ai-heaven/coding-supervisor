@@ -745,12 +745,14 @@ fn delegation_rows(dir: &Path) -> Result<(Vec<Value>, bool), String> {
     }
 }
 
-/// G16: journal a background Agent launch (PostToolUse `async_launched` names its `agentId`).
+/// G16: journal a background Agent launch (PostToolUse `async_launched` names its `agentId`), with
+/// the model the harness reported, which the agent's SubagentStop has no field for (WP5).
 pub(crate) fn record_delegation(
     dir: &Path,
     payload: &Value,
     task: &str,
     now: u64,
+    content: Option<&str>,
 ) -> Result<(), String> {
     let launched = payload
         .pointer("/tool_response/status")
@@ -768,8 +770,36 @@ pub(crate) fn record_delegation(
     state::append_line(
         &dir.join("delegations.jsonl"),
         &json!({"kind":"delegation","task_id":task,"session_id":text(payload,"session_id"),
-            "agent_id":agent,"tool_use_id":text(payload,"tool_use_id"),"t":now}),
+            "agent_id":agent,"tool_use_id":text(payload,"tool_use_id"),
+            "model":payload.pointer("/tool_response/resolvedModel").and_then(Value::as_str),
+            "content":content,"t":now}),
     )
+}
+
+/// WP5: the full-content tree recorded at the latest background launch of `agent`: `None` with
+/// no launch row (a foreground agent), `Some(None)` when the launch content is unknown or the
+/// records hold a line that cannot be read. A new launch row for the same agent replaces it.
+pub(crate) fn delegated_content(dir: &Path, agent: &str) -> Result<Option<Option<String>>, String> {
+    let (rows, malformed) = delegation_rows(dir)?;
+    // A line that cannot be read may be this agent's latest launch: a launch, content unknown.
+    if malformed {
+        return Ok(Some(None));
+    }
+    Ok(rows
+        .iter()
+        .rev()
+        .find(|r| text(r, "kind") == Some("delegation") && text(r, "agent_id") == Some(agent))
+        .map(|r| text(r, "content").map(str::to_owned)))
+}
+
+/// WP5: the model the launch of background agent `agent` reported, if any.
+pub(crate) fn delegated_model(dir: &Path, agent: &str) -> Result<Option<String>, String> {
+    let (rows, _) = delegation_rows(dir)?;
+    Ok(rows
+        .iter()
+        .rev()
+        .filter(|r| text(r, "kind") == Some("delegation") && text(r, "agent_id") == Some(agent))
+        .find_map(|r| text(r, "model").map(str::to_owned)))
 }
 
 /// G16: the worker named by this SubagentStop has ended, so close its open delegation (the
@@ -803,13 +833,16 @@ pub(crate) fn close_delegation(root: &Path, payload: &Value, now: u64) {
     }
 }
 
-/// G21: journal, once per agent, that `agent` was allowed a tool that is not read-only.
+/// G21: journal, once per agent, that `agent` was allowed a tool that is not read-only. G44:
+/// the row keeps the worktree `tree` as it was before that first tool ran (asked for only
+/// when the row is written), so its handback can tell whether anything changed.
 pub(crate) fn record_mutation(
     dir: &Path,
     payload: &Value,
     task: &str,
     agent: &str,
     now: u64,
+    tree: impl FnOnce() -> Option<String>,
 ) -> Result<(), String> {
     let (rows, _) = delegation_rows(dir)?;
     if rows
@@ -821,8 +854,23 @@ pub(crate) fn record_mutation(
     state::append_line(
         &dir.join("delegations.jsonl"),
         &json!({"kind":"mutation","task_id":task,"session_id":text(payload,"session_id"),
-            "agent_id":agent,"tool":text(payload,"tool_name"),"t":now}),
+            "agent_id":agent,"tool":text(payload,"tool_name"),"t":now,"tree":tree()}),
     )
+}
+
+/// G44: what `agent` may have changed: `None` when it was never allowed a tool that is not
+/// read-only; otherwise the worktree tree from before its first such tool, when one was
+/// recorded. A malformed journal counts as a mutation with no known tree.
+pub(crate) fn mutation_tree(dir: &Path, agent: &str) -> Result<Option<Option<String>>, String> {
+    let (rows, malformed) = delegation_rows(dir)?;
+    let row = rows
+        .iter()
+        .find(|r| text(r, "kind") == Some("mutation") && text(r, "agent_id") == Some(agent));
+    Ok(match row {
+        _ if malformed => Some(None),
+        Some(row) => Some(text(row, "tree").map(str::to_owned)),
+        None => None,
+    })
 }
 
 /// G21: whether `agent` was ever allowed a tool that is not read-only.

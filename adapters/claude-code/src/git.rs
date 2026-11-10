@@ -107,6 +107,13 @@ pub fn worktree_tree(cwd: &Path, state_dir: &Path) -> Option<String> {
     tree(cwd, state_dir, None, &docs)
 }
 
+/// WP5: the tree of the whole worktree content, documentation included, for reviews: a
+/// reviewer may have judged the README. Leaves out only the gate's own fallback state
+/// directory, and never reads the documentation list.
+pub fn content_tree(cwd: &Path, state_dir: &Path) -> Option<String> {
+    tree(cwd, state_dir, None, &[])
+}
+
 /// G46: whether the worktree differs from commit `base` only in what `base`'s own CI list calls
 /// documentation. The list is read from `base`, as CI reads it, so a candidate cannot widen it.
 /// `false` when the project names no documentation or anything cannot be computed, so the
