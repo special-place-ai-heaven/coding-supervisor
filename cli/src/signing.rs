@@ -106,24 +106,29 @@ pub enum KeyStore {
 }
 
 impl KeyStore {
-    /// The override variable, else the platform's store. An override that is relative, holds a
-    /// `..` segment or resolves inside `project` is refused, so the key never lands in the tree.
+    /// The override variable, else the platform's store. An override that is relative or holds
+    /// a `..` segment is refused, and so is any key file path, override or default, that
+    /// resolves inside `project`, so the key never lands in the tree.
     pub fn select(env: &dyn Fn(&str) -> Option<String>, project: &Path) -> Result<Self, String> {
-        let Some(path) = env(KEY_FILE_VARIABLE).filter(|p| !p.is_empty()) else {
-            return platform_store(env);
+        let store = match env(KEY_FILE_VARIABLE).filter(|p| !p.is_empty()) {
+            None => platform_store(env)?,
+            Some(path) => {
+                let path = PathBuf::from(path);
+                if !path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
+                    return Err(format!(
+                        "{KEY_FILE_VARIABLE} must be an absolute path without `..` segments"
+                    ));
+                }
+                Self::File(path)
+            }
         };
-        let path = PathBuf::from(path);
-        if !path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
-            return Err(format!(
-                "{KEY_FILE_VARIABLE} must be an absolute path without `..` segments"
-            ));
+        match &store {
+            Self::File(path) if resolved(path).starts_with(resolved(project)) => Err(format!(
+                "the key file {} is inside the project; the key must live outside it",
+                path.display()
+            )),
+            _ => Ok(store),
         }
-        if resolved(&path).starts_with(resolved(project)) {
-            return Err(format!(
-                "{KEY_FILE_VARIABLE} names a path inside the project; the key must live outside it"
-            ));
-        }
-        Ok(Self::File(path))
     }
 
     pub fn label(&self) -> &'static str {
@@ -169,7 +174,8 @@ fn platform_store(_env: &dyn Fn(&str) -> Option<String>) -> Result<KeyStore, Str
     Ok(KeyStore::CredentialManager)
 }
 
-/// `$XDG_CONFIG_HOME/coding-supervisor/signing-key`, else `$HOME/.config/...`; never the project.
+/// `$XDG_CONFIG_HOME/coding-supervisor/signing-key`, else `$HOME/.config/...`; `select`
+/// refuses it when it resolves inside the project.
 #[cfg(unix)]
 fn platform_store(env: &dyn Fn(&str) -> Option<String>) -> Result<KeyStore, String> {
     let absolute = |name: &str| env(name).map(PathBuf::from).filter(|p| p.is_absolute());
