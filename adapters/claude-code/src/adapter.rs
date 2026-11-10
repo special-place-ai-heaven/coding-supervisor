@@ -2288,7 +2288,17 @@ impl Session {
             return Ok(Decision::None);
         }
         let _ = self.task.exhaust_limit(reached);
-        let remaining = self.remaining_criteria();
+        let mut remaining: Vec<String> = self
+            .remaining_criteria()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        // WP5: an unmet review is remaining work too, named by the rule's reason.
+        if let Some(why) = self.task.candidate().and_then(|c| {
+            crate::review::unmet_reason(&self.task.contract().review, &self.gate.reviews, c)
+        }) {
+            remaining.push(why.replace('_', " "));
+        }
         let stop = if completed {
             "this stop goes ahead; the task stays completed on the candidate it completed on, and the current work is NOT certified"
         } else {

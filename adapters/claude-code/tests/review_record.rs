@@ -892,3 +892,24 @@ fn a_hand_edit_of_a_stored_review_reads_as_tampered() {
         Stored::Valid(_)
     ));
 }
+
+/// At a reached limit, a stop refused only for its review is released NOT certified, and the
+/// report names the review instead of "remaining criteria: none".
+#[test]
+fn the_limit_report_names_an_unmet_review() {
+    let d = dir("limit-report");
+    let mut c = contract(required());
+    c["limits"] = json!({"turns":1});
+    let (mut env, _) = setup(&d, &c);
+    checks_pass(&mut env, "c1");
+    let r = stop(&mut env, "Done.");
+    let Decision::System(report) = &r else {
+        panic!("expected the limit report, got {r:?}");
+    };
+    assert!(report.contains("NOT certified"), "{report}");
+    assert!(
+        report.contains("remaining criteria: review required"),
+        "{report}"
+    );
+    plain(report);
+}
