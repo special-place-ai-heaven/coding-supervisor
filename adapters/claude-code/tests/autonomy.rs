@@ -1807,6 +1807,91 @@ fn pending_prompt_without_a_task_allows_read_only_commands() {
     assert!(lifecycle::active_task(&f.root).unwrap().is_none());
 }
 
+/// G45 (field brief 2026-11-09, change 3): before an intent exists and during a discussion a
+/// session can still ask for help: a question to the user, the supervisor's own skills, and
+/// every read-only tool of a server whose other read-only tools are allowed. Writes, edits,
+/// mutating commands, other skills and delegation stay refused.
+#[test]
+fn a_session_can_ask_for_help_before_an_intent_and_in_discussion() {
+    use supervisor_claude_code::adapter::{Decision, handle};
+    let f = Fixture::new();
+    let event = f.prompt("first", "How does this part work?");
+    let mut env = hook_env(&f);
+    for state in ["unclassified", "discussion"] {
+        if state == "discussion" {
+            f.apply(&event, "discussion", None, None).unwrap();
+        }
+        for (tool, input) in [
+            ("AskUserQuestion", json!({"questions":[]})),
+            ("Skill", json!({"skill":"supervisor-chair"})),
+            (
+                "Skill",
+                json!({"skill":"coding-supervisor:supervisor-worker"}),
+            ),
+            ("mcp__symforge__ask", json!({"query":"where is the gate"})),
+            ("mcp__symforge__explore", json!({"query":"gate"})),
+            (
+                "mcp__symforge__analyze_file_impact",
+                json!({"path":"src/lib.rs"}),
+            ),
+            (
+                "mcp__symforge__validate_file_syntax",
+                json!({"path":"Cargo.toml"}),
+            ),
+            ("mcp__symforge__search_text", json!({"query":"gate"})),
+        ] {
+            assert_eq!(
+                handle(&pre_tool(&f, "help", tool, input.clone()), &mut env),
+                Decision::None,
+                "{state}: {tool} {input}"
+            );
+        }
+        for (tool, input) in [
+            ("Write", json!({"file_path":"src/x.rs","content":""})),
+            (
+                "Edit",
+                json!({"file_path":"src/x.rs","old_string":"a","new_string":"b"}),
+            ),
+            ("Bash", json!({"command":"touch x"})),
+            (
+                "Agent",
+                json!({"prompt":"do it","subagent_type":"general-purpose"}),
+            ),
+            (
+                "mcp__symforge__replace_symbol_body",
+                json!({"path":"src/lib.rs"}),
+            ),
+            ("mcp__symforge__symforge_edit", json!({})),
+        ] {
+            assert!(
+                matches!(
+                    handle(&pre_tool(&f, "work", tool, input.clone()), &mut env),
+                    Decision::Deny(_)
+                ),
+                "{state}: {tool} must stay denied"
+            );
+        }
+        // Another skill may run commands while it loads; the refusal says what does load. A
+        // look-alike name under another prefix is another skill.
+        for skill in [
+            json!("deploy"),
+            json!("evil:supervisor-chair"),
+            json!("supervisor-chair "),
+            json!(["supervisor-chair"]),
+        ] {
+            match handle(
+                &pre_tool(&f, "skill", "Skill", json!({ "skill": skill })),
+                &mut env,
+            ) {
+                Decision::Deny(text) => {
+                    assert!(text.contains("supervisor-chair"), "{state}: {text}")
+                }
+                other => panic!("{state} {skill}: {other:?}"),
+            }
+        }
+    }
+}
+
 #[test]
 fn unknown_intent_action_is_refused_with_the_valid_actions() {
     let f = Fixture::new();
