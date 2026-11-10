@@ -143,6 +143,12 @@ and job identifiers without a special header. With hooks, observed runs supply
 the evidence. Without hooks, record receipts only when you saw the commands
 run in the worker transcript or your own tools. A worker's prose is not proof.
 
+When `task_state.review` requires a review, dispatch a separate reviewer that
+only reads (Read, Grep, Glob, `git diff`/`log`/`show`) and whose final reply
+starts with `REVIEW: APPROVED` or `REVIEW: REJECTED`, one `FINDING: <text>` line
+per finding below it. A rejection stands until the content changes: address it,
+then ask a fresh reviewer. Your own or a builder's review is not independent.
+
 ## Never
 
 - Call `task_complete` after a refusal without a new receipt.
