@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.14.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.13.4...v0.14.0) (2026-11-10)
+
+
+### Features
+
+* **gate:** fail closed on adapter errors for governed projects ([95e7133](https://github.com/special-place-ai-heaven/coding-supervisor/commit/95e713318a16a1f71f76fd0dade2b563241deb48))
+
+
+### Bug Fixes
+
+* **cli:** write the failure mode first and show it on every level write ([922f974](https://github.com/special-place-ai-heaven/coding-supervisor/commit/922f97497287d32a3475f72ee660e30800e2a4a9))
+* **gate:** route every adapter error through one fail-closed path ([fbbe473](https://github.com/special-place-ai-heaven/coding-supervisor/commit/fbbe4738a48803fb1db153208ba25d833dfc4217))
+* **gate:** route the paused-state read error through adapter_error ([fda1956](https://github.com/special-place-ai-heaven/coding-supervisor/commit/fda19563de9772274e0ba5e541c685d37aedae44))
+
 ## [0.13.4](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.13.3...v0.13.4) (2026-11-09)
 
 
