@@ -1408,7 +1408,7 @@ fn add_floor(contract: &Value, floor: &Value) -> Result<Value, String> {
     validate_contract(&contract)
 }
 
-fn gate_state(dir: &Path) -> Result<&'static str, String> {
+pub(crate) fn gate_state(dir: &Path) -> Result<&'static str, String> {
     let (_, digest) = state::read_contract(dir)?;
     match state::load_gate(dir, &digest)? {
         Stored::Absent => Ok("queued"),
