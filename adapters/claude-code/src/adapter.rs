@@ -642,7 +642,15 @@ fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) -> Option
                 .and_then(|c| lifecycle::task_identity(&dir, &c.id.0).ok())
                 .unwrap_or_default();
             let agent = text(payload, "agent_id").unwrap_or("main");
-            if let Err(e) = observation::record_mutation(&dir, payload, &task, agent, now) {
+            // WP5/G21: under `state.lock`, which every transaction holds from its stage copy to
+            // its commit, so the row lands before a copy or after a commit and is never written
+            // over. A busy lock past its deadline takes the refusal below.
+            let appended = crate::transaction::Transaction::open(&env.state_dir).and_then(|lock| {
+                let row = observation::record_mutation(&dir, payload, &task, agent, now);
+                drop(lock);
+                row
+            });
+            if let Err(e) = appended {
                 let why = format!("GATE: the gate could not journal this tool ({e}); retry");
                 return Some(match env.level.level {
                     Level::Audit => Decision::System(why),
@@ -1442,16 +1450,6 @@ fn process(
             (session.gate.continuations, session.gate.handback_refusals) = refusals;
         }
         reasons.push("level audit: reported, not blocked".to_owned());
-    }
-    // WP5/G21: this call's events.jsonl line, written in this transaction, says that the harness
-    // lets a mutating tool of `agent` run. The delegations.jsonl row `note_agent_effects` appends
-    // after the commit can be lost to a concurrent hook's commit; `made_mutation` reads both.
-    if event == "PreToolUse"
-        && !inspection(payload)
-        && (!matches!(decision, Decision::Deny(_) | Decision::Block(_))
-            || env.level.level == Level::Audit)
-    {
-        reasons.push(observation::MUTATION_ALLOWED.to_owned());
     }
     session.gate.checkpoint = session.task.checkpoint();
     session.gate.starting = session.task.starting_candidate().cloned().map(Box::new);
@@ -3422,12 +3420,15 @@ mod deny_path_tests {
 
 #[cfg(test)]
 mod mutation_row_tests {
-    use super::{Env, handle, handle_at_level, note_agent_effects};
+    use super::{Decision, Env, JOURNAL, Journal, handle, note_agent_effects};
     use crate::candidate::CandidateProvider;
     use crate::level::{Level, Setting};
     use coding_supervisor::{Candidate, CandidateId};
     use serde_json::{Value, json};
     use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     struct Fixed;
     impl CandidateProvider for Fixed {
@@ -3443,14 +3444,34 @@ mod mutation_row_tests {
         }
     }
 
-    /// WP5: a builder's mutation row must survive a concurrent hook that copied the task folder
-    /// before the row was written and commits it after; otherwise the builder's own approval
-    /// reads as observed. Deterministic: the second hook is a real `with_task` whose action runs
-    /// the first hook's post-transaction step.
+    fn env(state: &Path) -> Env {
+        Env {
+            state_dir: state.to_path_buf(),
+            state_location: "test",
+            candidate: Box::new(Fixed),
+            clock: || 1_000,
+            level: Setting {
+                level: Level::Enforce,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn write(root: &Path, agent: &str) -> Value {
+        json!({"hook_event_name":"PreToolUse","cwd":root,"session_id":"session",
+            "agent_id":agent,"tool_use_id":format!("w-{agent}"),"tool_name":"Write",
+            "tool_input":{"file_path":root.join("src").join("lib.rs"),"content":"x"}})
+    }
+
+    /// WP5/G21: one thread holds `state.lock` in the middle of a transaction (after its stage
+    /// copy); another appends w1's mutation row meanwhile. The append must wait for the commit,
+    /// so the row is present after both finish. Without the lock on the append, the append lands
+    /// first (the holder waits up to two seconds for it) and the commit writes the stale copy
+    /// over it.
     #[test]
-    fn a_mutation_row_survives_a_concurrent_commit() {
-        let root =
-            std::env::temp_dir().join(format!("supervisor-mutation-row-{}", std::process::id()));
+    fn the_mutation_row_append_waits_for_a_transaction_in_progress() {
+        let root: PathBuf =
+            std::env::temp_dir().join(format!("supervisor-mutation-lock-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let state = root.join("state");
         fs::create_dir_all(root.join("src")).unwrap();
@@ -3463,33 +3484,28 @@ mod mutation_row_tests {
             .to_string(),
         )
         .unwrap();
-        let mut env = Env {
-            state_dir: state.clone(),
-            state_location: "test",
-            candidate: Box::new(Fixed),
-            clock: || 1_000,
-            level: Setting {
-                level: Level::Enforce,
-                ..Default::default()
-            },
-        };
-        let write = |agent: &str| {
-            json!({"hook_event_name":"PreToolUse","cwd":root,"session_id":"session",
-                "agent_id":agent,"tool_use_id":format!("w-{agent}"),"tool_name":"Write",
-                "tool_input":{"file_path":root.join("src").join("lib.rs"),"content":"x"}})
-        };
-        // w0 makes delegations.jsonl exist, so the second hook's copy holds it.
-        assert_eq!(handle(&write("w0"), &mut env), super::Decision::None);
-        let first = write("w1");
-        let decision = handle_at_level(&first, &mut env);
-        assert_eq!(decision, super::Decision::None);
+        // w0 makes delegations.jsonl exist, so the holder's stage copy holds it.
+        assert_eq!(handle(&write(&root, "w0"), &mut env(&state)), Decision::None);
+        let (done, appended) = mpsc::channel();
+        let mut worker = None;
         crate::lifecycle::with_task(&state, None, Some("session"), None, |_stage| {
-            assert!(note_agent_effects(&first, &env, &decision).is_none());
+            let (root, state) = (root.clone(), state.clone());
+            worker = Some(std::thread::spawn(move || {
+                JOURNAL.set(Journal::Written);
+                let refused =
+                    note_agent_effects(&write(&root, "w1"), &env(&state), &Decision::None);
+                let _ = done.send(());
+                refused
+            }));
+            // An append that does not wait finishes well inside this bound.
+            let _ = appended.recv_timeout(Duration::from_secs(2));
             Ok(Value::Null)
         })
         .unwrap();
+        let refused = worker.unwrap().join().unwrap();
         let made = crate::observation::made_mutation(&state, "w1").unwrap();
         let _ = fs::remove_dir_all(&root);
-        assert!(made, "the mutation row of w1 was lost");
+        assert_eq!(refused, None, "the append was refused");
+        assert!(made, "the append landed inside the transaction and was overwritten");
     }
 }
