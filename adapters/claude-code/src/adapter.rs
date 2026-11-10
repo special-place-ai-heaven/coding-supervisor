@@ -1042,6 +1042,12 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
         .map(|c| format!("{}:{}", c.id.base_commit, c.id.dirty_digest))
         .unwrap_or_else(|e| format!("unobserved:{e}"));
     let digest = crate::sha256::hex(format!("{payload}:{candidate}").as_bytes());
+    // WP5: the full-content tree a review binds to, taken at the same point as the candidate and
+    // for the same reason before the lock (a stop must not hold it while git runs).
+    let observed = (
+        observed,
+        needs_content(payload).then(|| content_now(&root, payload)),
+    );
     let result = crate::lifecycle::observe_connection(&root, "claude-hook").and_then(|()| {
         crate::lifecycle::with_task(
             &root,
@@ -1186,6 +1192,34 @@ fn decision_from_json(v: &Value) -> Option<Decision> {
     None
 }
 
+/// The candidate and, where a review may bind to it, the full-content tree (`Some(None)` when it
+/// could not be computed), both observed before the lock.
+type Observed = (Result<Candidate, String>, Option<Option<String>>);
+
+/// WP5: the events that bind a review to content: the stops, and a background Agent launch.
+fn needs_content(payload: &Value) -> bool {
+    match text(payload, "hook_event_name") {
+        Some("Stop" | "SubagentStop") => true,
+        Some("PostToolUse") => {
+            text(payload, "tool_name") == Some("Agent")
+                && payload.pointer("/tool_response/status").and_then(Value::as_str)
+                    == Some("async_launched")
+        }
+        _ => false,
+    }
+}
+
+/// WP5: the full-content tree of the worktree the active task is judged on.
+fn content_now(root: &Path, payload: &Value) -> Option<String> {
+    let cwd = text(payload, "cwd")?;
+    let task = match lifecycle::active_task(root) {
+        Ok(Some(active)) => active.dir,
+        _ => root.to_path_buf(),
+    };
+    let at = crate::binding::bound_root(&task).unwrap_or_else(|| cwd.to_owned());
+    crate::git::content_tree(Path::new(&at), root)
+}
+
 /// WP5: a final message that opens with `REVIEW: REJECTED`.
 fn opens_with_rejection(payload: &Value) -> bool {
     crate::review::parse(text(payload, "last_assistant_message").unwrap_or_default())
@@ -1198,7 +1232,7 @@ fn opens_with_rejection(payload: &Value) -> bool {
 fn handle_inner(
     payload: &Value,
     env: &mut Env,
-    observed: Result<Candidate, String>,
+    observed: Observed,
     root: &Path,
     review_only: Option<Decision>,
 ) -> Result<Decision, String> {
@@ -1258,13 +1292,14 @@ fn handle_inner(
 fn process(
     payload: &Value,
     env: &mut Env,
-    observed: Result<Candidate, String>,
+    observed: Observed,
     agent: &str,
     review_only: Option<Decision>,
     reasons: &mut Vec<String>,
     trace: &mut Trace,
 ) -> Result<Decision, String> {
     let event = text(payload, "hook_event_name").unwrap_or_default();
+    let (observed, content) = observed;
     if event == "PreToolUse"
         && let Some(denial) = guard::state_write_denial(payload, &env.state_dir)
     {
@@ -1338,7 +1373,14 @@ fn process(
     // Stop while any is outstanding is not judged, consumes no refusal and accepts nothing.
     match event {
         "PostToolUse" if text(payload, "tool_name") == Some("Agent") => {
-            observation::record_delegation(&env.state_dir, payload, &task_id, now)?;
+            let launched_on = content.clone().flatten();
+            observation::record_delegation(
+                &env.state_dir,
+                payload,
+                &task_id,
+                now,
+                launched_on.as_deref(),
+            )?;
         }
         "Stop" if agent == "main" => {
             let session = text(payload, "session_id").unwrap_or_default();
@@ -1375,6 +1417,9 @@ fn process(
     if let Some(cwd) = text(payload, "cwd") {
         let tree_at = crate::binding::bound_root(&env.state_dir).unwrap_or_else(|| cwd.to_owned());
         session.tree = CurrentTree::new(Path::new(&tree_at), &env.state_dir);
+    }
+    if let Some(content) = content {
+        let _ = session.tree.content.set(content);
     }
     if matches!(event, "Stop" | "SubagentStop") {
         // Record-only: no receipt, handback judgement or refusal count changes on that route.
@@ -2837,6 +2882,19 @@ impl Session {
                 .push("review not recorded: candidate identity could not be observed".to_owned());
             return Ok(parsed.rest);
         };
+        // An approval binds to the content a background reviewer was launched on: an edit since the
+        // launch is work it never saw. A caller-asserted approval would still meet `required`, so
+        // it is dropped, not downgraded. A foreground reviewer and the chair bind to this stop.
+        if decision == coding_supervisor::ReviewDecision::Approved
+            && agent != "main"
+            && let Some(launch) = observation::delegated_content(dir, agent)?
+            && launch.as_deref() != self.tree.content()
+        {
+            reasons.push(format!(
+                "approval by {agent} dropped: the content changed after the reviewer was launched"
+            ));
+            return Ok(parsed.rest);
+        }
         // The chair and any agent that changed something in this task review their own work.
         let provenance = if agent != "main" && !observation::made_mutation(dir, agent)? {
             ReviewProvenance::Observed

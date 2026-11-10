@@ -698,6 +698,7 @@ pub(crate) fn record_delegation(
     payload: &Value,
     task: &str,
     now: u64,
+    content: Option<&str>,
 ) -> Result<(), String> {
     let launched = payload
         .pointer("/tool_response/status")
@@ -716,8 +717,21 @@ pub(crate) fn record_delegation(
         &dir.join("delegations.jsonl"),
         &json!({"kind":"delegation","task_id":task,"session_id":text(payload,"session_id"),
             "agent_id":agent,"tool_use_id":text(payload,"tool_use_id"),
-            "model":payload.pointer("/tool_response/resolvedModel").and_then(Value::as_str),"t":now}),
+            "model":payload.pointer("/tool_response/resolvedModel").and_then(Value::as_str),
+            "content":content,"t":now}),
     )
+}
+
+/// WP5: the full-content tree recorded at the latest background launch of `agent`: `None` with
+/// no launch row (a foreground agent), `Some(None)` when the launch content is unknown. A new
+/// launch row for the same agent replaces it.
+pub(crate) fn delegated_content(dir: &Path, agent: &str) -> Result<Option<Option<String>>, String> {
+    let (rows, _) = delegation_rows(dir)?;
+    Ok(rows
+        .iter()
+        .rev()
+        .find(|r| text(r, "kind") == Some("delegation") && text(r, "agent_id") == Some(agent))
+        .map(|r| text(r, "content").map(str::to_owned)))
 }
 
 /// WP5: the model the launch of background agent `agent` reported, if any.

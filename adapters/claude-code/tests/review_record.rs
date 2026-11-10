@@ -1202,3 +1202,79 @@ fn a_loose_rejection_counts_and_a_loose_approval_does_not() {
     reviewer(&mut env, "r1", "**Review: rejected** - see below\nFINDING: wrong");
     assert_eq!(reviews(&env)[0]["decision"], "rejected");
 }
+
+// ---- item 2: an approval binds to the content the reviewer was launched on ---------------
+
+fn launch_in_background(env: &mut Env, agent: &str) {
+    let p = in_project(
+        env,
+        json!({"hook_event_name":"PostToolUse","session_id":"session","tool_name":"Agent",
+            "tool_use_id":format!("a-{agent}"),"tool_input":{"prompt":"review"},
+            "tool_response":{"status":"async_launched","agentId":agent,
+                "resolvedModel":"claude-haiku-5-5"}}),
+    );
+    handle(&p, env);
+}
+fn git_checks(env: &mut Env, id: &str) {
+    for kind in ["PreToolUse", "PostToolUse"] {
+        let p = in_project(
+            env,
+            json!({"hook_event_name":kind,"session_id":"session","agent_id":"main",
+                "tool_use_id":id,"tool_name":"Bash","tool_input":{"command":"cargo test"},
+                "tool_response":{"interrupted":false}}),
+        );
+        assert_eq!(handle(&p, env), Decision::None);
+    }
+}
+fn git_review(env: &mut Env, agent: &str, message: &str) -> Decision {
+    let p = in_project(
+        env,
+        json!({"hook_event_name":"SubagentStop","session_id":"session","agent_id":agent,
+            "stop_hook_active":false,"last_assistant_message":message}),
+    );
+    handle(&p, env)
+}
+fn git_stop(env: &mut Env) -> Decision {
+    let p = in_project(
+        env,
+        json!({"hook_event_name":"Stop","session_id":"session","stop_hook_active":false,
+            "last_assistant_message":"Done."}),
+    );
+    handle(&p, env)
+}
+
+#[test]
+fn an_approval_after_the_chair_edited_during_the_review_is_not_counted() {
+    let (_d, mut env) = repository("launch-edited");
+    git_checks(&mut env, "c1");
+    launch_in_background(&mut env, "r1");
+    // The chair keeps working while the background reviewer reads.
+    fs::write(project_of(&env).join("src/a.rs"), "a3\n").unwrap();
+    git_checks(&mut env, "c2");
+    assert_eq!(git_review(&mut env, "r1", "REVIEW: APPROVED"), Decision::None);
+    assert!(reviews(&env).is_empty(), "{:?}", reviews(&env));
+    assert!(last_reasons(&env).contains("launched"), "{}", last_reasons(&env));
+    let why = blocked(&git_stop(&mut env)).to_owned();
+    assert!(why.contains("review required"), "{why}");
+}
+
+#[test]
+fn an_approval_with_no_edit_since_the_launch_is_counted() {
+    let (_d, mut env) = repository("launch-same");
+    git_checks(&mut env, "c1");
+    launch_in_background(&mut env, "r1");
+    assert_eq!(git_review(&mut env, "r1", "REVIEW: APPROVED"), Decision::None);
+    assert_eq!(reviews(&env)[0]["decision"], "approved");
+    assert_eq!(git_stop(&mut env), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+}
+
+#[test]
+fn a_rejection_after_an_edit_since_the_launch_is_recorded() {
+    let (_d, mut env) = repository("launch-rejected");
+    git_checks(&mut env, "c1");
+    launch_in_background(&mut env, "r1");
+    fs::write(project_of(&env).join("src/a.rs"), "a3\n").unwrap();
+    git_review(&mut env, "r1", "REVIEW: REJECTED\nFINDING: wrong");
+    assert_eq!(reviews(&env)[0]["decision"], "rejected");
+}
