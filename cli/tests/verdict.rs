@@ -10,12 +10,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use coding_supervisor::{CandidateId, Checkpoint, CriterionId, TaskState, VerificationReceipt};
+use coding_supervisor::{
+    CandidateId, Checkpoint, CriterionId, ReviewDecision, ReviewProvenance, ReviewRecord,
+    TaskState, VerificationReceipt,
+};
 use serde_json::{Value, json};
 use supervisor_claude_code::lifecycle;
 use supervisor_claude_code::location::{canonical_project, resolve_state_dir_checked};
 use supervisor_claude_code::sha256;
-use supervisor_claude_code::state::{Gate, read_contract, save_gate};
+use supervisor_claude_code::state::{Gate, StoredReview, read_contract, save_gate};
 
 const BIN: &str = env!("CARGO_BIN_EXE_supervisor");
 /// The dirty digest of a clean worktree: sha256 of the empty listing.
@@ -469,6 +472,8 @@ fn t01_verdict_json_every_key_present_on_every_path() {
         "criteria",
         "unmet",
         "flags",
+        // WP5: added deliberately; null without an active task.
+        "review",
     ]);
     let head_keys = set(&["sha", "dirty_digest", "reason"]);
     let crit = set(&[
@@ -543,6 +548,7 @@ fn t01_verdict_json_every_key_present_on_every_path() {
     let r = h.verdict_json(&[]).1;
     assert_eq!(keys(&r), top);
     assert_eq!(r["task"], Value::Null);
+    assert_eq!(r["review"], Value::Null);
     assert_eq!(r["criteria"], json!([]));
     let u = Fixture::new("t01-no-repo");
     u.task(
@@ -588,6 +594,7 @@ fn t03_verdict_enum_values_are_closed_snake_case_set() {
                 Some("head_unknown"),
                 Some("no_mandatory_criteria"),
                 Some("mandatory_unmet"),
+                Some("review_unmet"),
             ],
         );
         one_of(&r["require"], &[Some("observed"), Some("asserted")]);
@@ -1731,4 +1738,116 @@ fn t42_verdict_does_not_claim_a_limit_it_did_not_cause() {
         human.contains("limit usage now: 1 of 1 turns used"),
         "{human}"
     );
+}
+
+/// WP5: store one review on the task's gate, bound to `candidate`.
+fn add_review(
+    dir: &Path,
+    reviewer: &str,
+    decision: ReviewDecision,
+    provenance: ReviewProvenance,
+    candidate: &CandidateId,
+) {
+    let (_, digest) = read_contract(dir).unwrap();
+    let supervisor_claude_code::state::Stored::Valid(mut gate) =
+        supervisor_claude_code::state::load_gate(dir, &digest).unwrap()
+    else {
+        panic!("no valid gate");
+    };
+    gate.reviews.push(StoredReview {
+        review: ReviewRecord {
+            reviewer: reviewer.to_owned(),
+            model: Some("claude-haiku-5-5".to_owned()),
+            decision,
+            findings: vec!["one".to_owned(), "two".to_owned()],
+            at: T0,
+            candidate: candidate.clone(),
+            provenance,
+        },
+        tree: None,
+    });
+    save_gate(dir, &gate, &digest).unwrap();
+}
+
+/// WP5: a review-required task whose checks pass fails with `review_unmet` until an approval on
+/// the head candidate is stored; the rule is the core's, shared with `try_accept`.
+#[test]
+fn t44_verdict_review_unmet_until_an_approval_at_head() {
+    let f = Fixture::git("t44");
+    let head = f.head();
+    let (_, dir) = f.task_stored_with(
+        TaskState::Verifying,
+        &[("C2", true)],
+        &[rc("C2", "observed:{task}:a", &head, 0)],
+        &[("a", 0, &same)],
+        &json!({"review":{"required":true,"independent":true}}),
+    );
+    let (code, r) = f.verdict_json(&[]);
+    assert_eq!((code, &r["reason"]), (3, &json!("review_unmet")), "{r}");
+    assert_eq!(r["unmet"], json!([]), "the checks themselves are met: {r}");
+    assert_eq!(
+        r["review"],
+        json!({"required":true,"independent":true,"met":false,"reason":"review_required","latest":null})
+    );
+    add_review(
+        &dir,
+        "w1",
+        ReviewDecision::Approved,
+        ReviewProvenance::CallerAsserted,
+        &head,
+    );
+    let (code, r) = f.verdict_json(&[]);
+    assert_eq!(code, 3, "{r}");
+    assert_eq!(r["review"]["reason"], "review_not_independent");
+    assert_eq!(r["review"]["latest"]["provenance"], "caller-asserted");
+    add_review(
+        &dir,
+        "r1",
+        ReviewDecision::Approved,
+        ReviewProvenance::Observed,
+        &head,
+    );
+    let (code, r) = f.verdict_json(&[]);
+    assert_eq!(code, 0, "{r}");
+    assert_eq!(r["reason"], Value::Null);
+    assert_eq!(
+        r["review"]["latest"],
+        json!({"reviewer":"r1","model":"claude-haiku-5-5","decision":"approved",
+            "provenance":"observed","findings":2,"at":T0})
+    );
+    assert_eq!(r["review"]["met"], true);
+    add_review(
+        &dir,
+        "r2",
+        ReviewDecision::Rejected,
+        ReviewProvenance::Observed,
+        &head,
+    );
+    let (code, r) = f.verdict_json(&[]);
+    assert_eq!(
+        (code, &r["review"]["reason"]),
+        (3, &json!("review_rejected")),
+        "{r}"
+    );
+    let human = String::from_utf8(f.verdict(&[]).stdout).unwrap();
+    assert!(human.contains("review unmet"), "{human}");
+}
+
+/// WP5: with the policy off a stored rejection never fails the verdict.
+#[test]
+fn t45_verdict_review_policy_off_never_fails() {
+    let f = Fixture::git("t45");
+    let (_, dir, head) = f.observed_pass();
+    add_review(
+        &dir,
+        "r1",
+        ReviewDecision::Rejected,
+        ReviewProvenance::Observed,
+        &head,
+    );
+    let (code, r) = f.verdict_json(&[]);
+    assert_eq!(code, 0, "{r}");
+    assert_eq!(r["review"]["required"], false);
+    assert_eq!(r["review"]["met"], true);
+    assert_eq!(r["review"]["latest"]["decision"], "rejected");
 }

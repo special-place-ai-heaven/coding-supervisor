@@ -5,8 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use coding_supervisor::{
-    Candidate, Criterion, CriterionId, GateError, LimitReached, ReceiptStatus, Task, TaskContract,
-    TaskState, VerificationReceipt,
+    Candidate, Criterion, CriterionId, GateError, LimitReached, ReceiptStatus, ReviewProvenance,
+    ReviewRecord, Task, TaskContract, TaskState, VerificationReceipt,
 };
 use serde_json::Value;
 
@@ -14,7 +14,7 @@ use crate::candidate::CandidateProvider;
 use crate::header::{self, Header, Verdict};
 use crate::journal::{self, Trace};
 use crate::level::{self, Level};
-use crate::state::{self, Gate, Stored, obj, state_name};
+use crate::state::{self, Gate, Stored, StoredReview, obj, state_name};
 use crate::{claim, guard, lifecycle, location, observation};
 
 /// `output_ref` prefix of a receipt recorded through the MCP server: caller-asserted, never
@@ -629,7 +629,9 @@ fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) -> Option
                 Ok(true) => {}
                 Ok(false) => return None,
                 Err(e) => {
-                    let why = format!("GATE: the gate could not journal this tool ({e}); retry");
+                    let why = blocking_words(&format!(
+                        "GATE: the gate could not journal this tool ({e}); retry"
+                    ));
                     return Some(match env.level.level {
                         Level::Audit => Decision::System(why),
                         _ => Decision::Deny(why),
@@ -642,8 +644,18 @@ fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) -> Option
                 .and_then(|c| lifecycle::task_identity(&dir, &c.id.0).ok())
                 .unwrap_or_default();
             let agent = text(payload, "agent_id").unwrap_or("main");
-            if let Err(e) = observation::record_mutation(&dir, payload, &task, agent, now) {
-                let why = format!("GATE: the gate could not journal this tool ({e}); retry");
+            // WP5/G21: under `state.lock`, which every transaction holds from its stage copy to
+            // its commit, so the row lands before a copy or after a commit and is never written
+            // over. A busy lock past its deadline takes the refusal below.
+            let appended = crate::transaction::Transaction::open(&env.state_dir).and_then(|lock| {
+                let row = observation::record_mutation(&dir, payload, &task, agent, now);
+                drop(lock);
+                row
+            });
+            if let Err(e) = appended {
+                let why = blocking_words(&format!(
+                    "GATE: the gate could not journal this tool ({e}); retry"
+                ));
                 return Some(match env.level.level {
                     Level::Audit => Decision::System(why),
                     _ => Decision::Deny(why),
@@ -1034,6 +1046,12 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
         .map(|c| format!("{}:{}", c.id.base_commit, c.id.dirty_digest))
         .unwrap_or_else(|e| format!("unobserved:{e}"));
     let digest = crate::sha256::hex(format!("{payload}:{candidate}").as_bytes());
+    // WP5: the full-content tree a review binds to, taken at the same point as the candidate and
+    // for the same reason before the lock (a stop must not hold it while git runs).
+    let observed = (
+        observed,
+        needs_content(&root, payload).then(|| content_now(&root, payload)),
+    );
     let result = crate::lifecycle::observe_connection(&root, "claude-hook").and_then(|()| {
         crate::lifecycle::with_task(
             &root,
@@ -1098,6 +1116,16 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                         IntentAuthority::Actionable => None,
                     };
                     if let Some(refusal) = refusal {
+                        // WP5: a rejection on a pending, discussion or changed-intent turn of
+                        // this session is still recorded, record-only, under this lock and after
+                        // the ownership recheck above; the route's own answer is unchanged.
+                        if event == "SubagentStop" && opens_with_rejection(payload) {
+                            env.state_dir = dir.to_path_buf();
+                            let decision =
+                                handle_inner(payload, env, observed, &root, Some(refusal));
+                            env.state_dir = root.clone();
+                            return Ok(decision?.to_json().unwrap_or(Value::Null));
+                        }
                         return Ok(refusal.to_json().unwrap_or(Value::Null));
                     }
                     if event == "PreToolUse"
@@ -1112,7 +1140,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     }
                 }
                 env.state_dir = dir.to_path_buf();
-                let decision = handle_inner(payload, env, observed, &root);
+                let decision = handle_inner(payload, env, observed, &root, None);
                 env.state_dir = root.clone();
                 // An Err leaves the staged task uncommitted.
                 Ok(decision?.to_json().unwrap_or(Value::Null))
@@ -1168,13 +1196,79 @@ fn decision_from_json(v: &Value) -> Option<Decision> {
     None
 }
 
+/// The candidate and, where a review may bind to it, the full-content tree (`Some(None)` when it
+/// could not be computed), both observed before the lock.
+type Observed = (Result<Candidate, String>, Option<Option<String>>);
+
+/// WP5: whether this call must take the content tree: a stop or a background Agent launch, and
+/// only when a review can matter (the final message reads as a review, or the task has a review
+/// rule or stored reviews). Otherwise no extra git runs, as before reviews existed.
+fn needs_content(root: &Path, payload: &Value) -> bool {
+    let review_text = || {
+        crate::review::parse(text(payload, "last_assistant_message").unwrap_or_default()).is_some()
+    };
+    match text(payload, "hook_event_name") {
+        Some("Stop" | "SubagentStop") => review_text() || review_in_play(root),
+        Some("PostToolUse") => {
+            text(payload, "tool_name") == Some("Agent")
+                && payload
+                    .pointer("/tool_response/status")
+                    .and_then(Value::as_str)
+                    == Some("async_launched")
+                && review_in_play(root)
+        }
+        _ => false,
+    }
+}
+
+/// The active task has a review rule or stored reviews; state that cannot be read counts as yes.
+fn review_in_play(root: &Path) -> bool {
+    let task = match lifecycle::active_task(root) {
+        Ok(Some(active)) => active.dir,
+        Ok(None) => root.to_path_buf(),
+        Err(_) => return true,
+    };
+    match state::read_contract(&task) {
+        Ok((None, _)) => false,
+        Ok((Some(contract), digest)) => {
+            contract.review.required
+                || contract.review.independent
+                || match state::load_gate(&task, &digest) {
+                    Ok(Stored::Valid(gate)) => !gate.reviews.is_empty(),
+                    Ok(Stored::Absent) => false,
+                    _ => true,
+                }
+        }
+        Err(_) => true,
+    }
+}
+
+/// WP5: the full-content tree of the worktree the active task is judged on.
+fn content_now(root: &Path, payload: &Value) -> Option<String> {
+    let cwd = text(payload, "cwd")?;
+    let task = match lifecycle::active_task(root) {
+        Ok(Some(active)) => active.dir,
+        _ => root.to_path_buf(),
+    };
+    let at = crate::binding::bound_root(&task).unwrap_or_else(|| cwd.to_owned());
+    crate::git::content_tree(Path::new(&at), root)
+}
+
+/// WP5: a final message that opens with `REVIEW: REJECTED`.
+fn opens_with_rejection(payload: &Value) -> bool {
+    crate::review::parse(text(payload, "last_assistant_message").unwrap_or_default())
+        .is_some_and(|p| p.decision == Some(coding_supervisor::ReviewDecision::Rejected))
+}
+
 /// `root` is the state root, which holds the project's `failure` setting; `env.state_dir` is the
-/// staged task here.
+/// staged task here. `review_only`: a SubagentStop that only records its review and answers
+/// with the given decision, the route's own (WP5).
 fn handle_inner(
     payload: &Value,
     env: &mut Env,
-    observed: Result<Candidate, String>,
+    observed: Observed,
     root: &Path,
+    review_only: Option<Decision>,
 ) -> Result<Decision, String> {
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let agent = text(payload, "agent_id").unwrap_or("main");
@@ -1188,8 +1282,8 @@ fn handle_inner(
         payload,
         env,
         observed,
-        event,
         agent,
+        review_only,
         &mut reasons,
         &mut trace,
     )
@@ -1232,12 +1326,14 @@ fn handle_inner(
 fn process(
     payload: &Value,
     env: &mut Env,
-    observed: Result<Candidate, String>,
-    event: &str,
+    observed: Observed,
     agent: &str,
+    review_only: Option<Decision>,
     reasons: &mut Vec<String>,
     trace: &mut Trace,
 ) -> Result<Decision, String> {
+    let event = text(payload, "hook_event_name").unwrap_or_default();
+    let (observed, content) = observed;
     if event == "PreToolUse"
         && let Some(denial) = guard::state_write_denial(payload, &env.state_dir)
     {
@@ -1258,7 +1354,7 @@ fn process(
             reasons.push(format!("state tampered: {what}"));
             return Ok(tampered(payload, event, &what));
         }
-        Stored::Valid(gate) => Some(gate),
+        Stored::Valid(gate) => Some(*gate),
         Stored::Absent => None,
     };
     let Some(contract) = contract else {
@@ -1311,7 +1407,14 @@ fn process(
     // Stop while any is outstanding is not judged, consumes no refusal and accepts nothing.
     match event {
         "PostToolUse" if text(payload, "tool_name") == Some("Agent") => {
-            observation::record_delegation(&env.state_dir, payload, &task_id, now)?;
+            let launched_on = content.clone().flatten();
+            observation::record_delegation(
+                &env.state_dir,
+                payload,
+                &task_id,
+                now,
+                launched_on.as_deref(),
+            )?;
         }
         "Stop" if agent == "main" => {
             let session = text(payload, "session_id").unwrap_or_default();
@@ -1349,8 +1452,15 @@ fn process(
         let tree_at = crate::binding::bound_root(&env.state_dir).unwrap_or_else(|| cwd.to_owned());
         session.tree = CurrentTree::new(Path::new(&tree_at), &env.state_dir);
     }
+    if let Some(content) = content {
+        let _ = session.tree.content.set(content);
+    }
     if matches!(event, "Stop" | "SubagentStop") {
-        session.sync_observed_receipts(&env.state_dir, agent, now, reasons)?;
+        // Record-only: no receipt, handback judgement or refusal count changes on that route.
+        if review_only.is_none() {
+            session.sync_observed_receipts(&env.state_dir, agent, now, reasons)?;
+        }
+        session.transfer_reviews(reasons);
     }
     let refusals = (
         session.gate.continuations,
@@ -1364,6 +1474,12 @@ fn process(
     };
     let decision = match event {
         _ if let Some(denial) = refused_for_limit => denial,
+        "SubagentStop" if review_only.is_some() => {
+            let message = text(payload, "last_assistant_message").unwrap_or_default();
+            session.take_review(message, &env.state_dir, agent, now, reasons)?;
+            reasons.push("review recorded on an unjudged turn".to_owned());
+            review_only.clone().unwrap_or(Decision::None)
+        }
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
         // WP4: at a reached limit the stop is released whatever the judgement, so it spends no
         // repair round on a refusal nobody sees.
@@ -1377,6 +1493,7 @@ fn process(
         )?,
         "PreToolUse" => session.pre_tool_use(payload)?,
         "PostToolUse" if text(payload, "tool_name") == Some("Agent") => {
+            session.backfill_model(payload, reasons);
             session.agent_result(payload)
         }
         "UserPromptSubmit" => {
@@ -1396,7 +1513,8 @@ fn process(
         Decision::System(_) => session.task.state() != TaskState::Completed,
         _ => false,
     };
-    let release = matches!(event, "Stop" | "SubagentStop") && uncertified;
+    // A record-only answer is the route's own and stays as it is.
+    let release = matches!(event, "Stop" | "SubagentStop") && uncertified && review_only.is_none();
     let decision = match (decision, reached, &usage) {
         (_, Some(reached), Some(usage)) if release => {
             (session.gate.continuations, session.gate.handback_refusals) = refusals.clone();
@@ -1830,6 +1948,31 @@ pub fn render(error: &GateError) -> String {
         GateError::RepairBudgetExhausted { max } => {
             format!("repair budget exhausted after {max} rounds")
         }
+        GateError::ReviewRequired => {
+            "review required: no approving review is recorded on this candidate".to_owned()
+        }
+        GateError::ReviewNotIndependent => "independent review required: every approval on this candidate came from the chair or from an agent that edited files or ran commands in this task".to_owned(),
+        GateError::ReviewRejected { reviewer, findings } => format!(
+            "review rejected by {reviewer} on this candidate ({findings} finding{})",
+            if *findings == 1 { "" } else { "s" }
+        ),
+    }
+}
+
+/// WP5: what a Stop refused for its review asks for, with a person's way out.
+fn review_protocol(rejected: bool, task_id: &str) -> String {
+    let dispatch = "dispatch a reviewer agent that only reads (the gate's read-only tools and commands, such as Read, Grep, Glob, git diff, log or show; a reviewer the gate lets run anything else counts as a builder), launched after the last edit, and whose final reply starts with the line `REVIEW: APPROVED` or `REVIEW: REJECTED`, with one `FINDING: <text>` line per finding below it";
+    // `task cancel` ends a person's task and an agent's alike; `limits::way_out` names a
+    // disposition that is only true at a task limit.
+    let way_out = format!(
+        "end the task with `supervisor task cancel --project <dir> --task {task_id} --reason <text>`"
+    );
+    if rejected {
+        format!(
+            "address the review findings and change the code, because a rejection stands until the content changes; then {dispatch}; a person can instead {way_out}"
+        )
+    } else {
+        format!("{dispatch}; a person can instead {way_out}")
     }
 }
 
@@ -1901,6 +2044,8 @@ enum Match {
 struct CurrentTree {
     at: Option<(PathBuf, PathBuf)>,
     cell: std::cell::OnceCell<Option<String>>,
+    /// WP5: the full-content tree (documentation included) that reviews bind to.
+    content: std::cell::OnceCell<Option<String>>,
 }
 
 impl CurrentTree {
@@ -1908,6 +2053,7 @@ impl CurrentTree {
         Self {
             at: Some((project.to_owned(), state_dir.to_owned())),
             cell: Default::default(),
+            content: Default::default(),
         }
     }
 
@@ -1916,6 +2062,15 @@ impl CurrentTree {
             .get_or_init(|| {
                 let (project, state_dir) = self.at.as_ref()?;
                 crate::git::worktree_tree(project, state_dir)
+            })
+            .as_deref()
+    }
+
+    fn content(&self) -> Option<&str> {
+        self.content
+            .get_or_init(|| {
+                let (project, state_dir) = self.at.as_ref()?;
+                crate::git::content_tree(project, state_dir)
             })
             .as_deref()
     }
@@ -1999,6 +2154,8 @@ impl Session {
                     ));
                 }
                 let mut task = Task::resume(contract, gate.checkpoint.clone());
+                // WP5: before the replay, which may try acceptance again.
+                task.set_reviews(gate.reviews.iter().map(|s| s.review.clone()).collect());
                 if reproduction {
                     task.require_reproduction();
                 }
@@ -2259,7 +2416,17 @@ impl Session {
             return Ok(Decision::None);
         }
         let _ = self.task.exhaust_limit(reached);
-        let remaining = self.remaining_criteria();
+        let mut remaining: Vec<String> = self
+            .remaining_criteria()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        // WP5: an unmet review is remaining work too, named by the rule's reason.
+        if let Some(why) = self.task.candidate().and_then(|c| {
+            crate::review::unmet_reason(&self.task.contract().review, &self.gate.reviews, c)
+        }) {
+            remaining.push(why.replace('_', " "));
+        }
         let stop = if completed {
             "this stop goes ahead; the task stays completed on the candidate it completed on, and the current work is NOT certified"
         } else {
@@ -2349,6 +2516,9 @@ impl Session {
         now: u64,
         reasons: &mut Vec<String>,
     ) -> Result<Decision, String> {
+        let message = text(payload, "last_assistant_message").unwrap_or_default();
+        // WP5: a review is recorded before the read-only return, so a pure reviewer is heard.
+        let message = self.take_review(message, dir, agent, now, reasons)?;
         // G21: an agent that changed nothing hands back a read-only report. Nothing is
         // consumed or accepted; the line is journaled, not printed, because any output on
         // SubagentStop keeps the worker running.
@@ -2356,7 +2526,6 @@ impl Session {
             reasons.push("read-only handback: not judged".to_owned());
             return Ok(Decision::None);
         }
-        let message = text(payload, "last_assistant_message").unwrap_or_default();
         let active = payload
             .get("stop_hook_active")
             .and_then(Value::as_bool)
@@ -2585,6 +2754,8 @@ impl Session {
             reasons.push("task paused; no completion attempted".to_owned());
             return Ok(Decision::None);
         }
+        // WP5: the chair's own review is caller-asserted; "REVIEW: APPROVED" is no claim.
+        let message = self.take_review(message, dir, agent, now, reasons)?;
         let autonomous = crate::autonomy::is_autonomous_task(dir)?;
         if !autonomous && !claim::claims_completion(message) {
             reasons.push("no completion claim".to_owned());
@@ -2612,6 +2783,8 @@ impl Session {
         }
         // G27: the only gap is a job still running; refuse it once per turn, then wait.
         let only_pending_job = problems.len() == 1 && problems[0].ends_with(PENDING_JOB);
+        // WP5: `Some(rejected)` when the review rule refused; the refusal then teaches it.
+        let mut review_gap = None;
         let result = if problems.is_empty() {
             self.observed_evidence()
                 .map_err(|e| render(&e))
@@ -2622,8 +2795,20 @@ impl Session {
                         _ => self.task.try_accept().and_then(|()| self.task.complete()),
                     }
                     .map_err(|e| {
-                        judged_wrong |=
-                            matches!(e, GateError::OutOfScope(_) | GateError::OpenFinding(_));
+                        // A rejection is the candidate judged wrong; an absent review is not.
+                        judged_wrong |= matches!(
+                            e,
+                            GateError::OutOfScope(_)
+                                | GateError::OpenFinding(_)
+                                | GateError::ReviewRejected { .. }
+                        );
+                        review_gap = match e {
+                            GateError::ReviewRejected { .. } => Some(true),
+                            GateError::ReviewRequired | GateError::ReviewNotIndependent => {
+                                Some(false)
+                            }
+                            _ => None,
+                        };
                         render(&e)
                     })
                 })
@@ -2683,16 +2868,177 @@ impl Session {
                 }
                 self.gate.continuations += 1;
                 let run_instead: String = instructions.iter().map(|i| format!(" {i}")).collect();
-                let next = if !autonomous && header::parse(message).is_some() {
-                    "record the check with CHECK lines"
-                } else {
-                    "run the required check commands"
+                let next = match review_gap {
+                    Some(rejected) => review_protocol(rejected, &self.task_id),
+                    None if !autonomous && header::parse(message).is_some() => {
+                        "record the check with CHECK lines".to_owned()
+                    }
+                    None => "run the required check commands".to_owned(),
                 };
                 Ok(Decision::Block(format!(
                     "GATE refuses completion (refusal {} of 3 this turn): state {state}{round}; {why}; {next}.{run_instead}",
                     self.gate.continuations
                 )))
             }
+        }
+    }
+
+    /// WP5: record the review a final message opens with, and return the rest of the message for
+    /// the header. Not a decision, a duplicate, or one the core refuses (a terminal task, an
+    /// unobserved candidate) is journaled and stores nothing; the journal gets identifiers, the
+    /// decision, the provenance and the finding count, never finding text.
+    fn take_review<'m>(
+        &mut self,
+        message: &'m str,
+        dir: &Path,
+        agent: &str,
+        now: u64,
+        reasons: &mut Vec<String>,
+    ) -> Result<&'m str, String> {
+        let Some(parsed) = crate::review::parse(message) else {
+            return Ok(message);
+        };
+        let Some(decision) = parsed.decision else {
+            reasons.push(
+                "REVIEW line is not a decision (APPROVED or REJECTED): nothing recorded".to_owned(),
+            );
+            return Ok(parsed.rest);
+        };
+        let Ok(current) = &self.observed else {
+            // A rejection is never dropped silently: it fails closed through `adapter_error`.
+            if decision == coding_supervisor::ReviewDecision::Rejected {
+                return Err(
+                    "a review rejection cannot be recorded: candidate identity could not be observed"
+                        .to_owned(),
+                );
+            }
+            reasons
+                .push("review not recorded: candidate identity could not be observed".to_owned());
+            return Ok(parsed.rest);
+        };
+        // An approval binds to the content a background reviewer was launched on: an edit since the
+        // launch is work it never saw, and content that could not be read on either side counts
+        // as changed. A caller-asserted approval would still meet `required`, so it is dropped,
+        // not downgraded. A foreground reviewer and the chair bind to this stop.
+        if decision == coding_supervisor::ReviewDecision::Approved
+            && agent != "main"
+            && let Some(launch) = observation::delegated_content(dir, agent)?
+            && (launch.is_none() || launch.as_deref() != self.tree.content())
+        {
+            reasons.push(format!(
+                "approval by {agent} dropped: the content changed or could not be read after the reviewer was launched"
+            ));
+            return Ok(parsed.rest);
+        }
+        // The chair and any agent that changed something in this task review their own work.
+        let provenance = if agent != "main" && !observation::made_mutation(dir, agent)? {
+            ReviewProvenance::Observed
+        } else {
+            ReviewProvenance::CallerAsserted
+        };
+        let review = ReviewRecord {
+            reviewer: agent.to_owned(),
+            model: observation::delegated_model(dir, agent)?,
+            decision,
+            findings: parsed.findings,
+            at: now,
+            candidate: current.id.clone(),
+            provenance,
+        };
+        let what = format!(
+            "review {} by {agent} ({}, {} findings)",
+            state::decision_name(decision),
+            state::provenance_name(provenance),
+            review.findings.len()
+        );
+        if self.gate.reviews.iter().any(|s| {
+            s.review.reviewer == review.reviewer
+                && s.review.candidate == review.candidate
+                && s.review.decision == review.decision
+        }) {
+            reasons.push(format!("{what} already recorded"));
+            return Ok(parsed.rest);
+        }
+        match self.task.record_review(review.clone()) {
+            Ok(()) => {
+                let tree = self.tree.content().map(str::to_owned);
+                self.gate.reviews.push(StoredReview { review, tree });
+                reasons.push(format!("recorded {what}"));
+            }
+            Err(e) => reasons.push(format!("{what} not recorded: {}", render(&e))),
+        }
+        Ok(parsed.rest)
+    }
+
+    /// WP5, as G9 does for receipts: a review made on another candidate with the current tree is
+    /// copied onto the current candidate, rejections included, so a plain commit neither sheds a
+    /// rejection nor loses an approval. A review stored with no tree is not copied. Unlike a
+    /// receipt's, the tree is the full content: a documentation-only edit sheds a review.
+    fn transfer_reviews(&mut self, reasons: &mut Vec<String>) {
+        let Ok(current) = &self.observed else {
+            return;
+        };
+        if self.task.state().is_terminal() {
+            return;
+        }
+        let mut copies: Vec<StoredReview> = Vec::new();
+        for stored in &self.gate.reviews {
+            let r = &stored.review;
+            let same = |o: &StoredReview| {
+                o.review.candidate == current.id
+                    && o.review.reviewer == r.reviewer
+                    && o.review.decision == r.decision
+            };
+            if r.candidate == current.id
+                || stored.tree.is_none()
+                || stored.tree.as_deref() != self.tree.content()
+                || self.gate.reviews.iter().any(same)
+                || copies.iter().any(same)
+            {
+                continue;
+            }
+            copies.push(StoredReview {
+                review: ReviewRecord {
+                    candidate: current.id.clone(),
+                    ..r.clone()
+                },
+                tree: stored.tree.clone(),
+            });
+        }
+        for copy in copies {
+            let who = copy.review.reviewer.clone();
+            match self.task.record_review(copy.review.clone()) {
+                Ok(()) => {
+                    reasons.push(format!("review by {who} transferred: same tree"));
+                    self.gate.reviews.push(copy);
+                }
+                Err(e) => reasons.push(format!("review by {who} not transferred: {}", render(&e))),
+            }
+        }
+    }
+
+    /// WP5: a foreground agent's SubagentStop arrives before its Agent tool's PostToolUse, which
+    /// is the first to name the model; fill it in on the reviews that agent recorded.
+    fn backfill_model(&mut self, payload: &Value, reasons: &mut Vec<String>) {
+        let response = &payload["tool_response"];
+        let (Some("completed"), Some(agent), Some(model)) = (
+            text(response, "status"),
+            text(response, "agentId"),
+            text(response, "resolvedModel"),
+        ) else {
+            return;
+        };
+        let mut filled = false;
+        for stored in &mut self.gate.reviews {
+            if stored.review.reviewer == agent && stored.review.model.is_none() {
+                stored.review.model = Some(model.to_owned());
+                filled = true;
+            }
+        }
+        if filled {
+            self.task
+                .set_reviews(self.gate.reviews.iter().map(|s| s.review.clone()).collect());
+            reasons.push(format!("review model of {agent} recorded"));
         }
     }
 
@@ -3162,5 +3508,149 @@ mod deny_path_tests {
         let _ = fs::remove_dir(&link);
         let _ = fs::remove_dir_all(&root);
         assert_eq!(effect.as_deref(), Some("deny_path:src/"));
+    }
+}
+
+#[cfg(test)]
+mod mutation_row_tests {
+    use super::{Decision, Env, JOURNAL, Journal, handle, note_agent_effects};
+    use crate::candidate::CandidateProvider;
+    use crate::level::{Level, Setting};
+    use coding_supervisor::{Candidate, CandidateId};
+    use serde_json::{Value, json};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct Fixed;
+    impl CandidateProvider for Fixed {
+        fn observe(&self) -> Result<Candidate, String> {
+            Ok(Candidate {
+                id: CandidateId {
+                    base_commit: "base".into(),
+                    dirty_digest: "one".into(),
+                },
+                provenance: "fake".into(),
+                changed_paths: vec!["src/lib.rs".into()],
+            })
+        }
+    }
+
+    fn env(state: &Path) -> Env {
+        Env {
+            state_dir: state.to_path_buf(),
+            state_location: "test",
+            candidate: Box::new(Fixed),
+            clock: || 1_000,
+            level: Setting {
+                level: Level::Enforce,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn write(root: &Path, agent: &str) -> Value {
+        json!({"hook_event_name":"PreToolUse","cwd":root,"session_id":"session",
+            "agent_id":agent,"tool_use_id":format!("w-{agent}"),"tool_name":"Write",
+            "tool_input":{"file_path":root.join("src").join("lib.rs"),"content":"x"}})
+    }
+
+    /// WP5/G21: one thread holds `state.lock` in the middle of a transaction (after its stage
+    /// copy); another appends w1's mutation row meanwhile. The append must wait for the commit,
+    /// so the row is present after both finish. Without the lock on the append, the append lands
+    /// first (the holder waits up to two seconds for it) and the commit writes the stale copy
+    /// over it.
+    #[test]
+    fn the_mutation_row_append_waits_for_a_transaction_in_progress() {
+        let root: PathBuf =
+            std::env::temp_dir().join(format!("supervisor-mutation-lock-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let state = root.join("state");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        fs::write(
+            state.join("contract.json"),
+            json!({"id":"rows","goal":"rows","scope":["src/"],"forbidden_effects":[],
+                "max_repair_rounds":2,
+                "criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}]})
+            .to_string(),
+        )
+        .unwrap();
+        // w0 makes delegations.jsonl exist, so the holder's stage copy holds it (an absent file
+        // would not be committed over, and the test would pass with nothing to lose).
+        assert_eq!(
+            handle(&write(&root, "w0"), &mut env(&state)),
+            Decision::None
+        );
+        assert!(crate::observation::made_mutation(&state, "w0").unwrap());
+        let (done, appended) = mpsc::channel();
+        let mut worker = None;
+        crate::lifecycle::with_task(&state, None, Some("session"), None, |_stage| {
+            let (root, state) = (root.clone(), state.clone());
+            worker = Some(std::thread::spawn(move || {
+                JOURNAL.set(Journal::Written);
+                let refused =
+                    note_agent_effects(&write(&root, "w1"), &env(&state), &Decision::None);
+                let _ = done.send(());
+                refused
+            }));
+            // An append that does not wait finishes well inside this bound.
+            let _ = appended.recv_timeout(Duration::from_secs(2));
+            Ok(Value::Null)
+        })
+        .unwrap();
+        let refused = worker.unwrap().join().unwrap();
+        let made = crate::observation::made_mutation(&state, "w1").unwrap();
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(refused, None, "the append was refused");
+        assert!(
+            made,
+            "the append landed inside the transaction and was overwritten"
+        );
+    }
+
+    /// Round 3: a lock that cannot be taken refuses with the fail-closed wording filter applied,
+    /// like every other fail-closed text. A pending transaction with no write set makes
+    /// `Transaction::open` fail with a text that names it "missing".
+    #[test]
+    fn a_lock_failure_refusal_is_worded_like_other_fail_closed_texts() {
+        let root: PathBuf = std::env::temp_dir().join(format!(
+            "supervisor-mutation-wording-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let state = root.join("state");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        fs::write(
+            state.join("contract.json"),
+            json!({"id":"rows","goal":"rows","scope":["src/"],"forbidden_effects":[],
+                "max_repair_rounds":2,
+                "criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}]})
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            handle(&write(&root, "w0"), &mut env(&state)),
+            Decision::None
+        );
+        let empty = crate::sha256::hex(b"");
+        fs::write(
+            state.join("transaction.json"),
+            json!({"schema":1,"before_active":empty,"after_active":empty}).to_string(),
+        )
+        .unwrap();
+        JOURNAL.set(Journal::Written);
+        let refused = note_agent_effects(&write(&root, "w1"), &env(&state), &Decision::None);
+        let _ = fs::remove_dir_all(&root);
+        let Some(Decision::Deny(why)) = refused else {
+            panic!("expected a refusal, got {refused:?}");
+        };
+        assert!(
+            why.contains("retry") && !why.to_lowercase().contains("missing"),
+            "{why}"
+        );
+        assert!(why.contains("absent"), "{why}");
     }
 }

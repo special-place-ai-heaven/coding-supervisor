@@ -111,11 +111,76 @@ impl Limits {
             .find(|l| l.used >= l.max)
     }
 }
-/// Stored, not yet enforced.
+/// The contract's review policy, judged by [`review_met`]. `independent` implies `required`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Review {
     pub required: bool,
     pub independent: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewDecision {
+    Approved,
+    Rejected,
+}
+/// `Observed`: a reviewer the caller saw change nothing in the task. `CallerAsserted`: the
+/// builder's own review, or the chair's; it never counts as independent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewProvenance {
+    Observed,
+    CallerAsserted,
+}
+/// One reviewer's decision on one candidate. An inconclusive answer is not a decision and is
+/// never recorded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewRecord {
+    pub reviewer: String,
+    /// As the harness reported it; not proven.
+    pub model: Option<String>,
+    pub decision: ReviewDecision,
+    pub findings: Vec<String>,
+    /// Seconds since the Unix epoch.
+    pub at: u64,
+    pub candidate: CandidateId,
+    pub provenance: ReviewProvenance,
+}
+/// Whether `reviews` meet `policy` on `candidate`. With the policy off nothing blocks. Any
+/// rejection on the candidate refuses, whatever approvals sit beside it, until the content
+/// changes; otherwise an approval is needed, and under `independent` an observed one.
+/// shortcut: a reviewer cannot withdraw its own rejection; judge each reviewer's latest decision
+/// instead if mistaken rejections become a real problem.
+pub fn review_met(
+    policy: &Review,
+    reviews: &[ReviewRecord],
+    candidate: &CandidateId,
+) -> Result<(), GateError> {
+    if !policy.required && !policy.independent {
+        return Ok(());
+    }
+    let on: Vec<&ReviewRecord> = reviews
+        .iter()
+        .filter(|r| &r.candidate == candidate)
+        .collect();
+    if let Some(r) = on.iter().find(|r| r.decision == ReviewDecision::Rejected) {
+        return Err(GateError::ReviewRejected {
+            reviewer: r.reviewer.clone(),
+            findings: r.findings.len(),
+        });
+    }
+    let approvals: Vec<_> = on
+        .into_iter()
+        .filter(|r| r.decision == ReviewDecision::Approved)
+        .collect();
+    if approvals.is_empty() {
+        Err(GateError::ReviewRequired)
+    } else if policy.independent
+        && approvals
+            .iter()
+            .all(|r| r.provenance == ReviewProvenance::CallerAsserted)
+    {
+        Err(GateError::ReviewNotIndependent)
+    } else {
+        Ok(())
+    }
 }
 /// Stored, not yet enforced.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -262,6 +327,15 @@ pub enum GateError {
     RepairBudgetExhausted {
         max: u32,
     },
+    /// The contract requires a review and no approval is recorded on the candidate.
+    ReviewRequired,
+    /// The contract requires an independent review and every approval on the candidate is
+    /// caller-asserted.
+    ReviewNotIndependent,
+    ReviewRejected {
+        reviewer: String,
+        findings: usize,
+    },
 }
 
 pub struct Task {
@@ -279,6 +353,7 @@ pub struct Task {
     starting: Option<CandidateId>,
     /// Strict mode: a baseline criterion is met by a failure on the starting candidate (M7).
     reproduction: bool,
+    reviews: Vec<ReviewRecord>,
 }
 impl Task {
     pub fn new(contract: TaskContract) -> Self {
@@ -295,6 +370,7 @@ impl Task {
             next_action: String::new(),
             starting: None,
             reproduction: false,
+            reviews: Vec::new(),
         }
     }
     fn ensure_observed(&self) -> Result<(), GateError> {
@@ -406,6 +482,46 @@ impl Task {
         }
         self.receipts.push((receipt, ReceiptStatus::Current));
         Ok(())
+    }
+    /// A review of the current candidate. Under an active review policy a rejection takes a task
+    /// waiting in review back to verifying, as a candidate change does; it opens no finding.
+    pub fn record_review(&mut self, review: ReviewRecord) -> Result<(), GateError> {
+        self.ensure_observed()?;
+        if self.state.is_terminal() {
+            return Err(GateError::InvalidTransition {
+                from: self.state,
+                event: "record_review",
+            });
+        }
+        let expected = self
+            .candidate_identity
+            .as_ref()
+            .ok_or(GateError::CandidateNotObserved)?;
+        if &review.candidate != expected {
+            return Err(GateError::ReceiptForOtherCandidate {
+                expected: expected.clone(),
+                got: review.candidate,
+            });
+        }
+        let policy = &self.contract.review;
+        if review.decision == ReviewDecision::Rejected
+            && (policy.required || policy.independent)
+            && self.state == TaskState::ReadyForReview
+        {
+            self.state = TaskState::Verifying;
+        }
+        self.reviews.push(review);
+        Ok(())
+    }
+    /// Restore the stored reviews after `resume`, before receipts are replayed; no transition.
+    pub fn set_reviews(&mut self, reviews: Vec<ReviewRecord>) {
+        self.reviews = reviews;
+    }
+    pub fn reviews(&self) -> &[ReviewRecord] {
+        &self.reviews
+    }
+    pub fn contract(&self) -> &TaskContract {
+        &self.contract
     }
     pub fn record_worker_claim(&mut self, text: &str) -> Result<(), GateError> {
         self.ensure_observed()?;
@@ -525,6 +641,7 @@ impl Task {
         }) {
             return Err(GateError::OpenFinding(f.id.clone()));
         }
+        review_met(&self.contract.review, &self.reviews, &candidate.id)?;
         self.state = TaskState::ReadyForReview;
         Ok(())
     }
@@ -602,6 +719,7 @@ impl Task {
             next_action: checkpoint.next_action,
             starting: None,
             reproduction: false,
+            reviews: Vec::new(),
         }
     }
     /// The first candidate this task observed; a resumed task gets it back from its store.

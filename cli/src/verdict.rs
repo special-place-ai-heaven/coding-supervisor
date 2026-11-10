@@ -7,14 +7,15 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use coding_supervisor::{CandidateId, Criterion, TaskState, VerificationReceipt};
+use coding_supervisor::{CandidateId, Criterion, Review, TaskState, VerificationReceipt};
 use serde_json::{Value, json};
 use supervisor_claude_code::adapter::{MCP_ASSERTED, now, receipts_observed};
 use supervisor_claude_code::candidate::{GitCandidate, Unobserved};
 use supervisor_claude_code::level::{self, Level};
 use supervisor_claude_code::lifecycle;
 use supervisor_claude_code::location::{canonical_project, resolve_state_dir_read_only};
-use supervisor_claude_code::state::{Stored, load_gate, read_contract};
+use supervisor_claude_code::review;
+use supervisor_claude_code::state::{Stored, StoredReview, load_gate, read_contract};
 use supervisor_claude_code::transaction::read_lock;
 
 use crate::{Failure, Flags};
@@ -248,6 +249,25 @@ struct TaskRef<'a> {
     exhausted: Option<(bool, Option<String>)>,
 }
 
+/// WP5: the contract's review policy judged on the head candidate by the core rule `try_accept`
+/// uses, as `{required, independent, met, reason, latest}`, and whether it is met (`true` when
+/// HEAD is unknown, which fails on its own). A review copied across a commit by the hooks counts;
+/// this read-only verdict copies nothing itself.
+fn review_report(policy: &Review, reviews: &[StoredReview], head: &Head) -> (Value, bool) {
+    let Head::Known(candidate) = head else {
+        return (
+            json!({"required":policy.required,"independent":policy.independent,"met":null,"reason":null,"latest":null}),
+            true,
+        );
+    };
+    let reason = review::unmet_reason(policy, reviews, candidate);
+    let latest = review::latest(reviews, candidate).map(review::record_json);
+    (
+        json!({"required":policy.required,"independent":policy.independent,"met":reason.is_none(),"reason":reason,"latest":latest}),
+        reason.is_none(),
+    )
+}
+
 /// The whole verdict as JSON, plus its exit code (0 pass, [`EXIT_UNMET`] fail). Every key is
 /// always present; absent values are `null`.
 fn report(
@@ -256,6 +276,7 @@ fn report(
     require: Require,
     verdicts: &[CriterionVerdict<'_>],
     (effective, level_source): (Level, &str),
+    review: Option<(Value, bool)>,
 ) -> (Value, u8) {
     let mut unmet = Vec::new();
     let mut flags = Vec::new();
@@ -302,6 +323,8 @@ fn report(
         Some("no_mandatory_criteria")
     } else if !unmet.is_empty() {
         Some("mandatory_unmet")
+    } else if review.as_ref().is_some_and(|(_, met)| !met) {
+        Some("review_unmet")
     } else {
         None
     };
@@ -327,12 +350,13 @@ fn report(
         "criteria": criteria,
         "unmet": unmet,
         "flags": flags,
+        "review": review.map(|(value, _)| value),
     });
     (value, exit_code)
 }
 
 /// Unix seconds as RFC 3339 UTC with milliseconds, e.g. `2000-02-29T00:00:02.000Z`.
-fn rfc3339_millis(secs: u64) -> String {
+pub(crate) fn rfc3339_millis(secs: u64) -> String {
     let (days, time) = (secs / 86_400, secs % 86_400);
     // Howard Hinnant's civil_from_days, for days since 1970-01-01.
     let z = days + 719_468;
@@ -461,20 +485,21 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
     }
     let mut exhausted_note = None;
     let (value, exit_code) = match task {
-        None => report(None, &head, require, &[], stamp),
+        None => report(None, &head, require, &[], stamp, None),
         Some(task) => {
             let (contract, digest) = read_contract(&task.dir).map_err(|e| {
                 Failure::Error(format!("verdict: active contract unavailable: {e}"))
             })?;
             let contract = contract
                 .ok_or_else(|| Failure::Error("verdict: active contract missing".to_owned()))?;
-            let (receipts, gate_state, next_action) = match load_gate(&task.dir, &digest) {
+            let (receipts, gate_state, next_action, reviews) = match load_gate(&task.dir, &digest) {
                 Ok(Stored::Valid(gate)) => (
                     gate.receipts,
                     Some(gate.checkpoint.state),
                     gate.checkpoint.next_action,
+                    gate.reviews,
                 ),
-                Ok(Stored::Absent) => (Vec::new(), None, String::new()),
+                Ok(Stored::Absent) => (Vec::new(), None, String::new(), Vec::new()),
                 Ok(Stored::Tampered(what)) => {
                     return Err(Failure::Error(format!(
                         "verdict: task checkpoint tampered ({what})"
@@ -516,7 +541,15 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
                 contract_digest: &digest,
                 exhausted,
             };
-            report(Some(&task_ref), &head, require, &verdicts, stamp)
+            let review = review_report(&contract.review, &reviews, &head);
+            report(
+                Some(&task_ref),
+                &head,
+                require,
+                &verdicts,
+                stamp,
+                Some(review),
+            )
         }
     };
     if flags.switch("--json") {

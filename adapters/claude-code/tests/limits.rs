@@ -840,7 +840,7 @@ fn task_gate(env: &Env, id: &str) -> state::Gate {
     let dir = env.state_dir.join("tasks").join(id);
     let (_, digest) = state::read_contract(&dir).unwrap();
     match state::load_gate(&dir, &digest).unwrap() {
-        Stored::Valid(gate) => gate,
+        Stored::Valid(gate) => *gate,
         _ => panic!("no valid gate"),
     }
 }

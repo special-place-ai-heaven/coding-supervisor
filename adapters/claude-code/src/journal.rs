@@ -138,7 +138,10 @@ pub fn header_summary(payload: &Value) -> Value {
     if text(payload, "hook_event_name") != Some("SubagentStop") {
         return Value::Null;
     }
-    match header::parse(text(payload, "last_assistant_message").unwrap_or_default()) {
+    // WP5: a builder's own review may open the message; the header follows it.
+    let message =
+        crate::review::remainder(text(payload, "last_assistant_message").unwrap_or_default());
+    match header::parse(message) {
         Some(h) => obj([
             ("verdict", verdict_name(h.verdict).into()),
             ("checks_run", h.checks_run.into()),
