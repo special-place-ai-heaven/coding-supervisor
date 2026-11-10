@@ -350,6 +350,10 @@ fn an_unwritable_events_journal_commits_nothing_for_the_denied_call() {
         !cached.contains("PreToolUse-Bash"),
         "a decision was cached: {cached}"
     );
+    assert!(
+        !env.state_dir.join("gate.json").exists(),
+        "gate.json was committed"
+    );
 }
 
 #[test]
@@ -364,4 +368,18 @@ fn failure_open_keeps_a_computed_stop_refusal_when_the_journal_fails() {
     };
     assert!(!why.contains("fails closed"), "{why}");
     assert!(!why.contains("adapter error"), "{why}");
+}
+
+#[test]
+fn an_evidence_refusal_still_blocks_a_stop_already_continued_by_a_stop_hook() {
+    let (_d, mut env) = project(Level::Enforce);
+    // No adapter error: C1 simply has no receipt, so the NOT certified release does not apply.
+    let mut payload = stop(&env);
+    payload["stop_hook_active"] = json!(true);
+    let decision = handle(&payload, &mut env);
+    let Decision::Block(why) = &decision else {
+        panic!("an ordinary evidence refusal must still block, got {decision:?}");
+    };
+    assert!(!why.contains("NOT certified"), "{why}");
+    assert!(!why.contains("fails closed"), "{why}");
 }
