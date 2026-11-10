@@ -76,6 +76,12 @@ fn v2_loads_with_every_field() {
     assert_eq!(c.base_sha, None);
     assert_eq!(c.approval, None);
     assert_eq!(c.isolation, Isolation::Shared);
+    // The init draft's shape: only schema_version and isolation, no approval and no base.
+    let mut draft = v1();
+    draft["schema_version"] = 2.into();
+    draft["isolation"] = "none".into();
+    let c = contract_from(&draft).unwrap();
+    assert_eq!((c.base_sha, c.approval), (None, None));
 }
 
 #[test]
@@ -89,6 +95,10 @@ fn v2_field_shapes_are_validated() {
         ("base_sha", json!(7)),
         ("approval", json!({"by":"person"})),
         ("artifacts", json!("docs/report.md")),
+        ("limits", json!("1h")),
+        ("limits", json!([])),
+        ("review", json!(true)),
+        ("review", json!([])),
     ] {
         let mut c = v2();
         c[field] = value.clone();
@@ -98,12 +108,25 @@ fn v2_field_shapes_are_validated() {
 
 #[test]
 fn v1_loads_through_the_migration_with_fixed_defaults() {
-    for c in [v1(), {
+    // main ignored `schema_version`, so anything but an integer of 2 or more is still v1.
+    let versions = [
+        None,
+        Some(Value::Null),
+        Some(json!(0)),
+        Some(json!(1)),
+        Some(json!(-2)),
+        Some(json!("1")),
+        Some(json!("2")),
+        Some(json!(1.0)),
+        Some(json!(2.0)),
+        Some(json!(true)),
+    ];
+    for version in versions {
         let mut c = v1();
-        c["schema_version"] = 1.into();
-        c
-    }] {
-        let c = contract_from(&c).unwrap();
+        if let Some(version) = &version {
+            c["schema_version"] = version.clone();
+        }
+        let c = contract_from(&c).unwrap_or_else(|e| panic!("{version:?}: {e}"));
         assert_eq!(c.isolation, Isolation::Shared);
         assert_eq!(c.limits, Default::default());
         assert_eq!(c.review, Default::default());
@@ -149,11 +172,6 @@ fn paths_leaving_the_repository_are_refused_in_scope_and_artifacts() {
             c[field] = json!([path]);
             let result = contract_from(&c);
             assert!(result.is_err(), "{field} {path:?} loaded");
-            if field == "scope" {
-                let mut old = v1();
-                old["scope"] = json!([path]);
-                assert!(contract_from(&old).is_err(), "v1 scope {path:?} loaded");
-            }
         }
     }
 }
@@ -180,6 +198,15 @@ fn every_shape_that_loaded_before_still_loads() {
             "*.md",
             "a..b/",
             "~/x"
+        ]),
+        // A v1 scope leaving the repository loaded on main (it never matches a changed path),
+        // so v1 still loads it; only v2 refuses such entries.
+        json!([
+            "../shared/",
+            "/abs",
+            "C:/x",
+            "\\\\server\\share",
+            "{..,src}/x"
         ]),
     ] {
         let mut c = v1();
@@ -444,6 +471,8 @@ fn agent_proposals_write_v2_and_a_revision_keeps_the_base() {
     let c = written(&task);
     assert_v2(&c, "agent-proposal");
     assert_eq!(c["base_sha"], base.as_str());
+    // The agent's own environment names the user; that must not read as a person's approval.
+    assert_eq!(c["approval"]["by"], Value::Null, "{c}");
 
     fs::write(project.join("README"), "two\n").unwrap();
     git(&project, &["add", "README"]);
@@ -465,4 +494,132 @@ fn agent_proposals_write_v2_and_a_revision_keeps_the_base() {
     );
     assert_ne!(c["approval"]["by"], "someone else");
     assert!(state::read_contract(&task).unwrap().0.is_some());
+}
+
+fn bad_inputs() -> Vec<Value> {
+    [
+        ("limits", json!({"turns":0})),
+        ("limits", json!({"wall_clock_s":"60"})),
+        ("review", json!({"required":true})),
+        ("artifacts", json!(["../out"])),
+        ("artifacts", json!("x")),
+    ]
+    .into_iter()
+    .map(|(field, value)| {
+        let mut c = v1();
+        c[field] = value;
+        c
+    })
+    .collect()
+}
+
+/// What is saved is what is checked: a v1-shaped request whose v2 fields are malformed is
+/// refused before anything is written, instead of saving a contract that never loads again.
+#[test]
+fn a_saved_contract_is_checked_before_it_is_written() {
+    for (i, c) in bad_inputs().into_iter().enumerate() {
+        let d = dir(&format!("bad-{i}"));
+        let root = d.0.join("state");
+        assert!(
+            lifecycle::start(&root, &c, false, None, None).is_err(),
+            "{c}"
+        );
+        assert!(!root.join("tasks").exists(), "{c}: a task was written");
+        assert!(
+            !root.join("active.json").exists(),
+            "{c}: a task was activated"
+        );
+    }
+}
+
+#[test]
+fn an_agent_proposal_start_is_checked_before_it_is_written() {
+    let d = dir("bad-agent");
+    let (project, root) = (d.0.join("project"), d.0.join("state"));
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    for (i, mut proposal) in bad_inputs().into_iter().enumerate() {
+        proposal["criteria"][0]["command"] = "cargo test -p fixture".into();
+        let event = autonomy::record_prompt(
+            &root,
+            &project,
+            &json!({"session_id":"session","prompt_id":format!("p{i}"),"prompt":"Implement a small change"}),
+        )
+        .unwrap();
+        let result = autonomy::propose(
+            &root,
+            &project,
+            &json!({"event_id":event["event_id"],"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],"action":"start","task_id":null,"contract":proposal}),
+        );
+        assert!(result.is_err(), "{proposal}: {result:?}");
+        assert!(
+            !root.join("tasks").exists(),
+            "{proposal}: a task was written"
+        );
+    }
+}
+
+/// WP4 counts wall clock from `approval.at`, so a revision keeps the approval, the isolation
+/// and the base the task started with, whatever the revised contract says.
+#[test]
+fn a_revision_keeps_the_approval_isolation_and_base() {
+    let d = dir("revise-keeps");
+    let (project, root) = (d.0.join("project"), d.0.join("state"));
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir(project.join(".git")).unwrap();
+    let mut operator = v1();
+    operator["criteria"][0]["command"] = "python verify.py".into();
+    let started = lifecycle::start(&root, &operator, false, None, None).unwrap();
+    let id = started["task_id"].as_str().unwrap().to_owned();
+    let task = root.join("tasks").join(&id);
+    let before = written(&task);
+    let apply = |prompt: &str, action: &str, contract: Option<Value>| {
+        let event = autonomy::record_prompt(
+            &root,
+            &project,
+            &json!({"session_id":"session","prompt_id":prompt,"prompt":"Continue the approved work"}),
+        )
+        .unwrap();
+        autonomy::propose(
+            &root,
+            &project,
+            &json!({"event_id":event["event_id"],"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],"action":action,"task_id":id,"contract":contract}),
+        )
+        .unwrap()
+    };
+    apply("continue", "continue", None);
+    let mut revised = before.clone();
+    revised["criteria"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id":"C9","check":"extra","mandatory":false,"command":"python verify.py"}));
+    revised["approval"] = json!({"by":null,"at":1,"via":"agent-proposal"});
+    revised["isolation"] = "worktree".into();
+    revised["base_sha"] = "0123456789abcdef0123456789abcdef01234567".into();
+    apply("revise", "revise", Some(revised));
+    let after = written(&task);
+    assert_eq!(after["criteria"].as_array().unwrap().len(), 2, "{after}");
+    for key in ["approval", "isolation", "base_sha"] {
+        assert_eq!(after.get(key), before.get(key), "{key}: {after}");
+    }
+}
+
+/// A caller-supplied isolation, approval or base_sha is replaced by the writer's record; the
+/// start says so, as it does for forbidden effects.
+#[test]
+fn start_warns_when_it_replaces_caller_fields() {
+    let d = dir("warn");
+    let mut c = v1();
+    c["isolation"] = "worktree".into();
+    c["approval"] = json!({"by":"someone","at":1,"via":"elsewhere"});
+    c["base_sha"] = "0123456789abcdef0123456789abcdef01234567".into();
+    let started = lifecycle::start(&d.0.join("state"), &c, false, None, None).unwrap();
+    let warnings = started["warnings"].to_string();
+    for key in ["isolation", "approval", "base_sha"] {
+        assert!(warnings.contains(key), "{key}: {started}");
+    }
 }

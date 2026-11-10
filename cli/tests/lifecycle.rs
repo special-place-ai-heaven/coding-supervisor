@@ -378,5 +378,10 @@ fn task_start_records_the_repository_head_in_contract_v2() {
     assert_eq!(c["schema_version"], 2, "{c}");
     assert_eq!(c["base_sha"], head.as_str(), "{c}");
     assert_eq!(c["approval"]["via"], "task-start", "{c}");
+    // A person's own command is the one writer that records the OS user.
+    let user = std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .ok();
+    assert_eq!(c["approval"]["by"], json!(user), "{c}");
     assert_eq!(c["isolation"], "none", "{c}");
 }

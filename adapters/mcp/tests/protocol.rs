@@ -227,6 +227,25 @@ fn task_start_writes_contract_v2() {
     assert_eq!(c["schema_version"], 2, "{c}");
     assert_eq!(c["isolation"], "none", "{c}");
     assert_eq!(c["approval"]["via"], "mcp-task-start", "{c}");
+    // The agent's own environment names the user; that must not read as a person's approval.
+    assert_eq!(c["approval"]["by"], Value::Null, "{c}");
     // The project is not a git repository here.
     assert_eq!(c["base_sha"], Value::Null, "{c}");
+}
+
+/// What is saved is what is checked: a malformed v2 field refuses the start and writes nothing.
+#[test]
+fn task_start_refuses_a_contract_that_would_not_load_again() {
+    let d = dir("contract-v2-bad");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["limits"] = json!({"turns": 0});
+    let (is_error, text) = call(&s, "task_start", contract);
+    assert!(is_error, "{text}");
+    assert!(
+        supervisor_claude_code::lifecycle::active_task(s.state_dir())
+            .unwrap()
+            .is_none()
+    );
+    assert!(!s.state_dir().join("tasks").exists());
 }

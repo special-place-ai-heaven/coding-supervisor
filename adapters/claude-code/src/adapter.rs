@@ -2912,3 +2912,49 @@ mod fail_closed_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod deny_path_tests {
+    use super::forbidden_effect;
+    use serde_json::json;
+    use std::fs;
+
+    /// A link whose target is missing cannot be placed, so a `deny_path` refuses an edit
+    /// through it on its own, without relying on the scope check running first.
+    #[test]
+    fn deny_path_refuses_an_edit_through_an_unresolvable_link() {
+        let root =
+            std::env::temp_dir().join(format!("supervisor-deny-path-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (project, outside) = (root.join("project"), root.join("outside"));
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let link = project.join("src").join("out");
+        #[cfg(unix)]
+        let target = {
+            std::os::unix::fs::symlink(outside.join("new.rs"), &link).unwrap();
+            link.clone()
+        };
+        #[cfg(windows)]
+        let target = {
+            let gone = outside.join("gone");
+            fs::create_dir_all(&gone).unwrap();
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&gone)
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "mklink /J failed");
+            fs::remove_dir(&gone).unwrap();
+            link.join("x.rs")
+        };
+        let payload = json!({"tool_name":"Write","cwd":project,
+            "tool_input":{"file_path":target,"content":"x"}});
+        let effect = forbidden_effect(&payload, &["deny_path:src/".to_owned()]);
+        #[cfg(windows)]
+        let _ = fs::remove_dir(&link);
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(effect.as_deref(), Some("deny_path:src/"));
+    }
+}
