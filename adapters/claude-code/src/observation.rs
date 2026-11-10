@@ -779,13 +779,16 @@ pub(crate) fn close_delegation(root: &Path, payload: &Value, now: u64) {
     }
 }
 
-/// G21: journal, once per agent, that `agent` was allowed a tool that is not read-only.
+/// G21: journal, once per agent, that `agent` was allowed a tool that is not read-only. G44:
+/// the row keeps the worktree `tree` as it was before that first tool ran (asked for only
+/// when the row is written), so its handback can tell whether anything changed.
 pub(crate) fn record_mutation(
     dir: &Path,
     payload: &Value,
     task: &str,
     agent: &str,
     now: u64,
+    tree: impl FnOnce() -> Option<String>,
 ) -> Result<(), String> {
     let (rows, _) = delegation_rows(dir)?;
     if rows
@@ -797,8 +800,23 @@ pub(crate) fn record_mutation(
     state::append_line(
         &dir.join("delegations.jsonl"),
         &json!({"kind":"mutation","task_id":task,"session_id":text(payload,"session_id"),
-            "agent_id":agent,"tool":text(payload,"tool_name"),"t":now}),
+            "agent_id":agent,"tool":text(payload,"tool_name"),"t":now,"tree":tree()}),
     )
+}
+
+/// G44: what `agent` may have changed: `None` when it was never allowed a tool that is not
+/// read-only; otherwise the worktree tree from before its first such tool, when one was
+/// recorded. A malformed journal counts as a mutation with no known tree.
+pub(crate) fn mutation_tree(dir: &Path, agent: &str) -> Result<Option<Option<String>>, String> {
+    let (rows, malformed) = delegation_rows(dir)?;
+    let row = rows
+        .iter()
+        .find(|r| text(r, "kind") == Some("mutation") && text(r, "agent_id") == Some(agent));
+    Ok(match row {
+        _ if malformed => Some(None),
+        Some(row) => Some(text(row, "tree").map(str::to_owned)),
+        None => None,
+    })
 }
 
 /// G21: whether `agent` was ever allowed a tool that is not read-only.

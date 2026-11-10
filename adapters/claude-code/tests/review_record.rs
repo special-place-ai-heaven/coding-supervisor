@@ -1193,6 +1193,8 @@ fn a_builders_rejection_on_a_pending_turn_is_recorded() {
     let mut p = production("pending-builder", required());
     p.checks("c1");
     p.write_as("w1");
+    // G44: an agent that left the tree unchanged is not judged, so the builder really writes.
+    fs::write(p.project.join("src").join("lib.rs"), "x").unwrap();
     p.checks_as("w1", "w1-c");
     p.prompt_only("hold on a moment");
     let before = p.untouched();
