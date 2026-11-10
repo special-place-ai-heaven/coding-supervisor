@@ -1443,16 +1443,15 @@ fn process(
         }
         reasons.push("level audit: reported, not blocked".to_owned());
     }
-    // WP5/G21: the mutation row is written into this transaction's stage, once the harness is
-    // known to let the tool run. Appended after the commit, a concurrent hook that had copied the
-    // task folder could commit over it, and the builder's own review would read as observed.
-    // `note_agent_effects` still appends on routes that run no transaction.
+    // WP5/G21: this call's events.jsonl line, written in this transaction, says that the harness
+    // lets a mutating tool of `agent` run. The delegations.jsonl row `note_agent_effects` appends
+    // after the commit can be lost to a concurrent hook's commit; `made_mutation` reads both.
     if event == "PreToolUse"
         && !inspection(payload)
         && (!matches!(decision, Decision::Deny(_) | Decision::Block(_))
             || env.level.level == Level::Audit)
     {
-        observation::record_mutation(&env.state_dir, payload, &task_id, agent, now)?;
+        reasons.push(observation::MUTATION_ALLOWED.to_owned());
     }
     session.gate.checkpoint = session.task.checkpoint();
     session.gate.starting = session.task.starting_candidate().cloned().map(Box::new);

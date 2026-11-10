@@ -783,13 +783,36 @@ pub(crate) fn record_mutation(
     )
 }
 
-/// G21: whether `agent` was ever allowed a tool that is not read-only.
+/// The events.jsonl reason of a PreToolUse whose mutating tool the harness lets run (WP5).
+pub(crate) const MUTATION_ALLOWED: &str = "mutating tool allowed";
+
+/// G21: whether `agent` was ever allowed a tool that is not read-only: a delegations.jsonl
+/// `mutation` row, or (WP5) a task events.jsonl line saying so, which is written inside the hook
+/// transaction and so survives a concurrent commit that loses the row. Any doubt (a line that
+/// does not parse) counts as a mutation.
 pub(crate) fn made_mutation(dir: &Path, agent: &str) -> Result<bool, String> {
     let (rows, malformed) = delegation_rows(dir)?;
-    Ok(malformed
+    if malformed
         || rows
             .iter()
-            .any(|r| text(r, "kind") == Some("mutation") && text(r, "agent_id") == Some(agent)))
+            .any(|r| text(r, "kind") == Some("mutation") && text(r, "agent_id") == Some(agent))
+    {
+        return Ok(true);
+    }
+    let events = match std::fs::read_to_string(dir.join("events.jsonl")) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.to_string()),
+    };
+    Ok(events.lines().any(|line| {
+        serde_json::from_str::<Value>(line).map_or(true, |v| {
+            text(&v, "event") == Some("PreToolUse")
+                && text(&v, "agent_id") == Some(agent)
+                && v["reasons"]
+                    .as_array()
+                    .is_some_and(|r| r.iter().any(|r| r.as_str() == Some(MUTATION_ALLOWED)))
+        })
+    }))
 }
 
 /// G16: agent ids of `session`'s background Agents that have not reached SubagentStop. Pending
