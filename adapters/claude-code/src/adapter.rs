@@ -1835,7 +1835,7 @@ pub fn render(error: &GateError) -> String {
         GateError::ReviewRequired => {
             "review required: no approving review is recorded on this candidate".to_owned()
         }
-        GateError::ReviewNotIndependent => "independent review required: every approval on this candidate came from the chair or from an agent that changed something in this task".to_owned(),
+        GateError::ReviewNotIndependent => "independent review required: every approval on this candidate came from the chair or from an agent that edited files or ran commands in this task".to_owned(),
         GateError::ReviewRejected { reviewer, findings } => format!(
             "review rejected by {reviewer} on this candidate ({findings} finding{})",
             if *findings == 1 { "" } else { "s" }
@@ -1844,16 +1844,19 @@ pub fn render(error: &GateError) -> String {
 }
 
 /// WP5: what a Stop refused for its review asks for, with a person's way out.
-fn review_protocol(rejected: bool, dir: &Path, task_id: &str) -> Result<String, String> {
+fn review_protocol(rejected: bool, task_id: &str) -> String {
     let dispatch = "dispatch a reviewer agent that only reads (Read, Grep, Glob, git diff, log or show; a reviewer that edits or runs any other command counts as a builder) and whose final reply starts with the line `REVIEW: APPROVED` or `REVIEW: REJECTED`, with one `FINDING: <text>` line per finding below it";
-    let way_out = crate::limits::way_out(dir, task_id)?;
-    Ok(if rejected {
+    // `task cancel` ends a person's task and an agent's alike; `limits::way_out` names a
+    // disposition that is only true at a task limit.
+    let way_out =
+        format!("end the task with `supervisor task cancel --project <dir> --task {task_id} --reason <text>`");
+    if rejected {
         format!(
             "address the review findings and change the code, because a rejection stands until the content changes; then {dispatch}; a person can instead {way_out}"
         )
     } else {
         format!("{dispatch}; a person can instead {way_out}")
-    })
+    }
 }
 
 /// G30: the criteria with a passing observed run on the current worktree content (the same
@@ -2727,7 +2730,7 @@ impl Session {
                 self.gate.continuations += 1;
                 let run_instead: String = instructions.iter().map(|i| format!(" {i}")).collect();
                 let next = match review_gap {
-                    Some(rejected) => review_protocol(rejected, dir, &self.task_id)?,
+                    Some(rejected) => review_protocol(rejected, &self.task_id),
                     None if !autonomous && header::parse(message).is_some() => {
                         "record the check with CHECK lines".to_owned()
                     }

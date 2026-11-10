@@ -200,7 +200,10 @@ fn required_review_with_none_refuses_and_teaches_the_protocol() {
     assert!(why.contains("REVIEW: APPROVED"), "{why}");
     assert!(why.contains("REVIEW: REJECTED"), "{why}");
     assert!(why.contains("only reads"), "{why}");
-    assert!(why.contains("supervisor task"), "a person's way out: {why}");
+    assert!(
+        why.contains("supervisor task cancel --project <dir> --task wp5 --reason <text>"),
+        "a person's way out: {why}"
+    );
     assert!(!why.contains("run the required check commands"), "{why}");
     plain(why);
     assert_eq!(gate(&env)["state"], "verifying");
@@ -757,8 +760,11 @@ impl Production {
         )
     }
     fn stop(&mut self) -> Decision {
+        self.stop_with("Done.")
+    }
+    fn stop_with(&mut self, message: &str) -> Decision {
         self.hook(json!({"hook_event_name":"Stop","session_id":"session",
-            "stop_hook_active":false,"last_assistant_message":"Done."}))
+            "stop_hook_active":false,"last_assistant_message":message}))
     }
     fn gate(&self) -> Value {
         let dir = self.env.state_dir.join("tasks").join(&self.task);
@@ -809,6 +815,14 @@ fn a_rejection_spends_a_repair_round_and_an_absent_review_does_not() {
     assert!(why.contains("no repair round spent"), "{why}");
     assert_eq!(p.gate()["consumed_repair_rounds"], 0);
 
+    // A review that is not independent is absent evidence, not a wrong candidate.
+    let mut p = production("rounds-not-independent", independent());
+    p.checks("c1");
+    let why = blocked(&p.stop_with("REVIEW: APPROVED\nDone.")).to_owned();
+    assert!(why.contains("independent"), "{why}");
+    assert!(why.contains("no repair round spent"), "{why}");
+    assert_eq!(p.gate()["consumed_repair_rounds"], 0);
+
     let mut p = production("rounds-rejected", required());
     p.checks("c1");
     assert_eq!(
@@ -823,4 +837,22 @@ fn a_rejection_spends_a_repair_round_and_an_absent_review_does_not() {
     let why = blocked(&p.stop()).to_owned();
     assert!(why.contains("already charged"), "{why}");
     assert_eq!(p.gate()["consumed_repair_rounds"], 1);
+}
+
+/// A review after completion is journaled and stores nothing; it is not an adapter error.
+#[test]
+fn a_review_after_completion_stores_nothing() {
+    let d = dir("after");
+    let (mut env, _) = setup(&d, &contract(required()));
+    checks_pass(&mut env, "c1");
+    reviewer(&mut env, "r1", "REVIEW: APPROVED");
+    assert_eq!(stop(&mut env, "Done."), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+    let r = subagent_stop(&mut env, "r2", "REVIEW: REJECTED\nFINDING: late");
+    assert_eq!(r, Decision::None);
+    let reasons = last_reasons(&env);
+    assert!(reasons.contains("not recorded"), "{reasons}");
+    assert!(!reasons.contains("adapter error"), "{reasons}");
+    assert_eq!(reviews(&env).len(), 1);
+    assert_eq!(gate(&env)["state"], "completed");
 }
