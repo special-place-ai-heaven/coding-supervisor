@@ -1046,7 +1046,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
     // for the same reason before the lock (a stop must not hold it while git runs).
     let observed = (
         observed,
-        needs_content(payload).then(|| content_now(&root, payload)),
+        needs_content(&root, payload).then(|| content_now(&root, payload)),
     );
     let result = crate::lifecycle::observe_connection(&root, "claude-hook").and_then(|()| {
         crate::lifecycle::with_task(
@@ -1196,18 +1196,46 @@ fn decision_from_json(v: &Value) -> Option<Decision> {
 /// could not be computed), both observed before the lock.
 type Observed = (Result<Candidate, String>, Option<Option<String>>);
 
-/// WP5: the events that bind a review to content: the stops, and a background Agent launch.
-fn needs_content(payload: &Value) -> bool {
+/// WP5: whether this call must take the content tree: a stop or a background Agent launch, and
+/// only when a review can matter (the final message reads as a review, or the task has a review
+/// rule or stored reviews). Otherwise no extra git runs, as before reviews existed.
+fn needs_content(root: &Path, payload: &Value) -> bool {
+    let review_text = || {
+        crate::review::parse(text(payload, "last_assistant_message").unwrap_or_default()).is_some()
+    };
     match text(payload, "hook_event_name") {
-        Some("Stop" | "SubagentStop") => true,
+        Some("Stop" | "SubagentStop") => review_text() || review_in_play(root),
         Some("PostToolUse") => {
             text(payload, "tool_name") == Some("Agent")
                 && payload
                     .pointer("/tool_response/status")
                     .and_then(Value::as_str)
                     == Some("async_launched")
+                && review_in_play(root)
         }
         _ => false,
+    }
+}
+
+/// The active task has a review rule or stored reviews; state that cannot be read counts as yes.
+fn review_in_play(root: &Path) -> bool {
+    let task = match lifecycle::active_task(root) {
+        Ok(Some(active)) => active.dir,
+        Ok(None) => root.to_path_buf(),
+        Err(_) => return true,
+    };
+    match state::read_contract(&task) {
+        Ok((None, _)) => false,
+        Ok((Some(contract), digest)) => {
+            contract.review.required
+                || contract.review.independent
+                || match state::load_gate(&task, &digest) {
+                    Ok(Stored::Valid(gate)) => !gate.reviews.is_empty(),
+                    Ok(Stored::Absent) => false,
+                    _ => true,
+                }
+        }
+        Err(_) => true,
     }
 }
 

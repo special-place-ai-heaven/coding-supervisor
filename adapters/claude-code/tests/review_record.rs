@@ -580,6 +580,10 @@ fn git(project: &Path, args: &[&str]) {
 
 /// A repository with a committed file, then modified; the state lives outside it.
 fn repository(name: &str) -> (Dir, Env) {
+    repository_with(name, required())
+}
+
+fn repository_with(name: &str, review: Value) -> (Dir, Env) {
     let d = dir(name);
     let project = d.0.join("project");
     fs::create_dir_all(project.join("src")).unwrap();
@@ -590,7 +594,7 @@ fn repository(name: &str) -> (Dir, Env) {
     git(&project, &["commit", "-q", "-m", "one"]);
     fs::write(project.join("src/a.rs"), "a2\n").unwrap();
     // The state directory is beside the project; payloads carry the project as cwd.
-    let mut c = contract(required());
+    let mut c = contract(review);
     c["scope"] = json!(["src/", "README.md"]);
     let env = env_with(&d, &c, Box::new(GitCandidate { cwd: project }));
     (d, env)
@@ -1319,4 +1323,42 @@ fn a_background_approval_with_unreadable_content_is_not_counted() {
     agent_post(&mut env, "r2", "async_launched", "claude-haiku-5-5");
     reviewer(&mut env, "r2", "REVIEW: REJECTED\nFINDING: wrong");
     assert_eq!(reviews(&env)[0]["decision"], "rejected");
+}
+
+/// The loose objects in the repository: the content tree (`git add -A` into a scratch index,
+/// then `write-tree`) writes some for a dirty worktree; nothing else a plain stop runs does.
+fn loose_objects(project: &Path) -> usize {
+    fs::read_dir(project.join(".git/objects"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().len() == 2)
+        .map(|e| fs::read_dir(e.path()).unwrap().count())
+        .sum()
+}
+
+/// Round 3: with no review rule, no stored review and no review text, a stop and a background
+/// launch run no content-tree work, as on main; a review line is what brings it back.
+#[test]
+fn no_review_rule_and_no_review_text_build_no_content_tree() {
+    let (_d, mut env) = repository_with("no-review", json!({"required":false,"independent":false}));
+    let project = project_of(&env);
+    // The first hook call creates the gate; count from there.
+    let first = in_project(
+        &env,
+        json!({"hook_event_name":"UserPromptSubmit","session_id":"session","prompt":"hi"}),
+    );
+    handle(&first, &mut env);
+    let before = loose_objects(&project);
+    launch_in_background(&mut env, "r1");
+    assert_eq!(git_review(&mut env, "r1", "Looked around, nothing to add."), Decision::None);
+    let stop = in_project(
+        &env,
+        json!({"hook_event_name":"Stop","session_id":"session","stop_hook_active":false,
+            "last_assistant_message":"Here is what I found."}),
+    );
+    assert_eq!(handle(&stop, &mut env), Decision::None);
+    assert_eq!(loose_objects(&project), before, "a content tree was built");
+    // Control: a review line computes the content tree, which the counter sees.
+    git_review(&mut env, "r2", "REVIEW: REJECTED\nFINDING: x");
+    assert!(loose_objects(&project) > before, "the counter cannot see a content tree");
 }
