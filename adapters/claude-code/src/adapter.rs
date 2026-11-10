@@ -1927,7 +1927,7 @@ pub fn render(error: &GateError) -> String {
 
 /// WP5: what a Stop refused for its review asks for, with a person's way out.
 fn review_protocol(rejected: bool, task_id: &str) -> String {
-    let dispatch = "dispatch a reviewer agent that only reads (Read, Grep, Glob, git diff, log or show; a reviewer that edits or runs any other command counts as a builder) and whose final reply starts with the line `REVIEW: APPROVED` or `REVIEW: REJECTED`, with one `FINDING: <text>` line per finding below it";
+    let dispatch = "dispatch a reviewer agent that only reads (the gate's read-only tools and commands, such as Read, Grep, Glob, git diff, log or show; a reviewer the gate lets run anything else counts as a builder), launched after the last edit, and whose final reply starts with the line `REVIEW: APPROVED` or `REVIEW: REJECTED`, with one `FINDING: <text>` line per finding below it";
     // `task cancel` ends a person's task and an agent's alike; `limits::way_out` names a
     // disposition that is only true at a task limit.
     let way_out = format!(
