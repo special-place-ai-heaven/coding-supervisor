@@ -629,7 +629,9 @@ fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) -> Option
                 Ok(true) => {}
                 Ok(false) => return None,
                 Err(e) => {
-                    let why = format!("GATE: the gate could not journal this tool ({e}); retry");
+                    let why = blocking_words(&format!(
+                    "GATE: the gate could not journal this tool ({e}); retry"
+                ));
                     return Some(match env.level.level {
                         Level::Audit => Decision::System(why),
                         _ => Decision::Deny(why),
@@ -651,7 +653,9 @@ fn note_agent_effects(payload: &Value, env: &Env, decision: &Decision) -> Option
                 row
             });
             if let Err(e) = appended {
-                let why = format!("GATE: the gate could not journal this tool ({e}); retry");
+                let why = blocking_words(&format!(
+                    "GATE: the gate could not journal this tool ({e}); retry"
+                ));
                 return Some(match env.level.level {
                     Level::Audit => Decision::System(why),
                     _ => Decision::Deny(why),
@@ -3606,4 +3610,44 @@ mod mutation_row_tests {
         );
     }
 
+    /// Round 3: a lock that cannot be taken refuses with the fail-closed wording filter applied,
+    /// like every other fail-closed text. A pending transaction with no write set makes
+    /// `Transaction::open` fail with a text that names it "missing".
+    #[test]
+    fn a_lock_failure_refusal_is_worded_like_other_fail_closed_texts() {
+        let root: PathBuf = std::env::temp_dir()
+            .join(format!("supervisor-mutation-wording-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let state = root.join("state");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        fs::write(
+            state.join("contract.json"),
+            json!({"id":"rows","goal":"rows","scope":["src/"],"forbidden_effects":[],
+                "max_repair_rounds":2,
+                "criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}]})
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            handle(&write(&root, "w0"), &mut env(&state)),
+            Decision::None
+        );
+        let empty = crate::sha256::hex(b"");
+        fs::write(
+            state.join("transaction.json"),
+            json!({"schema":1,"before_active":empty,"after_active":empty}).to_string(),
+        )
+        .unwrap();
+        JOURNAL.set(Journal::Written);
+        let refused = note_agent_effects(&write(&root, "w1"), &env(&state), &Decision::None);
+        let _ = fs::remove_dir_all(&root);
+        let Some(Decision::Deny(why)) = refused else {
+            panic!("expected a refusal, got {refused:?}");
+        };
+        assert!(
+            why.contains("retry") && !why.to_lowercase().contains("missing"),
+            "{why}"
+        );
+    }
 }
