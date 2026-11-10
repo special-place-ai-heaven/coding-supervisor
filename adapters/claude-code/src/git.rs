@@ -100,6 +100,23 @@ pub fn run_with_env(
 /// candidate rule, so a tree that cannot be computed never causes a refusal. Writes unreachable
 /// loose objects. The tree is of the worktree whose top level is `cwd`'s.
 pub fn worktree_tree(cwd: &Path, state_dir: &Path) -> Option<String> {
+    // The gate's own fallback state directory inside the project is not content, and neither
+    // is what the project's CI treats as documentation only (G28).
+    let docs = crate::location::worktree_root(cwd)
+        .map(|top| ci_docs_only(&top))
+        .unwrap_or_default();
+    tree_without(cwd, state_dir, &docs)
+}
+
+/// WP5: the tree of the whole worktree content, documentation included, for reviews: a
+/// reviewer may have judged the README. Leaves out only the gate's own fallback state
+/// directory, and never reads the documentation list.
+pub fn content_tree(cwd: &Path, state_dir: &Path) -> Option<String> {
+    tree_without(cwd, state_dir, &[])
+}
+
+/// The worktree tree with the `docs` globs left out (none for [`content_tree`]).
+fn tree_without(cwd: &Path, state_dir: &Path, docs: &[String]) -> Option<String> {
     let ok = |args: &[&str], env: &[(&str, &std::ffi::OsStr)]| {
         run_with_env(cwd, args, env)
             .ok()
@@ -124,11 +141,6 @@ pub fn worktree_tree(cwd: &Path, state_dir: &Path) -> Option<String> {
             .ok()?;
     }
     let env = [("GIT_INDEX_FILE", scratch.as_os_str())];
-    // The gate's own fallback state directory inside the project is not content, and neither
-    // is what the project's CI treats as documentation only (G28).
-    let docs = crate::location::worktree_root(cwd)
-        .map(|top| ci_docs_only(&top))
-        .unwrap_or_default();
     let mut add = vec!["add", "-A", "--", ":/", ":(top,exclude).supervisor/"];
     let excludes: Vec<String> = docs
         .iter()

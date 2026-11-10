@@ -579,6 +579,106 @@ fn an_agent_that_edited_is_still_refused_without_verification() {
     assert!(matches!(decision, Decision::Block(_)), "{decision:?}");
 }
 
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let mut command = std::process::Command::new("git");
+    command.args(args).current_dir(dir);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    assert!(command.output().unwrap().status.success(), "git {args:?}");
+}
+
+/// An active task in a committed git project (state directory ignored).
+fn autonomous_in_git() -> (Fixture, Env) {
+    let (d, env, _) = autonomous();
+    fs::write(d.0.join(".gitignore"), "state/\n").unwrap();
+    git(&d.0, &["init", "--quiet"]);
+    git(&d.0, &["add", "-A"]);
+    git(
+        &d.0,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ],
+    );
+    (d, env)
+}
+
+/// G44 (field brief 2026-11-09, change 2): a research agent used tools outside the read-only
+/// list (a web fetch, a shell search) and changed nothing. Its report is its last message: the
+/// handback is not judged, so the agent is never pushed into another turn.
+#[test]
+fn an_agent_that_left_the_tree_unchanged_hands_back_a_report() {
+    let (_d, mut env) = autonomous_in_git();
+    for (name, id, input) in [
+        (
+            "WebFetch",
+            "f1",
+            json!({"url":"https://example.invalid/docs"}),
+        ),
+        (
+            "Bash",
+            "b1",
+            json!({"command":"grep -rn session src | head -5"}),
+        ),
+    ] {
+        let allowed = as_agent(&mut env, "res1", name, id, input);
+        assert!(
+            !matches!(allowed, Decision::Deny(_) | Decision::Block(_)),
+            "{name}: {allowed:?}"
+        );
+    }
+    assert_eq!(subagent_stop(&mut env, "res1"), Decision::None);
+    assert_ne!(gate(&env)["state"], "completed");
+}
+
+/// The same agent stopping after the user sent a new, still unclassified prompt.
+#[test]
+fn an_unchanged_tree_handback_passes_under_an_unclassified_prompt() {
+    let (_d, mut env) = autonomous_in_git();
+    let allowed = as_agent(
+        &mut env,
+        "res2",
+        "WebFetch",
+        "f2",
+        json!({"url":"https://example.invalid/docs"}),
+    );
+    assert!(!matches!(allowed, Decision::Deny(_)), "{allowed:?}");
+    follow_up(
+        &mut env,
+        "session",
+        "q2",
+        "And what about the other module?",
+    );
+    assert_eq!(subagent_stop(&mut env, "res2"), Decision::None);
+}
+
+/// The protection that stays: an agent after whose tools the tree differs is held to the
+/// criteria, whatever tool made the change.
+#[test]
+fn an_agent_that_changed_the_tree_is_still_judged() {
+    let (d, mut env) = autonomous_in_git();
+    let allowed = as_agent(
+        &mut env,
+        "w2",
+        "Bash",
+        "b2",
+        json!({"command":"python fix.py"}),
+    );
+    assert!(!matches!(allowed, Decision::Deny(_)), "{allowed:?}");
+    fs::write(d.0.join("changed.rs"), "// the agent's edit\n").unwrap();
+    let decision = subagent_stop(&mut env, "w2");
+    assert!(matches!(decision, Decision::Block(_)), "{decision:?}");
+}
+
 /// G20: the discovered test floor accepts nextest as well, `cargo test` stays the advised one.
 #[test]
 fn the_test_floor_accepts_nextest_too() {

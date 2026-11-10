@@ -450,6 +450,11 @@ impl Server {
                 return Err(refusal);
             }
         }
+        // WP4: shown by task_state only; this advisory server never moves a task at a limit.
+        let limits = match op {
+            Op::State => supervisor_claude_code::limits::usage_json(dir, &contract, now()),
+            _ => None,
+        };
         let mut session = Session::open(contract, stored, observed, true, reasons)?;
         let result = apply(&op, &mut session, reasons);
         session.gate.checkpoint = session.task.checkpoint();
@@ -470,6 +475,9 @@ impl Server {
                 supervisor_claude_code::autonomy::pending_jobs(dir, &task_id)?;
             details["paused"] = supervisor_claude_code::autonomy::is_paused(dir)?.into();
             details["worktree"] = supervisor_claude_code::binding::bound_root(dir).into();
+            if let Some(limits) = limits {
+                details["limits"] = limits;
+            }
             // G30: a criterion Stop will count from an observed run (also across a commit of
             // identical content) is not "missing" here.
             for id in supervisor_claude_code::adapter::observed_criteria(dir, &self.project)? {
@@ -536,7 +544,7 @@ fn load(dir: &Path, digest: &str, trace: &mut Trace) -> Result<Option<Gate>, Str
                 "gate state tampered ({what}); restore the state from the journal or start a new task"
             ))
         }
-        Stored::Valid(gate) => Ok(Some(gate)),
+        Stored::Valid(gate) => Ok(Some(*gate)),
         Stored::Absent => Ok(None),
     }
 }
@@ -720,6 +728,15 @@ fn describe(
         ("asserted_only", asserted_only.into()),
         ("verdict_note", verdict_note.into()),
         ("rejected_claims", rejected_claims.into()),
+        // WP5: shown only; reviews are recorded by the Claude Code hooks, never through MCP.
+        (
+            "review",
+            supervisor_claude_code::review::summary_json(
+                &task.contract().review,
+                &session.gate.reviews,
+                cp.candidate.as_ref(),
+            ),
+        ),
     ])
 }
 

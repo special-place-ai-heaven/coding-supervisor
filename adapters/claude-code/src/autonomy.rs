@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use coding_supervisor::TaskState;
+use coding_supervisor::{ReviewDecision, TaskState};
 use serde_json::{Value, json};
 
 use crate::lifecycle;
@@ -1089,6 +1089,69 @@ pub fn owns_session(dir: &Path, session: &str) -> Result<bool, String> {
     Ok(metadata["session_id"] == session)
 }
 
+/// The active task and its metadata when `session` owns it.
+fn owned_task(
+    root: &Path,
+    session: &str,
+) -> Result<Option<(lifecycle::ActiveTask, Value)>, String> {
+    let Some(active) = lifecycle::active_task(root)? else {
+        return Ok(None);
+    };
+    Ok(read(&active.dir.join("autonomy.json"))?
+        .filter(|metadata| metadata["session_id"] == session)
+        .map(|metadata| (active, metadata)))
+}
+
+/// Brief 2026-11-09, change 1: the owning session's `SessionEnd` (`ended` carries its reason)
+/// releases its unfinished task to a later session; any other hook call from that session
+/// (a resume keeps the id) takes the release back. A session that never reported ending, as
+/// after a crash or under an older install, stays protected. Only reads unless the mark changes.
+pub fn mark_session(root: &Path, session: &str, ended: Option<&str>) -> Result<(), String> {
+    let changes = |metadata: &Value| metadata.get("session_ended").is_some() != ended.is_some();
+    // Unreadable state is judged where it always was; only a mark that must change can fail.
+    if !owned_task(root, session)
+        .ok()
+        .flatten()
+        .is_some_and(|(_, metadata)| changes(&metadata))
+    {
+        return Ok(());
+    }
+    let tx = Transaction::open(root)?;
+    let Some((active, mut metadata)) =
+        owned_task(root, session)?.filter(|(_, metadata)| changes(metadata))
+    else {
+        return Ok(());
+    };
+    let fields = metadata
+        .as_object_mut()
+        .ok_or("invalid autonomous metadata")?;
+    match ended {
+        Some(reason) => fields.insert("session_ended".into(), reason.into()),
+        None => fields.remove("session_ended"),
+    };
+    tx.commit(vec![(
+        PathBuf::from("tasks")
+            .join(&active.task_id)
+            .join("autonomy.json"),
+        format!("{metadata}\n"),
+    )])
+}
+
+/// How the prompt hook describes another session's task: `Some(true)` when that session has
+/// ended, `Some(false)` when it has not reported ending, `None` when this session owns it.
+pub fn foreign_owner_ended(dir: &Path, session: &str) -> Result<Option<bool>, String> {
+    Ok(read(&dir.join("autonomy.json"))?
+        .filter(|metadata| metadata["session_id"] != session)
+        .map(|metadata| metadata.get("session_ended").is_some()))
+}
+
+/// Uncommitted work in the tree a task ran in. Anything git cannot answer counts as work.
+fn uncommitted_work(tree: &Path) -> bool {
+    // `status.showUntrackedFiles=no` must not hide the owner's new files.
+    !crate::git::run(tree, &["status", "--porcelain", "--untracked-files=all"])
+        .is_ok_and(|output| output.status.success() && output.stdout.is_empty())
+}
+
 /// Recovery authorizes polling a persisted job, never rewriting its original provenance.
 pub(crate) fn recovers_session(
     dir: &Path,
@@ -1253,6 +1316,25 @@ fn preserves(old: &Value, new: &Value, allow_scope_change: bool) -> Result<(), S
         return Err(
             "contract revision changed the repair budget or removed a forbidden effect".into(),
         );
+    }
+    // WP4: an agent may lower or add a task limit, never raise or remove one.
+    if [
+        (old.limits.turns, new.limits.turns),
+        (old.limits.wall_clock_s, new.limits.wall_clock_s),
+    ]
+    .into_iter()
+    .any(|(old, new)| old.is_some_and(|old| new.is_none_or(|new| new > old)))
+    {
+        return Err("contract revision raised or removed a task limit".into());
+    }
+    // WP5: an agent may add a review requirement or an artifact, never drop one.
+    if (old.review.required && !new.review.required)
+        || (old.review.independent && !new.review.independent)
+    {
+        return Err("contract revision switched off a review requirement".into());
+    }
+    if old.artifacts.iter().any(|a| !new.artifacts.contains(a)) {
+        return Err("contract revision removed an artifact".into());
     }
     if !allow_scope_change
         && new
@@ -1432,6 +1514,24 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
     let identity = project_identity(project)?;
     // Resolving a requested worktree runs git too; its error still surfaces only where used.
     let worktree = requested_worktree(project, proposal);
+    // A takeover `start` asks git once whether the ended owner left uncommitted work; outside
+    // the lock, like the calls above (G26).
+    // The tree is the task's own: its bound worktree, else the project it was started in. The
+    // answer is kept with the task it was asked about.
+    let uncommitted = match lifecycle::active_task(root)? {
+        Some(active) if proposal.get("action").and_then(Value::as_str) == Some("start") => {
+            read(&active.dir.join("autonomy.json"))?
+                .filter(|metadata| metadata.get("session_ended").is_some())
+                .map(|metadata| {
+                    let tree = metadata["worktree"]
+                        .as_str()
+                        .or(metadata["project"].as_str())
+                        .map_or(project, Path::new);
+                    (active.task_id, uncommitted_work(tree))
+                })
+        }
+        _ => None,
+    };
     let tx = Transaction::open(root)?;
     let mut store = load(root)?;
     let event = store["events"]
@@ -1493,47 +1593,102 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         {
             return Err("caller-asserted intent cannot replace a trusted hook task".into());
         }
+        // Brief 2026-11-09, change 1: an unfinished task whose owning session has ended is
+        // archived as `abandoned` by the session that starts the next one. With uncommitted
+        // work in its tree the user chooses first (`abandon_previous`). A session that has not
+        // reported ending keeps its task.
+        let mut abandoned = None;
         if let Some(active) = &active
             && gate_state(&active.dir)? != "completed"
         {
-            return Err(format!(
-                "unfinished task retained; continue it or explicitly cancel before a new task; {}",
-                person_cancel(&event, &active.task_id)
-            ));
+            let metadata = read(&active.dir.join("autonomy.json"))?.unwrap_or(Value::Null);
+            let previous = metadata["session_id"].as_str().filter(|s| *s != session);
+            let Some(previous) = previous else {
+                return Err(format!(
+                    "unfinished task retained; continue it or explicitly cancel before a new task; {}",
+                    person_cancel(&event, &active.task_id)
+                ));
+            };
+            let Some(reason) = metadata.get("session_ended") else {
+                return Err(format!(
+                    "unfinished task retained: it belongs to another session that has not ended, so it stays protected; a direct resume prompt from the user takes it over, or, only if that session is closed, {}",
+                    person_cancel(&event, &active.task_id)
+                ));
+            };
+            // An answer git gave before the lock, for this task; a mark set since then, or
+            // another task, counts as work. shortcut: an owner that came back, edited and
+            // ended again while this call waited for the lock (10 s at most) is not seen;
+            // ask git under the lock if that ever matters.
+            let work = uncommitted != Some((active.task_id.clone(), false));
+            if work && proposal.get("abandon_previous") != Some(&Value::Bool(true)) {
+                return Err(format!(
+                    "unfinished task {} belonged to a session that has ended, and its working tree has uncommitted changes that may be its unfinished work. Ask the user to choose: a direct resume prompt takes that task over with the work, or repeat this start with \"abandon_previous\":true to archive it as abandoned (the files stay as they are)",
+                    active.task_id
+                ));
+            }
+            abandoned = Some(
+                json!({"previous_session":previous,"abandoned_by_session":session,
+                "reason":format!("owning session ended ({})", reason.as_str().unwrap_or("unknown")),
+                "uncommitted_work":work}),
+            );
         }
         // G22: the rollover never dead-ends. A completion that cannot be re-verified is
         // archived as `completed-unverified` with the reason; only a verified one is `completed`.
         let mut unverified = None;
         if let Some(active) = &active
+            && abandoned.is_none()
             && read(&active.dir.join("autonomy.json"))?.is_some_and(|m| m["source"] == "hook")
             && let Err(why) = validate_entrypoints(&active.dir, project)
                 .and_then(|()| observed_completion(&active.dir, &active.task_id, project))
         {
             unverified = Some(why);
         }
+        // WP4: a person's task (no autonomy.json) completed without observed evidence, e.g. on
+        // caller-asserted MCP receipts, is not replaced by an agent's start, which would shed the
+        // limits the person set; the person moves on with `task next`.
+        if let Some(active) = &active
+            && read(&active.dir.join("autonomy.json"))?.is_none()
+            && observed_completion(&active.dir, &active.task_id, project).is_err()
+        {
+            return Err(format!(
+                "the active task was started by a person and its completion rests on no hook-observed evidence, so an agent cannot replace it; a person runs `supervisor task next --task {} --contract <file>`",
+                active.task_id
+            ));
+        }
         let mut contract = add_floor(
             proposal.get("contract").ok_or("start needs a contract")?,
             &event["required_criteria"],
         )?;
         contract["event_id"] = format!("autonomy-{id}").into();
+        // The lifecycle knows an unfinished predecessor only as `cancelled`; the archive record
+        // is corrected to `abandoned` below.
         let (mut response, task_writes) = lifecycle::plan_start(
             root,
             &state::Writer::agent(project),
             &contract,
             active.is_some(),
-            None,
+            abandoned.as_ref().map(|_| "cancelled"),
             current_id,
         )?;
         writes.extend(task_writes);
-        if let (Some(why), Some(active)) = (unverified, &active) {
+        let correction = match (unverified, abandoned) {
+            (Some(why), _) => Some(json!({"disposition":"completed-unverified","reason":why})),
+            (None, Some(mut record)) => {
+                record["disposition"] = "abandoned".into();
+                Some(record)
+            }
+            (None, None) => None,
+        };
+        if let (Some(correction), Some(active)) = (correction, &active) {
             let path = PathBuf::from("archives").join(format!("{}.json", active.task_id));
             let archive = writes
                 .iter_mut()
                 .find(|(p, _)| *p == path)
                 .ok_or("rollover wrote no archive for the previous task")?;
             let mut record: Value = serde_json::from_str(&archive.1).map_err(|e| e.to_string())?;
-            record["disposition"] = "completed-unverified".into();
-            record["reason"] = why.into();
+            for (key, value) in correction.as_object().into_iter().flatten() {
+                record[key] = value.clone();
+            }
             archive.1 = format!("{record}\n");
         }
         let task_id = text(&response, "task_id")?;
@@ -1593,10 +1748,14 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 && event["control"] == "resume"
                 && metadata["source"] == event["source"])
         {
-            return Err(format!(
-                "proposal belongs to another task session; a direct resume prompt from the user takes it over, or {}",
-                person_cancel(&event, &active.task_id)
-            ));
+            return Err(if metadata.get("session_ended").is_some() {
+                "proposal belongs to another task session, which has ended: a start with a new contract archives its task as abandoned, or a direct resume prompt from the user takes it over".to_owned()
+            } else {
+                format!(
+                    "proposal belongs to another task session that has not ended, so its task stays protected; a direct resume prompt from the user takes it over, or, only if that session is closed, {}",
+                    person_cancel(&event, &active.task_id)
+                )
+            });
         }
         let task_state = gate_state(&active.dir)?;
         if matches!(action, "cancel" | "pause" | "resume") && event["control"] != action {
@@ -1619,6 +1778,10 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
             revision["from_session"] = metadata["session_id"].clone();
             revision["to_session"] = session.into();
             metadata["session_id"] = session.into();
+            // The new owner is live; the previous owner's end no longer releases the task.
+            if let Some(fields) = metadata.as_object_mut() {
+                fields.remove("session_ended");
+            }
         }
         match action {
             "continue" => {
@@ -1739,6 +1902,9 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 let (_, new_digest) = state::read_contract(&stage)?;
                 if let Stored::Valid(mut gate) = gate {
                     gate.receipts.clear();
+                    // WP5: an approval was of the old contract; a rejection stays sticky.
+                    gate.reviews
+                        .retain(|s| s.review.decision == ReviewDecision::Rejected);
                     if gate.checkpoint.state == TaskState::ReadyForReview {
                         gate.checkpoint.state = TaskState::Verifying;
                     }

@@ -143,6 +143,7 @@ fn hook_configuration(project: &Path) -> Value {
         "PostToolUseFailure",
         "SubagentStop",
         "Stop",
+        "SessionEnd",
     ];
     let mut events = Vec::new();
     let mut restricted = Vec::new();
@@ -300,6 +301,24 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
             }
             _ => active["lifecycle_state"] = "unknown".into(),
         }
+        if let Ok((Some(contract), digest)) = read_contract(&task.dir) {
+            // WP5: the policy and the latest review for the candidate the task last observed.
+            let (reviews, candidate) = match load_gate(&task.dir, &digest) {
+                Ok(Stored::Valid(gate)) => (gate.reviews, gate.checkpoint.candidate),
+                _ => (Vec::new(), None),
+            };
+            active["review"] = supervisor_claude_code::review::summary_json(
+                &contract.review,
+                &reviews,
+                candidate.as_ref(),
+            );
+            let now = supervisor_claude_code::adapter::now();
+            if let Some(limits) =
+                supervisor_claude_code::limits::usage_json(&task.dir, &contract, now)
+            {
+                active["limits"] = limits;
+            }
+        }
     }
     let hooks = if harness == "claude-code" {
         hook_configuration(project)
@@ -439,7 +458,79 @@ fn human(report: &Value) -> String {
     if let Some(worktree) = report.pointer("/task/worktree").and_then(Value::as_str) {
         text.push_str(&format!("\nbound worktree: {worktree}"));
     }
+    if let Some(limits) = report.pointer("/task/limits") {
+        text.push_str(&format!("\nlimits: {}", limits_line(limits)));
+    }
+    if let Some(review) = report.pointer("/task/review")
+        && (review["required"] == true
+            || review["independent"] == true
+            || !review["latest"].is_null())
+    {
+        text.push_str(&format!("\nreview: {}", review_line(review)));
+    }
     text
+}
+
+/// WP5: the policy, then the latest review's identifiers and finding count (never its text).
+fn review_line(review: &Value) -> String {
+    let policy = match (review["required"] == true, review["independent"] == true) {
+        (_, true) => "required, independent",
+        (true, false) => "required",
+        (false, false) => "not required",
+    };
+    // The rule's answer comes first, so an approval is never read without a rejection beside it.
+    let met = match (&review["met"], review["reason"].as_str()) {
+        (Value::Bool(true), _) => "met".to_owned(),
+        (Value::Bool(false), Some(reason)) => format!("not met ({})", reason.replace('_', " ")),
+        _ => "unknown".to_owned(),
+    };
+    let policy = format!("{policy}; {met}");
+    let latest = &review["latest"];
+    if latest.is_null() {
+        return format!("{policy}; latest: none on this candidate");
+    }
+    let s = |key: &str| latest[key].as_str().unwrap_or("unknown");
+    let findings = latest["findings"].as_u64().unwrap_or(0);
+    format!(
+        "{policy}; latest: {} by {} ({}; {}; {findings} finding{}; at {})",
+        s("decision"),
+        s("reviewer"),
+        latest["model"]
+            .as_str()
+            .map_or("model not reported".to_owned(), |m| format!("model {m}")),
+        s("provenance"),
+        if findings == 1 { "" } else { "s" },
+        latest["at"]
+            .as_u64()
+            .map_or("unknown".to_owned(), crate::verdict::rfc3339_millis),
+    )
+}
+
+/// Counts only: hook payloads carry no cost data, so no spend is ever shown.
+fn limits_line(limits: &Value) -> String {
+    if limits.get("state").is_some() {
+        return "unknown (task journal or clock unreadable)".to_owned();
+    }
+    let number = |key: &str| limits.get(key).and_then(Value::as_u64);
+    let mut parts = Vec::new();
+    // Without a turn limit the journal is not read, so there is no count to show.
+    if let Some(max) = number("turns") {
+        let used = number("turns_used").map_or("unknown".to_owned(), |n| n.to_string());
+        parts.push(format!("{used} of {max} turns used"));
+    }
+    if let Some(max) = number("wall_clock_s") {
+        parts.push(match number("elapsed_s") {
+            Some(elapsed) if limits["clock_behind_approval"] == true => {
+                format!("elapsed {elapsed} s (clock behind approval) of {max} s")
+            }
+            Some(elapsed) => format!("elapsed {elapsed} s of {max} s"),
+            None => format!("no wall clock without an approval time ({max} s set)"),
+        });
+    }
+    if let Some(reached) = limits.get("reached").and_then(Value::as_str) {
+        parts.push(format!("reached: {reached}"));
+    }
+    parts.join("; ")
 }
 
 #[cfg(test)]
