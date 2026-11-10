@@ -1516,8 +1516,14 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
             &event["required_criteria"],
         )?;
         contract["event_id"] = format!("autonomy-{id}").into();
-        let (mut response, task_writes) =
-            lifecycle::plan_start(root, &contract, active.is_some(), None, current_id)?;
+        let (mut response, task_writes) = lifecycle::plan_start(
+            root,
+            ("agent-proposal", Some(project)),
+            &contract,
+            active.is_some(),
+            None,
+            current_id,
+        )?;
         writes.extend(task_writes);
         if let (Some(why), Some(active)) = (unverified, &active) {
             let path = PathBuf::from("archives").join(format!("{}.json", active.task_id));
@@ -1713,7 +1719,14 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 }
                 metadata["invalidated_dispatches"] =
                     invalidated.into_iter().collect::<Vec<_>>().into();
-                atomic_write(&stage.join("contract.json"), format!("{new}\n").as_bytes())?;
+                // The agent cannot assert the approval; a revision keeps the task's base.
+                let mut stored =
+                    state::stamp_v2(&new, "agent-proposal", None, crate::adapter::now());
+                stored["base_sha"] = old.get("base_sha").cloned().unwrap_or(Value::Null);
+                atomic_write(
+                    &stage.join("contract.json"),
+                    format!("{stored}\n").as_bytes(),
+                )?;
                 let (_, new_digest) = state::read_contract(&stage)?;
                 if let Stored::Valid(mut gate) = gate {
                     gate.receipts.clear();

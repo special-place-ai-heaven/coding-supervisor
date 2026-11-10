@@ -113,9 +113,31 @@ fn legacy_pending(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Start or replace an active task. The contract ID remains caller-owned; task_id is generated.
+/// [`start_as`] by `task-start` with no project known, so no repository head is recorded.
 pub fn start(
     root: &Path,
+    contract: &Value,
+    next: bool,
+    requested: Option<&str>,
+    expected: Option<&str>,
+) -> Result<Value, String> {
+    start_as(
+        root,
+        "task-start",
+        None,
+        contract,
+        next,
+        requested,
+        expected,
+    )
+}
+
+/// Start or replace an active task. The contract ID remains caller-owned; task_id is generated.
+/// `via` names the writer in the stored contract's approval; `project` supplies its base_sha.
+pub fn start_as(
+    root: &Path,
+    via: &str,
+    project: Option<&Path>,
     contract: &Value,
     next: bool,
     requested: Option<&str>,
@@ -129,7 +151,7 @@ pub fn start(
     {
         return Err("autonomous tasks require a prompt-bound cancellation proposal".to_owned());
     }
-    let (response, writes) = plan_start(root, contract, next, requested, expected)?;
+    let (response, writes) = plan_start(root, (via, project), contract, next, requested, expected)?;
     tx.commit(writes)?;
     Ok(response)
 }
@@ -137,6 +159,7 @@ pub fn start(
 /// Caller holds the project transaction lock; allows prompt consumption and activation to commit together.
 pub(crate) fn plan_start(
     root: &Path,
+    (via, project): (&str, Option<&Path>),
     contract: &Value,
     next: bool,
     requested: Option<&str>,
@@ -219,7 +242,12 @@ pub(crate) fn plan_start(
         ));
     }
     let prefix = PathBuf::from("tasks").join(&id);
-    writes.push((prefix.join("contract.json"), format!("{contract}\n")));
+    // The request digests above stay over the caller's contract, so a replay still matches.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let stored = state::stamp_v2(contract, via, project, now);
+    writes.push((prefix.join("contract.json"), format!("{stored}\n")));
     writes.push((prefix.join("task.json"), format!("{}\n", json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"recovery_of":recovery_of,"start_event_id":contract.get("event_id"),"start_request_digest":crate::sha256::hex(contract.to_string().as_bytes())}))));
     writes.push((
         PathBuf::from("active.json"),

@@ -68,6 +68,12 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
             "scope": ["src/", "tests/"],
             "max_repair_rounds": 2,
         });
+        let contract = supervisor_claude_code::state::stamp_v2(
+            &contract,
+            "init-draft",
+            Some(&project),
+            supervisor_claude_code::adapter::now(),
+        );
         let text = serde_json::to_string_pretty(&contract)
             .map_err(|e| Failure::Error(format!("contract: {e}")))?;
         supervisor_claude_code::transaction::atomic_write(&path, (text + "\n").as_bytes())

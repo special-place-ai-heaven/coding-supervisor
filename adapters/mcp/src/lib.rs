@@ -240,7 +240,15 @@ impl Server {
             };
         }
         let started = if tool == "task_start" {
-            match lifecycle::start(&self.state_dir, args, false, None, None) {
+            match lifecycle::start_as(
+                &self.state_dir,
+                "mcp-task-start",
+                Some(&self.project),
+                args,
+                false,
+                None,
+                None,
+            ) {
                 Ok(started) => Some(started),
                 Err(what) => {
                     return tool_result(
@@ -342,6 +350,9 @@ impl Server {
             Ok(text) => (text, false),
             Err(why) => (format!("GATE (advisory): {tool} refused: {why}"), true),
         };
+        if trace.contract_v1 {
+            reasons.push(state::V1_MIGRATED_REASON.to_owned());
+        }
         let payload = obj([("hook_event_name", format!("mcp:{tool}").into())]);
         let decision = is_error.then(|| obj([("systemMessage", text.clone().into())]));
         let mut line = journal::line(
@@ -382,6 +393,10 @@ impl Server {
             return Err("autonomous task requires observed hook evidence; MCP assertions cannot accept or complete it".into());
         }
         let (contract, digest) = state::read_contract(dir)?;
+        trace.contract_v1 = contract
+            .as_ref()
+            .and_then(|c| c.approval.as_ref())
+            .is_some_and(|a| a.via == state::V1_MIGRATION);
         trace.task_id = contract
             .as_ref()
             .map(|c| lifecycle::task_identity(dir, &c.id.0))

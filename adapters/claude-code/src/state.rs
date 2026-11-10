@@ -6,10 +6,11 @@ use std::io::{ErrorKind, Write};
 use std::path::Path;
 
 use coding_supervisor::{
-    Budget, CandidateId, CheckName, Checkpoint, Criterion, CriterionId, Disposition, Finding,
-    FindingId, Severity, TaskContract, TaskId, TaskState, VerificationReceipt,
+    Approval, Budget, CandidateId, CheckName, Checkpoint, Criterion, CriterionId, Disposition,
+    Finding, FindingId, Isolation, Limits, Review, Severity, TaskContract, TaskId, TaskState,
+    VerificationReceipt,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::{chain, sha256};
 
@@ -317,7 +318,141 @@ fn commands(c: &Value, id: &str) -> Result<Vec<String>, String> {
     Ok(list)
 }
 
+/// The writer a migrated v1 contract records in its approval; never written to a file.
+pub const V1_MIGRATION: &str = "v1-migration";
+/// Journaled in `reasons` on every call that judged a migrated v1 contract.
+pub const V1_MIGRATED_REASON: &str =
+    "contract v1 migrated in memory: isolation none, no limits, no review requirement";
+
+/// A contract of any schema this binary reads. A file without `schema_version` (or with 1) is
+/// v1 and loads only through [`migrate_v1`]; the file itself is never rewritten, since gate.json
+/// is chained to its bytes. A newer schema is refused rather than read as v2. Unknown fields
+/// are ignored, as they always were.
 pub fn contract_from(v: &Value) -> Result<TaskContract, String> {
+    match v.get("schema_version") {
+        None => migrate_v1(v),
+        Some(n) => match n.as_u64() {
+            Some(1) => migrate_v1(v),
+            Some(2) => contract_v2(v),
+            Some(n) if n > 2 => Err(format!(
+                "contract schema_version {n} is newer than this supervisor {} reads (up to 2); update the supervisor",
+                env!("CARGO_PKG_VERSION")
+            )),
+            _ => Err("field schema_version is not 1 or 2".to_owned()),
+        },
+    }
+}
+
+/// v1 in memory: shared checkout, no limits, no review requirement, no base, and an approval
+/// that says only that it was migrated.
+fn migrate_v1(v: &Value) -> Result<TaskContract, String> {
+    Ok(TaskContract {
+        approval: Some(Approval {
+            by: None,
+            at: None,
+            via: V1_MIGRATION.to_owned(),
+        }),
+        ..shared_fields(v)?
+    })
+}
+
+fn contract_v2(v: &Value) -> Result<TaskContract, String> {
+    let approval = present(v, "approval")
+        .map(|a| {
+            Ok::<_, String>(Approval {
+                by: optional_string(a, "by", "approval.by")?,
+                at: present(a, "at")
+                    .map(|t| {
+                        t.as_u64()
+                            .ok_or("field approval.at is not a non-negative integer")
+                    })
+                    .transpose()?,
+                via: string(a, "via").map_err(|e| format!("approval: {e}"))?,
+            })
+        })
+        .transpose()?;
+    let limit = |key: &str| {
+        present(v, "limits")
+            .and_then(|l| present(l, key))
+            .map(|n| {
+                n.as_u64()
+                    .and_then(std::num::NonZeroU64::new)
+                    .ok_or_else(|| format!("field limits.{key} is not a positive integer"))
+            })
+            .transpose()
+    };
+    let review = present(v, "review")
+        .map(|r| {
+            let flag = |key: &str| {
+                field(r, key)?
+                    .as_bool()
+                    .ok_or_else(|| format!("field review.{key} is not a boolean"))
+            };
+            Ok::<_, String>(Review {
+                required: flag("required")?,
+                independent: flag("independent")?,
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let isolation = match present(v, "isolation").map(Value::as_str) {
+        None | Some(Some("none")) => Isolation::Shared,
+        Some(Some("worktree")) => Isolation::Worktree,
+        Some(_) => return Err("field isolation is not \"none\" or \"worktree\"".to_owned()),
+    };
+    let artifacts = match present(v, "artifacts") {
+        None => Vec::new(),
+        Some(_) => strings(v, "artifacts")?,
+    };
+    inside_repository("artifacts", &artifacts)?;
+    Ok(TaskContract {
+        base_sha: optional_string(v, "base_sha", "base_sha")?,
+        approval,
+        limits: Limits {
+            wall_clock_s: limit("wall_clock_s")?,
+            turns: limit("turns")?,
+        },
+        artifacts,
+        review,
+        isolation,
+        ..shared_fields(v)?
+    })
+}
+
+/// A field that is there and not null.
+fn present<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+    v.get(key).filter(|x| !x.is_null())
+}
+fn optional_string(v: &Value, key: &str, name: &str) -> Result<Option<String>, String> {
+    present(v, key)
+        .map(|s| {
+            s.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("field {name} is not a string"))
+        })
+        .transpose()
+}
+
+/// Repository-relative paths only: no `..` segment (also as a `{a,b}` alternative), no root,
+/// drive or UNC prefix, in either separator. Nothing else is refused, so every shape that
+/// loaded before still loads. Scope matching is exact or by prefix, never a glob, so a glob
+/// cannot reach further than these checks.
+fn inside_repository(key: &str, paths: &[String]) -> Result<(), String> {
+    for path in paths {
+        let p = path.replace('\\', "/");
+        let drive = p.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+            && p.as_bytes().get(1) == Some(&b':');
+        if p.starts_with('/') || drive || p.split(['/', '{', '}', ',']).any(|s| s == "..") {
+            return Err(format!(
+                "{key} entry {path:?} leaves the repository; use a repository-relative path without `..`"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The fields v1 and v2 share, with the v2 additions at their defaults.
+fn shared_fields(v: &Value) -> Result<TaskContract, String> {
     let criteria = array(v, "criteria")?
         .iter()
         .map(|c| {
@@ -332,22 +467,50 @@ pub fn contract_from(v: &Value) -> Result<TaskContract, String> {
             })
         })
         .collect::<Result<_, String>>()?;
+    let scope = strings(v, "scope")?;
+    inside_repository("scope", &scope)?;
     Ok(TaskContract {
         id: TaskId(string(v, "id")?),
         goal: string(v, "goal")?,
         criteria,
         forbidden_effects: strings(v, "forbidden_effects")?,
-        scope: strings(v, "scope")?,
+        scope,
         budget: Budget {
             max_repair_rounds: small(v, "max_repair_rounds")?,
         },
         base_sha: None,
         approval: None,
-        limits: Default::default(),
+        limits: Limits::default(),
         artifacts: vec![],
-        review: Default::default(),
-        isolation: Default::default(),
+        review: Review::default(),
+        isolation: Isolation::default(),
     })
+}
+
+/// contract.json as a writer stores it: the caller's contract as v2, with `base_sha` the
+/// project's HEAD (null outside a repository, before the first commit, or with no project) and
+/// an approval naming the writer and the OS user where known. Recorded, not proven.
+/// `isolation` is `none` until worktree creation exists (WP3).
+pub fn stamp_v2(contract: &Value, via: &str, project: Option<&Path>, now: u64) -> Value {
+    let head = project
+        .and_then(|p| crate::git::run(p, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok())
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        .filter(|sha| !sha.is_empty());
+    let by = std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .ok();
+    let mut c = contract.clone();
+    if let Some(fields) = c.as_object_mut() {
+        fields.insert("schema_version".to_owned(), 2.into());
+        fields.insert("base_sha".to_owned(), head.into());
+        fields.insert(
+            "approval".to_owned(),
+            json!({"by": by, "at": now, "via": via}),
+        );
+        fields.insert("isolation".to_owned(), "none".into());
+    }
+    c
 }
 
 fn read_optional(path: &Path) -> Result<Option<String>, String> {

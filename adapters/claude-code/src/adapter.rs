@@ -1160,6 +1160,10 @@ fn handle_inner(
         };
         adapter_error(payload, env, root, &what)
     });
+    // Last, so the first reason, which the journal also records as `reason`, is unchanged.
+    if trace.contract_v1 {
+        reasons.push(state::V1_MIGRATED_REASON.to_owned());
+    }
     let line = journal::line(
         payload,
         env.state_location,
@@ -1198,6 +1202,10 @@ fn process(
     }
     let now = (env.clock)();
     let (contract, contract_sha256) = state::read_contract(&env.state_dir)?;
+    trace.contract_v1 = contract
+        .as_ref()
+        .and_then(|c| c.approval.as_ref())
+        .is_some_and(|a| a.via == state::V1_MIGRATION);
     trace.task_id = contract
         .as_ref()
         .map(|c| crate::lifecycle::task_identity(&env.state_dir, &c.id.0))
