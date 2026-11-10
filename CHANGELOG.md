@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.2](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.17.1...v0.17.2) (2026-11-10)
+
+
+### Bug Fixes
+
+* **gate:** a session can ask for help before an intent and in discussion (G45) ([0cbac16](https://github.com/special-place-ai-heaven/coding-supervisor/commit/0cbac1615ffc59a06558be86e9198d40c22aa2fa))
+
 ## [0.17.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.17.0...v0.17.1) (2026-11-10)
 
 
