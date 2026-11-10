@@ -257,10 +257,12 @@ key and writes `signature.json` beside the task. What is signed is a short text 
 the task id, the SHA-256 of contract.json, gate.json's verified chain head and the
 candidate. The key is created at the first sign: in the Windows Credential Manager, or on
 Linux in `$XDG_CONFIG_HOME/coding-supervisor/signing-key` (else `~/.config/...`), mode
-0600. `SUPERVISOR_SIGNING_KEY_FILE=<path>` selects a key file instead (on Windows that file
-gets no permission check). When the key cannot be used, `sign` prints `unsigned` with a
-reason and writes nothing. It prints the entry to add to `supervisor-keys.json` at the
-repository root:
+0600. `SUPERVISOR_SIGNING_KEY_FILE=<path>` selects a key file instead: an absolute path
+outside the project (a relative path, a `..` segment or a path inside the project is
+refused); on Windows that file gets no permission check and inherits its folder's access
+rights. When the key cannot be used, `sign` prints `unsigned` with a reason and writes no
+signature (the key's folder may already have been created). It prints the entry to add to
+`supervisor-keys.json` at the repository root:
 
 ```json
 {"keys":[{"key_id":"<16 hex>","public_key":"<64 hex>","revoked_at":null}]}
@@ -273,14 +275,21 @@ whatever any time says).
 `supervisor receipt verify [--keys <file>]` recomputes the statement from the stored state
 and prints `valid` (exit 0), `unsigned` when there is no signature (exit 3), or `invalid`
 with a reason (exit 3): the state changed after signing, the signature does not match, or
-the key is unlisted, revoked or its keys file is absent or does not parse. `supervisor
-status` shows `signed <key_id> (<storage>)`, `stale`, `unsigned` or `unknown`; it compares
+the key is unlisted, revoked or its keys file is absent or does not parse. Key ids compare
+without regard to letter case, and any entry for the id whose `revoked_at` is not `null`
+(`false`, `0` and `""` included) revokes it. `supervisor status` shows
+`signed (not verified) <key_id> (<storage>)`, `stale`, `unsigned` or `unknown`: it compares
 the statement only and does not check the signature. Signing changes no gate decision and
 no verdict.
 
 A signature says "this machine's supervisor signed this state", not proof: an agent running
 as the same OS user can read the key and can set the override variable. The key list means
-something only when CI reads it from the base commit.
+something only when CI reads it from the base commit. `valid` says nothing about the gate
+state (a failed or unfinished task verifies too), is not compared with the current tree, and
+the statement names no project. Two signs at once can leave a signature file that does not
+parse (`invalid`) or, with the Windows Credential Manager, a signature from a key that the
+other sign then replaced. A new upstream advisory turns the required Linux CI check red,
+release tags included.
 
 ## Harness support
 
