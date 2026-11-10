@@ -263,3 +263,26 @@ fn task_start_refuses_a_newer_schema() {
     assert!(text.contains(env!("CARGO_PKG_VERSION")), "{text}");
     assert!(!s.state_dir().join("tasks").exists());
 }
+
+/// WP4: task_state shows a task's limits with turns used and elapsed seconds, never a cost.
+#[test]
+fn task_state_shows_limits_and_their_use() {
+    let d = dir("limits");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["limits"] = serde_json::json!({"turns":5,"wall_clock_s":600});
+    common::ok(&s, "task_start", contract);
+    let state = common::task_state(&s);
+    let limits = &state["limits"];
+    assert_eq!(limits["turns"], 5, "{state}");
+    assert_eq!(limits["wall_clock_s"], 600, "{state}");
+    // MCP calls are not turns: only judged PreToolUse hook calls count.
+    assert_eq!(limits["turns_used"], 0, "{state}");
+    assert!(limits["elapsed_s"].as_u64().is_some(), "{state}");
+    assert!(!state.to_string().contains("cost"), "{state}");
+
+    let d = dir("no-limits");
+    let s = server(&d);
+    common::ok(&s, "task_start", common::four());
+    assert_eq!(common::task_state(&s).get("limits"), None);
+}
