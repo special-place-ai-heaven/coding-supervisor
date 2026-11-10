@@ -295,7 +295,8 @@ same with a key file (sign again). The project check probably misses a second na
 project folder (network share, mapped drive, bind mount) and a folder created between the
 check and the write, and an override inside the supervisor's own state folder is not
 refused. Where hard links are unsupported (FAT, exFAT, some network mounts) a key file
-always gives `unsigned`. A crash between writing and linking can leave a dot-prefixed
+cannot be created (an existing one is still read), so a first sign gives `unsigned`. A
+project that is the home folder itself refuses the default key path. A crash between writing and linking can leave a dot-prefixed
 `.tmp` file holding the key beside the key file, which nothing removes. A new upstream advisory turns the required Linux CI check red,
 release tags included.
 
