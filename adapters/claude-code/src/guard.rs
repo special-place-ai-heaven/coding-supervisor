@@ -67,7 +67,8 @@ fn deny(payload: &Value, matched: String) -> Option<Decision> {
 }
 
 /// `supervisor level <off|lite|full|ultra>`, `supervisor task reset-rounds`, `amend-floor`,
-/// `cancel`, `start` or `next` in a Bash, PowerShell or Terminal Commander command,
+/// `cancel`, `start` or `next`, or the hook command itself (`supervisor hook`,
+/// `supervisor-claude-code hook`), in a Bash, PowerShell or Terminal Commander command,
 /// whatever the binary's path, extension or quoting; returns the matched words.
 fn level_command(payload: &Value) -> Option<String> {
     let tool = payload.get("tool_name").and_then(Value::as_str)?;
@@ -76,9 +77,21 @@ fn level_command(payload: &Value) -> Option<String> {
         .split(|c: char| c.is_whitespace() || "\"'`;&|()".contains(c))
         .filter(|w| !w.is_empty())
         .collect();
+    let program = |word: &str| {
+        let name = word.rsplit(['/', '\\']).next().unwrap_or_default();
+        name.strip_suffix(".exe").unwrap_or(name).to_owned()
+    };
+    // G43: the harness runs the hook command itself, never through a tool call. From an agent
+    // it could only feed the gate a made-up event, such as another session's SessionEnd.
+    if let Some(w) = words.windows(2).find(|w| {
+        w[1] == "hook"
+            && (program(w[0]).ends_with("supervisor")
+                || program(w[0]).ends_with("supervisor-claude-code"))
+    }) {
+        return Some(format!("{} hook", program(w[0])));
+    }
     words.windows(3).find_map(|w| {
-        let program = w[0].rsplit(['/', '\\']).next().unwrap_or_default();
-        let program = program.strip_suffix(".exe").unwrap_or(program);
+        let program = program(w[0]);
         let sets_level = w[1] == "level" && Level::parse(w[2]).is_some();
         // A person's escapes and contracts; an agent could reset its own budget or skip the floor.
         let operator = w[1] == "task"

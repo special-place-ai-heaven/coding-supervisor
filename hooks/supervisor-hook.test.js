@@ -12,7 +12,7 @@ const test = require("node:test");
 
 const ROOT = path.join(__dirname, "..");
 const HOOK = path.join(__dirname, "supervisor-hook.js");
-const EVENTS = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "SubagentStop", "Stop"];
+const EVENTS = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "SubagentStop", "Stop", "SessionEnd"];
 // The hook gives up on supervisor after 20 s and must answer and exit before Claude Code stops
 // waiting for it: the smallest timeout in hooks.json, less a 2 s margin. On Windows the tree kill
 // (taskkill /t /f) takes 0.6-1.1 s for eight runs at once on an idle machine and up to 3.8 s when
@@ -145,7 +145,7 @@ test("a supervisor that does not answer in 20 s", { timeout: 60000 }, async () =
   try {
     await assertFailure(dir, "supervisor gave no answer within 20 s", { limit: ANSWER_MS });
     const pids = fs.readFileSync(path.join(dir, "pids"), "utf8").trim().split("\n").map(Number);
-    assert.equal(pids.length, 8);
+    assert.equal(pids.length, EVENTS.length + 2);
     assert.deepEqual(pids.filter(alive), []);
   } finally {
     killPids(path.join(dir, "pids"));
@@ -169,7 +169,7 @@ test("a supervisor whose orphaned child keeps its stdout open does not hold up t
     await assertFailure(dir, "supervisor gave no answer within 20 s", { limit: ANSWER_MS });
     // The orphans are still running, so the hook answered with their pipe still open.
     const pids = fs.readFileSync(path.join(dir, "pids"), "utf8").trim().split("\n").map(Number);
-    assert.equal(pids.length, 8);
+    assert.equal(pids.length, EVENTS.length + 2);
     assert.deepEqual(pids.filter((pid) => !alive(pid)), []);
   } finally {
     killPids(path.join(dir, "pids"));
