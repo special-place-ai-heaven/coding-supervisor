@@ -856,3 +856,39 @@ fn a_review_after_completion_stores_nothing() {
     assert_eq!(reviews(&env).len(), 1);
     assert_eq!(gate(&env)["state"], "completed");
 }
+
+/// The hash chain covers the stored reviews: a hand edit of a finding or a decision, or the
+/// removal of the whole `reviews` key, reads as tampered.
+#[test]
+fn a_hand_edit_of_a_stored_review_reads_as_tampered() {
+    let d = dir("tamper");
+    let (mut env, _) = setup(&d, &contract(required()));
+    checks_pass(&mut env, "c1");
+    reviewer(&mut env, "r1", "REVIEW: REJECTED\nFINDING: off by one");
+    let sealed = fs::read_to_string(task_dir(&env).join("gate.json")).unwrap();
+    let (_, digest) = state::read_contract(&task_dir(&env)).unwrap();
+    let edits: [(&str, fn(&mut Value)); 3] = [
+        ("finding", |g| g["reviews"][0]["findings"][0] = json!("fine")),
+        ("decision", |g| g["reviews"][0]["decision"] = json!("approved")),
+        ("removed", |g| {
+            g.as_object_mut().unwrap().remove("reviews");
+        }),
+    ];
+    for (what, edit) in edits {
+        let mut gate: Value = serde_json::from_str(&sealed).unwrap();
+        edit(&mut gate);
+        fs::write(task_dir(&env).join("gate.json"), format!("{gate}\n")).unwrap();
+        assert!(
+            matches!(
+                state::load_gate(&task_dir(&env), &digest).unwrap(),
+                Stored::Tampered(_)
+            ),
+            "{what}"
+        );
+    }
+    fs::write(task_dir(&env).join("gate.json"), &sealed).unwrap();
+    assert!(matches!(
+        state::load_gate(&task_dir(&env), &digest).unwrap(),
+        Stored::Valid(_)
+    ));
+}
