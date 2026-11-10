@@ -1928,6 +1928,8 @@ enum Match {
 struct CurrentTree {
     at: Option<(PathBuf, PathBuf)>,
     cell: std::cell::OnceCell<Option<String>>,
+    /// WP5: the full-content tree (documentation included) that reviews bind to.
+    content: std::cell::OnceCell<Option<String>>,
 }
 
 impl CurrentTree {
@@ -1935,6 +1937,7 @@ impl CurrentTree {
         Self {
             at: Some((project.to_owned(), state_dir.to_owned())),
             cell: Default::default(),
+            content: Default::default(),
         }
     }
 
@@ -1943,6 +1946,15 @@ impl CurrentTree {
             .get_or_init(|| {
                 let (project, state_dir) = self.at.as_ref()?;
                 crate::git::worktree_tree(project, state_dir)
+            })
+            .as_deref()
+    }
+
+    fn content(&self) -> Option<&str> {
+        self.content
+            .get_or_init(|| {
+                let (project, state_dir) = self.at.as_ref()?;
+                crate::git::content_tree(project, state_dir)
             })
             .as_deref()
     }
@@ -2812,7 +2824,7 @@ impl Session {
         }
         match self.task.record_review(review.clone()) {
             Ok(()) => {
-                let tree = self.tree.get().map(str::to_owned);
+                let tree = self.tree.content().map(str::to_owned);
                 self.gate.reviews.push(StoredReview { review, tree });
                 reasons.push(format!("recorded {what}"));
             }
@@ -2823,7 +2835,8 @@ impl Session {
 
     /// WP5, as G9 does for receipts: a review made on another candidate with the current tree is
     /// copied onto the current candidate, rejections included, so a plain commit neither sheds a
-    /// rejection nor loses an approval. A review stored with no tree is not copied.
+    /// rejection nor loses an approval. A review stored with no tree is not copied. Unlike a
+    /// receipt's, the tree is the full content: a documentation-only edit sheds a review.
     fn transfer_reviews(&mut self, reasons: &mut Vec<String>) {
         let Ok(current) = &self.observed else {
             return;
@@ -2841,7 +2854,7 @@ impl Session {
             };
             if r.candidate == current.id
                 || stored.tree.is_none()
-                || stored.tree.as_deref() != self.tree.get()
+                || stored.tree.as_deref() != self.tree.content()
                 || self.gate.reviews.iter().any(same)
                 || copies.iter().any(same)
             {

@@ -582,17 +582,24 @@ fn repository(name: &str) -> (Dir, Env) {
     let project = d.0.join("project");
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(project.join("src/a.rs"), "a1\n").unwrap();
+    docs_only_readme(&project);
     git(&project, &["init", "-q"]);
     git(&project, &["add", "."]);
     git(&project, &["commit", "-q", "-m", "one"]);
     fs::write(project.join("src/a.rs"), "a2\n").unwrap();
     // The state directory is beside the project; payloads carry the project as cwd.
-    let env = env_with(
-        &d,
-        &contract(required()),
-        Box::new(GitCandidate { cwd: project }),
-    );
+    let mut c = contract(required());
+    c["scope"] = json!(["src/", "README.md"]);
+    let env = env_with(&d, &c, Box::new(GitCandidate { cwd: project }));
     (d, env)
+}
+
+/// A README and a `.github/docs-paths.txt` naming it: CI's documentation-only list, which the
+/// receipts' tree leaves out (G28) and the reviews' tree must not.
+fn docs_only_readme(project: &Path) {
+    fs::create_dir_all(project.join(".github")).unwrap();
+    fs::write(project.join(".github/docs-paths.txt"), "README.md\n").unwrap();
+    fs::write(project.join("README.md"), "one\n").unwrap();
 }
 fn project_of(env: &Env) -> PathBuf {
     env.state_dir.parent().unwrap().join("project")
@@ -668,6 +675,12 @@ struct Production {
 }
 
 fn production(name: &str, review: Value) -> Production {
+    production_with(name, review, false)
+}
+
+/// `git`: the candidate is read from the real repository, which holds a documentation-only
+/// README, instead of a fixed fake.
+fn production_with(name: &str, review: Value, git_candidate: bool) -> Production {
     let d = dir(name);
     let project = d.0.join("project");
     fs::create_dir_all(project.join("src")).unwrap();
@@ -676,15 +689,25 @@ fn production(name: &str, review: Value) -> Production {
         "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
     )
     .unwrap();
+    if git_candidate {
+        docs_only_readme(&project);
+    }
     git(&project, &["init", "-q"]);
-    git(&project, &["add", "Cargo.toml"]);
+    git(&project, &["add", "."]);
     git(&project, &["commit", "-q", "-m", "one"]);
     let root = d.0.join("state");
     fs::create_dir_all(&root).unwrap();
+    let candidate: Box<dyn CandidateProvider> = if git_candidate {
+        Box::new(GitCandidate {
+            cwd: project.clone(),
+        })
+    } else {
+        Box::new(Switch(Arc::new(Mutex::new("one"))))
+    };
     let env = Env {
         state_dir: root,
         state_location: "test",
-        candidate: Box::new(Switch(Arc::new(Mutex::new("one")))),
+        candidate,
         clock: || 1_000,
         level: Setting {
             level: Level::Enforce,
@@ -698,7 +721,7 @@ fn production(name: &str, review: Value) -> Production {
         task: String::new(),
         prompts: 0,
     };
-    let proposal = json!({"id":"wp5","goal":"review","scope":["src/"],"forbidden_effects":[],
+    let proposal = json!({"id":"wp5","goal":"review","scope":["src/", "README.md"],"forbidden_effects":[],
         "max_repair_rounds":2,"review":review,"artifacts":["src/lib.rs"],
         "criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test -p fixture"}]});
     let started = p.apply("start", None, proposal).unwrap();
@@ -912,4 +935,58 @@ fn the_limit_report_names_an_unmet_review() {
         "{report}"
     );
     plain(report);
+}
+
+/// Reviews follow the full content, unlike receipts: a README-only fix sheds a rejection about
+/// the README (so it spends no repair round and a fresh approval can clear it), while the
+/// receipts still follow the documentation-excluded tree.
+#[test]
+fn a_rejection_is_not_carried_onto_a_docs_only_fix() {
+    let mut p = production_with("docs-fix", required(), true);
+    p.checks("c1");
+    assert_eq!(
+        p.review("r1", "REVIEW: REJECTED\nFINDING: the README names the wrong flag"),
+        Decision::None
+    );
+    fs::write(p.project.join("README.md"), "fixed\n").unwrap();
+    let why = blocked(&p.stop()).to_owned();
+    assert!(why.contains("review required"), "{why}");
+    assert!(!why.contains("rejected"), "{why}");
+    assert_eq!(p.gate()["consumed_repair_rounds"], 0, "{why}");
+    assert_eq!(p.review("r2", "REVIEW: APPROVED"), Decision::None);
+    let task = p.task.clone();
+    p.apply("continue", Some(&task), Value::Null).unwrap();
+    assert_eq!(p.stop(), Decision::None);
+    assert_eq!(p.gate()["state"], "completed");
+}
+
+#[test]
+fn an_approval_is_not_carried_onto_a_docs_only_edit() {
+    let (_d, mut env) = repository("docs-edit");
+    let project = project_of(&env);
+    for kind in ["PreToolUse", "PostToolUse"] {
+        let p = in_project(
+            &env,
+            json!({"hook_event_name":kind,"session_id":"session","agent_id":"main",
+                "tool_use_id":"run","tool_name":"Bash","tool_input":{"command":"cargo test"},
+                "tool_response":{"interrupted":false}}),
+        );
+        assert_eq!(handle(&p, &mut env), Decision::None);
+    }
+    let review = in_project(
+        &env,
+        json!({"hook_event_name":"SubagentStop","session_id":"session","agent_id":"r1",
+            "stop_hook_active":false,"last_assistant_message":"REVIEW: APPROVED"}),
+    );
+    assert_eq!(handle(&review, &mut env), Decision::None);
+    fs::write(project.join("README.md"), "changed after the review\n").unwrap();
+    let stop = in_project(
+        &env,
+        json!({"hook_event_name":"Stop","session_id":"session","stop_hook_active":false,
+            "last_assistant_message":"Done."}),
+    );
+    let r = handle(&stop, &mut env);
+    let why = blocked(&r);
+    assert!(why.contains("review required"), "the receipts carried, the review did not: {why}");
+    assert_ne!(gate(&env)["state"], "completed");
 }
