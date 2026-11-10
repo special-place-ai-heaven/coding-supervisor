@@ -321,7 +321,7 @@ fn a_task_completed_through_mcp_still_refuses_hook_work_past_its_limit() {
         "completed"
     );
     let mut env = Env {
-        state_dir: d.0.join("state"),
+        state_dir: s.state_dir().to_path_buf(),
         state_location: "test",
         candidate: Box::new(Fake),
         clock: supervisor_claude_code::adapter::now,
