@@ -363,9 +363,10 @@ fn a_worker_handback_at_the_limit_is_released_silently() {
     assert_eq!(handle(&first, &mut env), Decision::None);
     let handback = json!({"hook_event_name":"SubagentStop","cwd":cwd(&env),"session_id":"session",
         "agent_id":"worker","stop_hook_active":false,"last_assistant_message":"done"});
-    // Any output on SubagentStop keeps the worker running, so the release says nothing.
+    // Any output on SubagentStop keeps the worker running, so the release says nothing; it
+    // changes no task state, so the chair's own Stop still decides.
     assert_eq!(handle(&handback, &mut env), Decision::None);
-    assert_eq!(gate_state(&env), TaskState::BudgetExhausted);
+    assert_eq!(gate_state(&env), TaskState::Verifying);
 }
 
 #[test]
@@ -873,8 +874,9 @@ fn a_stop_released_for_a_limit_spends_no_repair_round() {
     }
 }
 
-/// Stops the gate would let through without certifying (the refusal cap, a pending job) are
-/// released at a reached limit with the report too.
+/// A stop the gate would let through without certifying because of the refusal cap is released
+/// at a reached limit with the report too. (The pending-job case takes the same release path;
+/// no test drives a pending Terminal Commander job here.)
 #[test]
 fn a_stop_past_the_refusal_cap_at_a_limit_gets_the_report() {
     let d = dir("cap");
@@ -982,4 +984,154 @@ fn the_proposal_path_cannot_lift_a_limit() {
     )
     .unwrap_err();
     assert!(why.contains("unfinished task retained"), "{why}");
+}
+
+/// A worker handback refused and released at the limit does not end the task: the chair's
+/// evidence is complete, and the chair's Stop still completes it, certified.
+#[test]
+fn a_worker_handback_released_at_the_limit_leaves_the_chair_to_complete() {
+    let d = dir("worker-then-chair");
+    let mut env = env(&d, &contract(json!({"turns":3})));
+    assert_eq!(handle(&write(&env, "t1"), &mut env), Decision::None);
+    let mut worker = write(&env, "w1");
+    worker["agent_id"] = "worker".into();
+    assert_eq!(handle(&worker, &mut env), Decision::None);
+    run_check(&mut env, "c1");
+    let handback = json!({"hook_event_name":"SubagentStop","cwd":cwd(&env),"session_id":"session",
+        "agent_id":"worker","stop_hook_active":false,"last_assistant_message":"done"});
+    assert_eq!(handle(&handback, &mut env), Decision::None);
+    let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
+    assert!(
+        !matches!(&decision, Decision::Block(_))
+            && !matches!(&decision, Decision::System(text) if text.contains("NOT certified")),
+        "{decision:?}"
+    );
+    assert_eq!(gate_state(&env), TaskState::Completed);
+}
+
+/// The report's remaining criteria follow the evidence rule: a check that passed and then failed
+/// on the same candidate is still remaining.
+#[test]
+fn a_check_that_passed_then_failed_is_a_remaining_criterion() {
+    let d = dir("pass-then-fail");
+    let mut env = env(&d, &contract(json!({"turns":3})));
+    assert_eq!(handle(&write(&env, "t1"), &mut env), Decision::None);
+    run_check(&mut env, "c1");
+    let mut run = bash(&env, "c2", "cargo test");
+    assert_eq!(handle(&run, &mut env), Decision::None);
+    run["hook_event_name"] = "PostToolUseFailure".into();
+    run["error"] = "Exit code 101\nfailed".into();
+    handle(&run, &mut env);
+    let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
+    let Decision::System(report) = &decision else {
+        panic!("stop not released with a report: {decision:?}");
+    };
+    assert!(report.contains("remaining criteria: C2;"), "{report}");
+}
+
+/// A person's task at `root`, with `limits`, in a project the floor discovery knows.
+fn person(d: &Dir, limits: Value) -> (Env, String) {
+    set_clock(APPROVED_AT);
+    fs::write(
+        d.0.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let env = Env {
+        state_dir: d.0.join("state"),
+        state_location: "test",
+        candidate: Box::new(Fake),
+        clock,
+        level: Setting {
+            level: Level::Enforce,
+            ..Default::default()
+        },
+    };
+    let mut request = contract(limits);
+    request.as_object_mut().unwrap().remove("approval");
+    let started = lifecycle::start_as(
+        &env.state_dir,
+        &state::Writer::task_start(None),
+        &request,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    (env, started["task_id"].as_str().unwrap().to_owned())
+}
+
+fn propose_start(env: &mut Env, d: &Dir) -> Result<Value, String> {
+    let prompt = json!({"hook_event_name":"UserPromptSubmit","cwd":d.0,"session_id":"session",
+        "prompt_id":"next","prompt":"Implement the next change"});
+    assert!(matches!(handle(&prompt, env), Decision::Context { .. }));
+    let event = autonomy::pending(&env.state_dir, "session").unwrap().unwrap();
+    let contract = json!({"id":"wp4-next","goal":"next","scope":["src/"],"forbidden_effects":[],
+        "max_repair_rounds":2,
+        "criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}]});
+    autonomy::propose(
+        &env.state_dir,
+        &d.0,
+        &json!({"event_id":event["event_id"],"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],
+            "action":"start","task_id":event["task_id"],"contract":contract}),
+    )
+}
+
+/// A person's limit is not shed by completing the task on caller-asserted receipts (as MCP
+/// does) and then starting a new task through an agent proposal.
+#[test]
+fn an_agent_cannot_replace_a_persons_task_completed_without_observed_evidence() {
+    let d = dir("person-asserted");
+    let (mut env, id) = person(&d, json!({"turns":10}));
+    let candidate = coding_supervisor::CandidateId {
+        base_commit: "base".into(),
+        dirty_digest: "one".into(),
+    };
+    lifecycle::with_task(&env.state_dir, Some(&id), None, None, |stage| {
+        let (_, digest) = state::read_contract(stage)?;
+        let mut gate = state::Gate::new(
+            "wp4".to_owned(),
+            coding_supervisor::Checkpoint {
+                state: TaskState::Completed,
+                candidate: Some(candidate.clone()),
+                open_findings: vec![],
+                consumed_repair_rounds: 0,
+                next_action: String::new(),
+            },
+        );
+        gate.receipts.push(coding_supervisor::VerificationReceipt {
+            criterion: coding_supervisor::CriterionId("C2".into()),
+            candidate: candidate.clone(),
+            command: "cargo test".into(),
+            cwd: ".".into(),
+            exit_code: Some(0),
+            output_ref: "mcp-asserted:out".into(),
+            claim_supported: true,
+            started_at: 1,
+            finished_at: 2,
+        });
+        state::save_gate(stage, &gate, &digest)?;
+        Ok(Value::Null)
+    })
+    .unwrap();
+    let why = propose_start(&mut env, &d).unwrap_err();
+    assert!(why.contains("started by a person"), "{why}");
+    assert!(
+        why.contains(&format!("supervisor task next --task {id}")),
+        "{why}"
+    );
+}
+
+/// Positive control: the same task completed on hook-observed evidence may be followed by an
+/// agent's start.
+#[test]
+fn an_agent_may_start_after_a_persons_task_completed_on_observed_evidence() {
+    let d = dir("person-observed");
+    let (mut env, _) = person(&d, json!({"turns":10}));
+    assert_eq!(handle(&write(&env, "t1"), &mut env), Decision::None);
+    run_check(&mut env, "c1");
+    let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
+    assert!(!matches!(decision, Decision::Block(_)), "{decision:?}");
+    let started = propose_start(&mut env, &d).unwrap();
+    assert!(started["task_id"].as_str().is_some(), "{started}");
 }

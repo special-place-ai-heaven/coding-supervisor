@@ -1236,7 +1236,7 @@ fn t22b_verdict_usage_and_task_mismatch_with_positive_control() {
 /// T24: the stored gate state decides nothing, in either direction; it is read only to fail a
 /// budget_exhausted task (t40, t41).
 #[test]
-fn t24_verdict_ignores_stored_gate_state() {
+fn t24_verdict_judges_receipts_not_the_stored_gate_state() {
     let blocked = Fixture::git("t24-blocked");
     let head = blocked.head();
     blocked.task_stored(
@@ -1656,6 +1656,8 @@ fn t40_verdict_budget_exhausted_task_fails_and_names_its_limit() {
         "{\"v\":1,\"event\":\"PreToolUse\"}\n",
     )
     .unwrap();
+    // The gate records a limit as the cause (`Task::exhaust_limit`).
+    set_next_action(&dir, "task limit reached: 1 of 1 turns");
     let (code, r) = f.verdict_json(&[]);
     assert_eq!(code, 3, "{r}");
     assert_eq!(r["verdict"], "fail", "{r}");
@@ -1689,4 +1691,44 @@ fn t41_verdict_repair_rounds_budget_exhausted_fails_without_limit_text() {
     let human = String::from_utf8_lossy(&f.verdict(&[]).stdout).into_owned();
     assert!(human.contains("task state: budget_exhausted"), "{human}");
     assert!(!human.contains("task limit"), "{human}");
+}
+
+fn set_next_action(dir: &Path, text: &str) {
+    let (_, digest) = read_contract(dir).unwrap();
+    let supervisor_claude_code::state::Stored::Valid(mut gate) =
+        supervisor_claude_code::state::load_gate(dir, &digest).unwrap()
+    else {
+        panic!("no valid gate");
+    };
+    gate.checkpoint.next_action = text.to_owned();
+    save_gate(dir, &gate, &digest).unwrap();
+}
+
+/// WP4 review round 3: spent repair rounds exhausted the task and a limit happens to be reached
+/// too; the text output does not claim the limit as the cause and shows its use apart.
+#[test]
+fn t42_verdict_does_not_claim_a_limit_it_did_not_cause() {
+    let f = Fixture::git("t42");
+    let head = f.head();
+    let (_, dir) = f.task_stored_with(
+        TaskState::BudgetExhausted,
+        &[("C2", true)],
+        &[rc("C2", "observed:{task}:a", &head, 0)],
+        &[("a", 0, &same)],
+        &json!({"limits":{"turns":1}}),
+    );
+    fs::write(
+        dir.join("events.jsonl"),
+        "{\"v\":1,\"event\":\"PreToolUse\"}\n",
+    )
+    .unwrap();
+    let (code, r) = f.verdict_json(&[]);
+    assert_eq!((code, &r["reason"]), (3, &json!("budget_exhausted")), "{r}");
+    let human = String::from_utf8_lossy(&f.verdict(&[]).stdout).into_owned();
+    assert!(human.contains("task state: budget_exhausted\n"), "{human}");
+    assert!(!human.contains("(task limit reached"), "{human}");
+    assert!(
+        human.contains("limit usage now: 1 of 1 turns used"),
+        "{human}"
+    );
 }

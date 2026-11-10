@@ -343,3 +343,17 @@ fn a_task_completed_through_mcp_still_refuses_hook_work_past_its_limit() {
     );
     assert_eq!(common::state(&common::task_state(&s)), "completed");
 }
+
+/// WP4 review round 3: a wall-clock-only contract shows no turn count.
+#[test]
+fn task_state_shows_no_turn_count_for_a_wall_clock_only_limit() {
+    let d = dir("limits-wall-only");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["limits"] = json!({"wall_clock_s":600});
+    common::ok(&s, "task_start", contract);
+    let state = common::task_state(&s);
+    assert_eq!(state["limits"]["wall_clock_s"], 600, "{state}");
+    assert_eq!(state["limits"]["turns"], Value::Null, "{state}");
+    assert_eq!(state["limits"]["turns_used"], Value::Null, "{state}");
+}
