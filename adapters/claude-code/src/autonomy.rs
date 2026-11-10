@@ -1254,6 +1254,16 @@ fn preserves(old: &Value, new: &Value, allow_scope_change: bool) -> Result<(), S
             "contract revision changed the repair budget or removed a forbidden effect".into(),
         );
     }
+    // WP4: an agent may lower or add a task limit, never raise or remove one.
+    if [
+        (old.limits.turns, new.limits.turns),
+        (old.limits.wall_clock_s, new.limits.wall_clock_s),
+    ]
+    .into_iter()
+    .any(|(old, new)| old.is_some_and(|old| new.is_none_or(|new| new > old)))
+    {
+        return Err("contract revision raised or removed a task limit".into());
+    }
     if !allow_scope_change
         && new
             .scope
@@ -1510,6 +1520,18 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 .and_then(|()| observed_completion(&active.dir, &active.task_id, project))
         {
             unverified = Some(why);
+        }
+        // WP4: a person's task (no autonomy.json) completed without observed evidence, e.g. on
+        // caller-asserted MCP receipts, is not replaced by an agent's start, which would shed the
+        // limits the person set; the person moves on with `task next`.
+        if let Some(active) = &active
+            && read(&active.dir.join("autonomy.json"))?.is_none()
+            && observed_completion(&active.dir, &active.task_id, project).is_err()
+        {
+            return Err(format!(
+                "the active task was started by a person and its completion rests on no hook-observed evidence, so an agent cannot replace it; a person runs `supervisor task next --task {} --contract <file>`",
+                active.task_id
+            ));
         }
         let mut contract = add_floor(
             proposal.get("contract").ok_or("start needs a contract")?,

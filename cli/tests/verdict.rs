@@ -155,14 +155,28 @@ impl Fixture {
         receipts: &[Rc],
         runs: &[Run<'_>],
     ) -> (String, PathBuf) {
+        self.task_stored_with(stored, criteria, receipts, runs, &json!({}))
+    }
+    /// [`Self::task_stored`] with `extra` contract fields, e.g. `limits`.
+    fn task_stored_with(
+        &self,
+        stored: TaskState,
+        criteria: &[(&str, bool)],
+        receipts: &[Rc],
+        runs: &[Run<'_>],
+        extra: &Value,
+    ) -> (String, PathBuf) {
         let criteria: Vec<Value> = criteria
             .iter()
             .map(|(id, mandatory)| {
                 json!({"id":id,"check":"candidate_passes_reported_test","mandatory":mandatory,"command":"fixture-check"})
             })
             .collect();
-        let contract = json!({"id":"verdict-fixture","goal":"exercise verdict","criteria":criteria,
+        let mut contract = json!({"id":"verdict-fixture","goal":"exercise verdict","criteria":criteria,
             "scope":[],"forbidden_effects":[],"max_repair_rounds":1});
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            contract[key] = value.clone();
+        }
         let root = self.state_root();
         lifecycle::start_as(
             &root,
@@ -1219,9 +1233,10 @@ fn t22b_verdict_usage_and_task_mismatch_with_positive_control() {
     );
 }
 
-/// T24: the stored gate state is never consulted, in either direction.
+/// T24: the stored gate state decides nothing, in either direction; it is read only to fail a
+/// budget_exhausted task (t40, t41).
 #[test]
-fn t24_verdict_ignores_stored_gate_state() {
+fn t24_verdict_judges_receipts_not_the_stored_gate_state() {
     let blocked = Fixture::git("t24-blocked");
     let head = blocked.head();
     blocked.task_stored(
@@ -1621,4 +1636,99 @@ fn kx06_verdict_foreign_or_invalid_project_json_is_exit_one() {
     assert_exit1_empty(&f.verdict(&["--json"]), "foreign worktree");
     fs::write(&project, "not json").unwrap();
     assert_exit1_empty(&f.verdict(&["--json"]), "invalid project.json");
+}
+
+/// WP4 review: a budget_exhausted task never passes, whatever its receipts say. The verdict
+/// names the state, and the limit when a task limit is reached; the JSON keys are unchanged.
+#[test]
+fn t40_verdict_budget_exhausted_task_fails_and_names_its_limit() {
+    let f = Fixture::git("t40");
+    let head = f.head();
+    let (_, dir) = f.task_stored_with(
+        TaskState::BudgetExhausted,
+        &[("C2", true)],
+        &[rc("C2", "observed:{task}:a", &head, 0)],
+        &[("a", 0, &same)],
+        &json!({"limits":{"turns":1}}),
+    );
+    fs::write(
+        dir.join("events.jsonl"),
+        "{\"v\":1,\"event\":\"PreToolUse\"}\n",
+    )
+    .unwrap();
+    // The gate records a limit as the cause (`Task::exhaust_limit`).
+    set_next_action(&dir, "task limit reached: 1 of 1 turns");
+    let (code, r) = f.verdict_json(&[]);
+    assert_eq!(code, 3, "{r}");
+    assert_eq!(r["verdict"], "fail", "{r}");
+    assert_eq!(r["reason"], "budget_exhausted", "{r}");
+    assert_eq!(
+        keys(&r["task"]),
+        set(&["task_id", "contract_id", "contract_digest"])
+    );
+    let human = String::from_utf8_lossy(&f.verdict(&[]).stdout).into_owned();
+    assert!(human.contains("task state: budget_exhausted"), "{human}");
+    assert!(
+        human.contains("task limit reached: 1 of 1 turns used"),
+        "{human}"
+    );
+}
+
+/// WP4 review round 2: a budget_exhausted task from spent repair rounds, with no limit set, fails
+/// too, and the text output names no limit.
+#[test]
+fn t41_verdict_repair_rounds_budget_exhausted_fails_without_limit_text() {
+    let f = Fixture::git("t41");
+    let head = f.head();
+    f.task_stored(
+        TaskState::BudgetExhausted,
+        &[("C2", true)],
+        &[rc("C2", "observed:{task}:a", &head, 0)],
+        &[("a", 0, &same)],
+    );
+    let (code, r) = f.verdict_json(&[]);
+    assert_eq!((code, &r["reason"]), (3, &json!("budget_exhausted")), "{r}");
+    let human = String::from_utf8_lossy(&f.verdict(&[]).stdout).into_owned();
+    assert!(human.contains("task state: budget_exhausted"), "{human}");
+    assert!(!human.contains("task limit"), "{human}");
+}
+
+fn set_next_action(dir: &Path, text: &str) {
+    let (_, digest) = read_contract(dir).unwrap();
+    let supervisor_claude_code::state::Stored::Valid(mut gate) =
+        supervisor_claude_code::state::load_gate(dir, &digest).unwrap()
+    else {
+        panic!("no valid gate");
+    };
+    gate.checkpoint.next_action = text.to_owned();
+    save_gate(dir, &gate, &digest).unwrap();
+}
+
+/// WP4 review round 3: spent repair rounds exhausted the task and a limit happens to be reached
+/// too; the text output does not claim the limit as the cause and shows its use apart.
+#[test]
+fn t42_verdict_does_not_claim_a_limit_it_did_not_cause() {
+    let f = Fixture::git("t42");
+    let head = f.head();
+    let (_, dir) = f.task_stored_with(
+        TaskState::BudgetExhausted,
+        &[("C2", true)],
+        &[rc("C2", "observed:{task}:a", &head, 0)],
+        &[("a", 0, &same)],
+        &json!({"limits":{"turns":1}}),
+    );
+    fs::write(
+        dir.join("events.jsonl"),
+        "{\"v\":1,\"event\":\"PreToolUse\"}\n",
+    )
+    .unwrap();
+    let (code, r) = f.verdict_json(&[]);
+    assert_eq!((code, &r["reason"]), (3, &json!("budget_exhausted")), "{r}");
+    let human = String::from_utf8_lossy(&f.verdict(&[]).stdout).into_owned();
+    assert!(human.contains("task state: budget_exhausted\n"), "{human}");
+    assert!(!human.contains("(task limit reached"), "{human}");
+    assert!(
+        human.contains("limit usage now: 1 of 1 turns used"),
+        "{human}"
+    );
 }

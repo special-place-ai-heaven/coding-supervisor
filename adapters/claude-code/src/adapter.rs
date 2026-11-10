@@ -5,8 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use coding_supervisor::{
-    Candidate, Criterion, CriterionId, GateError, ReceiptStatus, Task, TaskContract, TaskState,
-    VerificationReceipt,
+    Candidate, Criterion, CriterionId, GateError, LimitReached, ReceiptStatus, Task, TaskContract,
+    TaskState, VerificationReceipt,
 };
 use serde_json::Value;
 
@@ -392,21 +392,53 @@ fn read_only_tool(payload: &Value) -> bool {
     )
 }
 
-/// One read-only shell command with no shell syntax, usable before the prompt is classified.
-/// It still passes the gate-state guard and the action policy, and is observed like any run.
-fn read_only_command(payload: &Value) -> bool {
+/// The words of a Bash command with no shell syntax and no `--output` flag.
+fn simple_words(payload: &Value) -> Option<Vec<&str>> {
     if text(payload, "tool_name") != Some("Bash") {
-        return false;
+        return None;
     }
     let command = payload["tool_input"]["command"]
         .as_str()
         .unwrap_or_default();
     if command.contains([';', '&', '|', '<', '>', '$', '`', '(', ')', '\n', '\r']) {
-        return false;
+        return None;
     }
-    let mut words: Vec<&str> = command.split_whitespace().collect();
+    let words: Vec<&str> = command.split_whitespace().collect();
     if words.iter().any(|w| w.starts_with("--output")) {
+        return None;
+    }
+    Some(words)
+}
+
+/// The supervisor's own read-only status commands.
+fn supervisor_read_only(words: &[&str]) -> bool {
+    matches!(
+        words,
+        ["supervisor", "status", ..]
+            | ["supervisor", "level"]
+            | ["supervisor", "level", "--project", _]
+            | ["supervisor", "level", "status", ..]
+            | ["supervisor", "--help"]
+    )
+}
+
+/// WP4: what still runs at a reached task limit. Narrower than [`inspection`]: a memory save,
+/// the git reads and a `--version` query can run a program the agent prepared (git's diff
+/// drivers and textconv, a program found on PATH).
+fn limit_exempt(payload: &Value) -> bool {
+    read_only_tool(payload)
+        || proposal_command(payload)
+        || simple_words(payload).is_some_and(|words| supervisor_read_only(&words))
+}
+
+/// One read-only shell command with no shell syntax, usable before the prompt is classified.
+/// It still passes the gate-state guard and the action policy, and is observed like any run.
+fn read_only_command(payload: &Value) -> bool {
+    let Some(mut words) = simple_words(payload) else {
         return false;
+    };
+    if supervisor_read_only(&words) {
+        return true;
     }
     // G40: `git -C <dir> <subcommand>` is the same subcommand run in another directory.
     if let ["git", "-C", _, ..] = words.as_slice() {
@@ -434,11 +466,6 @@ fn read_only_command(payload: &Value) -> bool {
             | ["npm", "view" | "ls" | "list", ..]
             | ["ls", ..]
             | ["pwd"]
-            | ["supervisor", "status", ..]
-            | ["supervisor", "level"]
-            | ["supervisor", "level", "--project", _]
-            | ["supervisor", "level", "status", ..]
-            | ["supervisor", "--help"]
     ) || matches!(words.as_slice(), ["git", "branch", flags @ ..]
         if flags.iter().all(|f| matches!(*f, "-a" | "-r" | "-v" | "-vv" | "--all" | "--remotes" | "--list" | "--verbose")))
 }
@@ -720,6 +747,23 @@ fn unregistered_linked_worktree(root: &Path, payload: &Value) -> Option<Decision
     )))
 }
 
+/// WP4: the active task's limits are known not to be reached (or there is no active task).
+/// Anything else, a reached limit or state that cannot be read, sends the call on to the task
+/// gate, which refuses it or fails closed.
+fn no_limit_reached(root: &Path, now: u64) -> bool {
+    match lifecycle::active_task(root) {
+        Ok(None) => true,
+        Ok(Some(active)) => matches!(
+            state::read_contract(&active.dir),
+            Ok((Some(contract), _)) if matches!(
+                crate::limits::usage(&active.dir, &contract, now),
+                Ok(usage) if usage.as_ref().is_none_or(|u| u.reached.is_none())
+            )
+        ),
+        Err(_) => false,
+    }
+}
+
 /// The active task is bound to a different session than this prompt's. Unknown ownership is
 /// not reported as foreign, so the ordinary advice stays.
 fn foreign_task(root: &Path, payload: &Value) -> bool {
@@ -905,7 +949,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
         // Inspection and proposal routes do not need to open or advance the task gate.
         if root.join("intents.json").exists()
             && (read_only_tool(payload)
-                || memory_save(payload)
+                || (memory_save(payload) && no_limit_reached(&root, (env.clock)()))
                 || proposal_command(payload)
                 || (read_only_command(payload)
                     && matches!(lifecycle::active_task(&root), Ok(None))))
@@ -1284,6 +1328,14 @@ fn process(
         }
         _ => {}
     }
+    // WP4: only the events a limit acts on read it; an unreadable journal or clock fails closed
+    // through `adapter_error`, never as unlimited.
+    let usage = if matches!(event, "PreToolUse" | "Stop" | "SubagentStop") {
+        crate::limits::usage(&env.state_dir, &contract, now)?
+    } else {
+        None
+    };
+    let reached = usage.as_ref().and_then(|usage| usage.reached);
     let mut session = Session::open_with_observed(
         contract,
         stored,
@@ -1304,9 +1356,25 @@ fn process(
         session.gate.continuations,
         session.gate.handback_refusals.clone(),
     );
+    let refused_for_limit = match reached {
+        Some(reached) if event == "PreToolUse" && !limit_exempt(payload) => {
+            Some(session.limit_denial(reached, reasons))
+        }
+        _ => None,
+    };
     let decision = match event {
+        _ if let Some(denial) = refused_for_limit => denial,
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
-        "Stop" => session.stop(payload, &env.state_dir, agent, now, reasons)?,
+        // WP4: at a reached limit the stop is released whatever the judgement, so it spends no
+        // repair round on a refusal nobody sees.
+        "Stop" => session.stop(
+            payload,
+            &env.state_dir,
+            agent,
+            now,
+            reached.is_none(),
+            reasons,
+        )?,
         "PreToolUse" => session.pre_tool_use(payload)?,
         "PostToolUse" if text(payload, "tool_name") == Some("Agent") => {
             session.agent_result(payload)
@@ -1317,6 +1385,24 @@ fn process(
             Decision::None
         }
         _ => Decision::None,
+    };
+    // WP4: at a reached limit a stop the gate would refuse, or let through uncertified (the
+    // refusal cap, a pending job), goes ahead NOT certified, and the refusal it never showed is
+    // not counted; a completion, and a completed task's warning, are untouched.
+    let uncertified = match &decision {
+        Decision::Block(_) => true,
+        // The refusal cap and a pending job let a stop through uncertified; a completed task's
+        // warning that the tree moved on is not that.
+        Decision::System(_) => session.task.state() != TaskState::Completed,
+        _ => false,
+    };
+    let release = matches!(event, "Stop" | "SubagentStop") && uncertified;
+    let decision = match (decision, reached, &usage) {
+        (_, Some(reached), Some(usage)) if release => {
+            (session.gate.continuations, session.gate.handback_refusals) = refusals.clone();
+            session.limit_release(event, reached, usage, &env.state_dir, reasons)?
+        }
+        (decision, ..) => decision,
     };
     if env.level.level == Level::Audit && matches!(decision, Decision::Block(_) | Decision::Deny(_))
     {
@@ -2137,6 +2223,124 @@ impl Session {
         Ok(())
     }
 
+    /// WP4: a PreToolUse at a reached limit that is not [`limit_exempt`] is refused whatever the
+    /// task state, and changes no task state: both limits are recomputed at every call, so a
+    /// task whose evidence is complete still completes at its next Stop.
+    fn limit_denial(&self, reached: LimitReached, reasons: &mut Vec<String>) -> Decision {
+        let what = crate::limits::reached_text(&reached);
+        reasons.push(format!("task limit reached: {what}"));
+        Decision::Deny(format!(
+            "GATE: task limit reached: {what}; new work is refused; still allowed: read-only tools (Read, Grep, Glob, LS and read-only lookups), `supervisor status`, `supervisor level` and intent proposals; stop and report"
+        ))
+    }
+
+    /// WP4: a Stop or SubagentStop the gate refused or let through uncertified, at a reached
+    /// limit, goes ahead. A SubagentStop is released silently (any output there keeps the worker
+    /// running) and changes no task state, so the chair's own Stop still decides. A Stop says so
+    /// in a report and moves a task that is not terminal to `budget_exhausted`; a completed task
+    /// stays completed.
+    fn limit_release(
+        &mut self,
+        event: &str,
+        reached: LimitReached,
+        usage: &crate::limits::Usage,
+        dir: &Path,
+        reasons: &mut Vec<String>,
+    ) -> Result<Decision, String> {
+        let completed = self.task.state() == TaskState::Completed;
+        let what = crate::limits::reached_text(&reached);
+        let released = if completed {
+            "the task stays completed on the candidate it completed on"
+        } else {
+            "NOT certified"
+        };
+        reasons.push(format!("task limit reached: {what}; released, {released}"));
+        if event == "SubagentStop" {
+            return Ok(Decision::None);
+        }
+        let _ = self.task.exhaust_limit(reached);
+        let remaining = self.remaining_criteria();
+        let stop = if completed {
+            "this stop goes ahead; the task stays completed on the candidate it completed on, and the current work is NOT certified"
+        } else {
+            "this stop goes ahead NOT certified"
+        };
+        Ok(Decision::System(blocking_words(&format!(
+            "GATE: task limit reached ({what}); {stop}; elapsed {}; {}; remaining criteria: {}; the work tree and logs are kept; for new work, {}",
+            usage
+                .elapsed_s
+                .map_or("unknown (no approval time)".to_owned(), |s| format!(
+                    "{s} s"
+                )),
+            usage
+                .turns_used
+                .map_or("turns not counted (no turn limit)".to_owned(), |n| format!(
+                    "turns used {n}"
+                )),
+            if remaining.is_empty() {
+                "none".to_owned()
+            } else {
+                remaining.join(", ")
+            },
+            crate::limits::way_out(dir, &self.task_id)?
+        ))))
+    }
+
+    /// Mandatory criteria with no passing, hook-linked receipt on the task's candidate. When
+    /// reproduction is required, a baseline is met by its failure on the starting candidate, as
+    /// in [`Self::observed_failure`].
+    fn remaining_criteria(&self) -> Vec<&str> {
+        let reproduction = self.task.requires_reproduction();
+        self.criteria
+            .iter()
+            .filter(|c| {
+                c.mandatory
+                    && !if reproduction && c.is_baseline() {
+                        self.reproduced(c)
+                    } else {
+                        self.passing_on_checkpoint(c)
+                    }
+            })
+            .map(|c| c.id.0.as_str())
+            .collect()
+    }
+
+    /// Baseline `c` reproduced: its latest hook-observed receipt failed on the starting
+    /// candidate, the rule [`Self::observed_evidence`] applies in strict mode.
+    fn reproduced(&self, c: &Criterion) -> bool {
+        let Some(dir) = self.evidence_dir.as_ref() else {
+            return false;
+        };
+        self.gate
+            .receipts
+            .iter()
+            .rev()
+            .find(|r| r.criterion == c.id && receipt_is_observed(dir, &self.task_id, r))
+            .is_some_and(|r| {
+                Some(&r.candidate) == self.task.starting_candidate()
+                    && r.exit_code.is_some_and(|code| code != 0)
+            })
+    }
+
+    /// The rule of [`Self::observed_evidence`]: the latest hook-observed receipt for `c` on the
+    /// task's candidate exited 0, so a check that passed and then failed is not met.
+    fn passing_on_checkpoint(&self, c: &Criterion) -> bool {
+        let (Some(candidate), Some(dir)) = (self.task.candidate(), self.evidence_dir.as_ref())
+        else {
+            return false;
+        };
+        self.gate
+            .receipts
+            .iter()
+            .rev()
+            .find(|r| {
+                r.criterion == c.id
+                    && &r.candidate == candidate
+                    && receipt_is_observed(dir, &self.task_id, r)
+            })
+            .is_some_and(|r| r.exit_code == Some(0))
+    }
+
     fn subagent_stop(
         &mut self,
         payload: &Value,
@@ -2373,6 +2577,7 @@ impl Session {
         dir: &Path,
         agent: &str,
         now: u64,
+        repair: bool,
         reasons: &mut Vec<String>,
     ) -> Result<Decision, String> {
         let message = text(payload, "last_assistant_message").unwrap_or_default();
@@ -2445,6 +2650,7 @@ impl Session {
                 reasons.push(why.clone());
                 let mut round = "";
                 if autonomous
+                    && repair
                     && matches!(
                         self.task.state(),
                         TaskState::Verifying | TaskState::ReadyForReview
@@ -2738,26 +2944,13 @@ impl Session {
         // Repair: restore() skips receipt replay for terminal states, so after a resume the
         // persisted gate receipts are the only evidence the summary can still report.
         let recorded: Vec<&str> = if cp.state.is_terminal() {
-            cp.candidate
-                .map(|candidate| {
-                    self.criteria
-                        .iter()
-                        .filter(|c| {
-                            self.gate.receipts.iter().any(|r| {
-                                r.criterion == c.id
-                                    && r.candidate == candidate
-                                    // The acceptance path refuses mcp-asserted receipts
-                                    // here and a failing run satisfies nothing; the
-                                    // display must agree with it.
-                                    && !r.output_ref.starts_with(MCP_ASSERTED)
-                                    && r.exit_code == Some(0)
-                                    && r.claim_supported
-                            })
-                        })
-                        .map(|c| c.id.0.as_str())
-                        .collect()
-                })
-                .unwrap_or_default()
+            // The acceptance path refuses mcp-asserted receipts here and a failing run
+            // satisfies nothing; the display must agree with it.
+            self.criteria
+                .iter()
+                .filter(|c| self.passing_on_checkpoint(c))
+                .map(|c| c.id.0.as_str())
+                .collect()
         } else {
             Vec::new()
         };

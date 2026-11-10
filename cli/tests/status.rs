@@ -252,3 +252,111 @@ fn status_reports_requested_and_effective_mode() {
     assert!(report["level_note"].is_null(), "{report}");
     let _ = fs::remove_dir_all(&root);
 }
+
+/// WP4: a task with limits shows them with turns used and elapsed seconds; one without shows none.
+#[test]
+fn status_shows_task_limits_and_their_use() {
+    let f = Fixture::new("limits");
+    let root = PathBuf::from(f.status("claude-code")["project_state"].as_str().unwrap());
+    let started = lifecycle::start_as(&root, &supervisor_claude_code::state::Writer::task_start(None),&json!({"id":"fixture","goal":"limits fixture","criteria":[{"id":"C2","check":"test","mandatory":true,"command":"fixture-check"}],"scope":[],"forbidden_effects":[],"max_repair_rounds":2,"limits":{"turns":40,"wall_clock_s":600}}),false,None,None).unwrap();
+    let task = root
+        .join("tasks")
+        .join(started["task_id"].as_str().unwrap());
+    fs::write(
+        task.join("events.jsonl"),
+        "{\"v\":1,\"event\":\"PreToolUse\"}\n{\"v\":1,\"event\":\"Stop\"}\n{\"v\":1,\"event\":\"PreToolUse\"}\n",
+    )
+    .unwrap();
+    let report = f.status("claude-code");
+    let limits = &report["task"]["limits"];
+    assert_eq!(limits["turns"], 40, "{report}");
+    assert_eq!(limits["wall_clock_s"], 600, "{report}");
+    assert_eq!(limits["turns_used"], 2, "{report}");
+    assert!(
+        limits["elapsed_s"].as_u64().is_some_and(|s| s < 600),
+        "{report}"
+    );
+    assert_eq!(limits["reached"], Value::Null, "{report}");
+    let human = Command::new(BIN)
+        .args(["status", "--harness", "claude-code", "--project"])
+        .arg(f.0.join("project"))
+        .env("SUPERVISOR_STATE_DIR", f.0.join("state"))
+        .output()
+        .unwrap();
+    let human = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        human.contains("limits: 2 of 40 turns used; elapsed "),
+        "{human}"
+    );
+    assert!(human.contains(" s of 600 s"), "{human}");
+    for word in ["spend", "cost"] {
+        assert!(!human.to_lowercase().contains(word), "{human}");
+    }
+
+    let plain = Fixture::new("no-limits");
+    let root = PathBuf::from(
+        plain.status("claude-code")["project_state"]
+            .as_str()
+            .unwrap(),
+    );
+    lifecycle::start_as(&root, &supervisor_claude_code::state::Writer::task_start(None),&json!({"id":"fixture","goal":"no limits","criteria":[{"id":"C2","check":"test","mandatory":true,"command":"fixture-check"}],"scope":[],"forbidden_effects":[],"max_repair_rounds":2}),false,None,None).unwrap();
+    assert_eq!(plain.status("claude-code")["task"].get("limits"), None);
+}
+
+/// WP4 review: a clock earlier than `approval.at` is named, not shown as a silent 0 s elapsed.
+#[test]
+fn status_names_a_clock_behind_the_approval_time() {
+    let f = Fixture::new("clock-behind");
+    let root = PathBuf::from(f.status("claude-code")["project_state"].as_str().unwrap());
+    let started = lifecycle::start_as(&root, &supervisor_claude_code::state::Writer::task_start(None),&json!({"id":"fixture","goal":"clock fixture","criteria":[{"id":"C2","check":"test","mandatory":true,"command":"fixture-check"}],"scope":[],"forbidden_effects":[],"max_repair_rounds":2,"limits":{"wall_clock_s":600}}),false,None,None).unwrap();
+    let path = root
+        .join("tasks")
+        .join(started["task_id"].as_str().unwrap())
+        .join("contract.json");
+    let mut contract: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let at = contract["approval"]["at"].as_u64().unwrap();
+    contract["approval"]["at"] = (at + 1_000_000).into();
+    fs::write(&path, format!("{contract}\n")).unwrap();
+    let report = f.status("claude-code");
+    assert_eq!(
+        report["task"]["limits"]["clock_behind_approval"], true,
+        "{report}"
+    );
+    let human = Command::new(BIN)
+        .args(["status", "--harness", "claude-code", "--project"])
+        .arg(f.0.join("project"))
+        .env("SUPERVISOR_STATE_DIR", f.0.join("state"))
+        .output()
+        .unwrap();
+    let human = String::from_utf8_lossy(&human.stdout);
+    assert!(human.contains("clock behind approval"), "{human}");
+}
+
+/// WP4 review round 3: without a turn limit the journal is not read, so the line shows only the
+/// wall clock.
+#[test]
+fn status_shows_a_wall_clock_only_limit_without_a_turn_count() {
+    let f = Fixture::new("wall-only");
+    let root = PathBuf::from(f.status("claude-code")["project_state"].as_str().unwrap());
+    lifecycle::start_as(&root, &supervisor_claude_code::state::Writer::task_start(None),&json!({"id":"fixture","goal":"wall fixture","criteria":[{"id":"C2","check":"test","mandatory":true,"command":"fixture-check"}],"scope":[],"forbidden_effects":[],"max_repair_rounds":2,"limits":{"wall_clock_s":600}}),false,None,None).unwrap();
+    let report = f.status("claude-code");
+    assert_eq!(
+        report["task"]["limits"]["turns_used"],
+        Value::Null,
+        "{report}"
+    );
+    let human = Command::new(BIN)
+        .args(["status", "--harness", "claude-code", "--project"])
+        .arg(f.0.join("project"))
+        .env("SUPERVISOR_STATE_DIR", f.0.join("state"))
+        .output()
+        .unwrap();
+    let human = String::from_utf8_lossy(&human.stdout);
+    let line = human
+        .lines()
+        .find(|l| l.starts_with("limits: "))
+        .unwrap_or_else(|| panic!("{human}"));
+    assert!(line.starts_with("limits: elapsed "), "{line}");
+    assert!(line.ends_with(" s of 600 s"), "{line}");
+    assert!(!line.contains("turns"), "{line}");
+}
