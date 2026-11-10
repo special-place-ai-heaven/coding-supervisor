@@ -7,9 +7,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use coding_supervisor::{
-    CandidateId, Criterion, GateError, Review, TaskState, VerificationReceipt, review_met,
-};
+use coding_supervisor::{CandidateId, Criterion, Review, TaskState, VerificationReceipt};
 use serde_json::{Value, json};
 use supervisor_claude_code::adapter::{MCP_ASSERTED, now, receipts_observed};
 use supervisor_claude_code::candidate::{GitCandidate, Unobserved};
@@ -262,14 +260,7 @@ fn review_report(policy: &Review, reviews: &[StoredReview], head: &Head) -> (Val
             true,
         );
     };
-    let records: Vec<_> = reviews.iter().map(|s| s.review.clone()).collect();
-    let reason = review_met(policy, &records, candidate)
-        .err()
-        .map(|e| match e {
-            GateError::ReviewRejected { .. } => "review_rejected",
-            GateError::ReviewNotIndependent => "review_not_independent",
-            _ => "review_required",
-        });
+    let reason = review::unmet_reason(policy, reviews, candidate);
     let latest = review::latest(reviews, candidate).map(review::record_json);
     (
         json!({"required":policy.required,"independent":policy.independent,"met":reason.is_none(),"reason":reason,"latest":latest}),

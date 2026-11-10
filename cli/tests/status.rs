@@ -374,7 +374,7 @@ fn status_shows_the_review_policy_and_the_latest_review() {
     let report = f.status("claude-code");
     assert_eq!(
         report["task"]["review"],
-        json!({"required":true,"independent":true,"latest":null}),
+        json!({"required":true,"independent":true,"met":null,"reason":null,"latest":null}),
         "{report}"
     );
     let task = root
@@ -402,6 +402,19 @@ fn status_shows_the_review_policy_and_the_latest_review() {
             decision: ReviewDecision::Rejected,
             findings: vec!["secret-finding-text".into()],
             at: 1_000,
+            candidate: candidate.clone(),
+            provenance: ReviewProvenance::Observed,
+        },
+        tree: None,
+    });
+    // A later approval is the latest review, and r1's rejection still refuses.
+    gate.reviews.push(StoredReview {
+        review: ReviewRecord {
+            reviewer: "r2".into(),
+            model: None,
+            decision: ReviewDecision::Approved,
+            findings: vec!["fine".into()],
+            at: 1_001,
             candidate,
             provenance: ReviewProvenance::Observed,
         },
@@ -410,8 +423,9 @@ fn status_shows_the_review_policy_and_the_latest_review() {
     save_gate(&task, &gate, &digest).unwrap();
     let report = f.status("claude-code");
     assert_eq!(
-        report["task"]["review"]["latest"],
-        json!({"reviewer":"r1","model":null,"decision":"rejected","provenance":"observed","findings":1,"at":1000}),
+        report["task"]["review"],
+        json!({"required":true,"independent":true,"met":false,"reason":"review_rejected",
+            "latest":{"reviewer":"r2","model":null,"decision":"approved","provenance":"observed","findings":1,"at":1001}}),
         "{report}"
     );
     let human = Command::new(BIN)
@@ -426,7 +440,8 @@ fn status_shows_the_review_policy_and_the_latest_review() {
         .find(|l| l.starts_with("review: "))
         .unwrap_or_else(|| panic!("{human}"));
     assert!(line.contains("required, independent"), "{line}");
-    assert!(line.contains("rejected by r1"), "{line}");
+    assert!(line.contains("approved by r2"), "{line}");
+    assert!(line.contains("not met (review rejected)"), "{line}");
     assert!(line.contains("model not reported"), "{line}");
     assert!(line.contains("1 finding"), "{line}");
     assert!(!human.contains("secret-finding-text"), "{human}");

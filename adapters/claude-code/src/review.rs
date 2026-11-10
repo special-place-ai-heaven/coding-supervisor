@@ -2,7 +2,7 @@
 //! `REVIEW: REJECTED`, with `FINDING: <text>` lines directly below it. The rest of the message is
 //! left for the handback header, so a builder can review its own work and report as usual.
 
-use coding_supervisor::{CandidateId, Review, ReviewDecision};
+use coding_supervisor::{CandidateId, GateError, Review, ReviewDecision, review_met};
 use serde_json::Value;
 
 use crate::state::{StoredReview, decision_name, obj, provenance_name};
@@ -87,15 +87,37 @@ pub fn latest<'a>(
         .find(|s| &s.review.candidate == candidate)
 }
 
-/// `{required, independent, latest}` for status and `task_state`.
+/// Why the core rule [`review_met`] refuses `reviews` on `candidate`, as the reason code that
+/// verdict, status and `task_state` share; `None` when it is met.
+pub fn unmet_reason(
+    policy: &Review,
+    reviews: &[StoredReview],
+    candidate: &CandidateId,
+) -> Option<&'static str> {
+    let records: Vec<_> = reviews.iter().map(|s| s.review.clone()).collect();
+    review_met(policy, &records, candidate)
+        .err()
+        .map(|e| match e {
+            GateError::ReviewRejected { .. } => "review_rejected",
+            GateError::ReviewNotIndependent => "review_not_independent",
+            _ => "review_required",
+        })
+}
+
+/// `{required, independent, met, reason, latest}` for status and `task_state`: the latest review
+/// is never shown without whether the rule is met (a rejection beside it still refuses). `met`
+/// and `reason` are null without a candidate.
 pub fn summary_json(
     policy: &Review,
     reviews: &[StoredReview],
     candidate: Option<&CandidateId>,
 ) -> Value {
+    let reason = candidate.map(|c| unmet_reason(policy, reviews, c));
     obj([
         ("required", policy.required.into()),
         ("independent", policy.independent.into()),
+        ("met", reason.map(|r| r.is_none()).into()),
+        ("reason", reason.flatten().into()),
         (
             "latest",
             candidate

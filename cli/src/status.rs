@@ -477,6 +477,13 @@ fn review_line(review: &Value) -> String {
         (true, false) => "required",
         (false, false) => "not required",
     };
+    // The rule's answer comes first, so an approval is never read without a rejection beside it.
+    let met = match (&review["met"], review["reason"].as_str()) {
+        (Value::Bool(true), _) => "met".to_owned(),
+        (Value::Bool(false), Some(reason)) => format!("not met ({})", reason.replace('_', " ")),
+        _ => "unknown".to_owned(),
+    };
+    let policy = format!("{policy}; {met}");
     let latest = &review["latest"];
     if latest.is_null() {
         return format!("{policy}; latest: none on this candidate");

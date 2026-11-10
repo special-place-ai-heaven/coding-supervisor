@@ -380,7 +380,7 @@ fn task_state_shows_the_review_policy_and_the_latest_review() {
     let state = common::task_state(&s);
     assert_eq!(
         state["review"],
-        json!({"required":true,"independent":false,"latest":null}),
+        json!({"required":true,"independent":false,"met":false,"reason":"review_required","latest":null}),
         "{state}"
     );
     let task = supervisor_claude_code::lifecycle::active_task(s.state_dir())
@@ -391,24 +391,28 @@ fn task_state_shows_the_review_policy_and_the_latest_review() {
         panic!("no valid gate");
     };
     let candidate = gate.checkpoint.candidate.clone().unwrap();
-    gate.reviews.push(StoredReview {
+    let review = |reviewer: &str, decision, at| StoredReview {
         review: ReviewRecord {
-            reviewer: "r1".into(),
+            reviewer: reviewer.into(),
             model: Some("claude-haiku-5-5".into()),
-            decision: ReviewDecision::Approved,
+            decision,
             findings: vec![],
-            at: 5,
-            candidate,
+            at,
+            candidate: candidate.clone(),
             provenance: ReviewProvenance::Observed,
         },
         tree: None,
-    });
+    };
+    gate.reviews.push(review("r1", ReviewDecision::Rejected, 5));
+    gate.reviews.push(review("r2", ReviewDecision::Approved, 6));
     save_gate(&task.dir, &gate, &digest).unwrap();
     let state = common::task_state(&s);
     assert_eq!(
-        state["review"]["latest"],
-        json!({"reviewer":"r1","model":"claude-haiku-5-5","decision":"approved","provenance":"observed","findings":0,"at":5}),
+        state["review"],
+        json!({"required":true,"independent":false,"met":false,"reason":"review_rejected",
+            "latest":{"reviewer":"r2","model":"claude-haiku-5-5","decision":"approved","provenance":"observed","findings":0,"at":6}}),
         "{state}"
     );
-    common::ok(&s, "accept_try", json!({}));
+    let why = common::refused(&s, "accept_try", json!({}));
+    assert!(why.contains("rejected"), "{why}");
 }
