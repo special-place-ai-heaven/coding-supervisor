@@ -473,7 +473,13 @@ fn a_replay_after_a_later_call_is_still_served() {
 fn an_unparsable_journal_line_is_a_turn_and_an_unreadable_journal_fails_closed() {
     let d = dir("unparsable");
     let mut env = env(&d, &contract(json!({"turns":2})));
-    fs::write(env.state_dir.join("events.jsonl"), b"not a journal line\n\xff\xfe\n").unwrap();
+    // A torn last line, as a crash mid-append would leave. Bytes that are not UTF-8 are refused
+    // earlier, by the task transaction, which copies the task's files as text.
+    fs::write(
+        env.state_dir.join("events.jsonl"),
+        "not a journal line\n{\"v\":1,\"event\":\"Pre\n",
+    )
+    .unwrap();
     let decision = handle(&write(&env, "t1"), &mut env);
     assert!(limit_denial(&decision), "{decision:?}");
     assert!(
