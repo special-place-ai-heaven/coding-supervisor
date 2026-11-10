@@ -781,6 +781,24 @@ impl Production {
     }
     /// Every mandatory criterion of the written contract runs once, exit 0.
     fn checks(&mut self, id: &str) {
+        self.checks_as("main", id);
+    }
+    /// `agent` edits a file in scope.
+    fn write_as(&mut self, agent: &str) {
+        let path = self.project.join("src").join("lib.rs");
+        let d = self.hook(json!({"hook_event_name":"PreToolUse","session_id":"session",
+            "agent_id":agent,"tool_use_id":format!("w-{agent}"),"tool_name":"Write",
+            "tool_input":{"file_path":path,"content":"x"}}));
+        assert_eq!(d, Decision::None, "{agent} write");
+    }
+    /// The gate fields a record-only judgement must leave alone.
+    fn untouched(&self) -> Value {
+        let g = self.gate();
+        json!({"receipts":g["receipts"].as_array().map_or(0, Vec::len),
+            "handback_refusals":g["handback_refusals"],"continuations":g["continuations"],
+            "consumed_repair_rounds":g["consumed_repair_rounds"],"state":g["state"]})
+    }
+    fn checks_as(&mut self, agent: &str, id: &str) {
         let written = self.written();
         for (n, criterion) in written["criteria"].as_array().unwrap().iter().enumerate() {
             if criterion["mandatory"] != true {
@@ -792,7 +810,7 @@ impl Production {
             };
             for kind in ["PreToolUse", "PostToolUse"] {
                 let d = self.hook(json!({"hook_event_name":kind,"session_id":"session",
-                    "agent_id":"main","tool_use_id":format!("{id}-{n}"),"tool_name":"Bash",
+                    "agent_id":agent,"tool_use_id":format!("{id}-{n}"),"tool_name":"Bash",
                     "tool_input":{"command":command},"tool_response":{"interrupted":false}}));
                 assert_eq!(d, Decision::None, "{kind}");
             }
@@ -1021,7 +1039,17 @@ fn an_approval_is_not_carried_onto_a_docs_only_edit() {
         why.contains("review required"),
         "the receipts carried, the review did not: {why}"
     );
-    assert_ne!(gate(&env)["state"], "completed");
+    assert!(!why.contains("C2"), "the check is met: {why}");
+    let g = gate(&env);
+    assert!(
+        g["receipts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["candidate"] == g["candidate"] && r["exit_code"] == 0),
+        "a receipt on the edited candidate: {g}"
+    );
+    assert_ne!(g["state"], "completed");
 }
 
 /// A reviewer's rejection is recorded while this session's prompt is still unclassified, and
@@ -1039,6 +1067,10 @@ fn a_rejection_is_recorded_on_a_pending_or_discussion_turn() {
             required(),
         );
         p.checks("c1");
+        // A builder with a run the gate has not synced yet: a full judgement would record its
+        // receipt and judge its handback; record-only changes neither.
+        p.write_as("w1");
+        p.checks_as("w1", "w1-c");
         let event = p.prompt_only("hold on a moment");
         if discussion {
             supervisor_claude_code::autonomy::propose(
@@ -1057,24 +1089,34 @@ fn a_rejection_is_recorded_on_a_pending_or_discussion_turn() {
         }
         assert_eq!(p.review("a1", "REVIEW: APPROVED"), Decision::None);
         assert!(p.reviews().is_empty(), "an approval here stays dropped");
+        let before = p.untouched();
         assert_eq!(
             p.review("r1", "REVIEW: REJECTED\nFINDING: wrong result"),
             Decision::None
         );
+        if discussion {
+            let handback = "REVIEW: REJECTED\nFINDING: still wrong\nVERDICT: PASS\nCHECKS RUN: 0";
+            assert_eq!(p.review("w1", handback), Decision::None);
+        }
+        assert_eq!(p.untouched(), before, "discussion={discussion}: record-only");
         let stored = p.reviews();
-        assert_eq!(stored.len(), 1, "discussion={discussion}: {stored:?}");
+        let want = if discussion { 2 } else { 1 };
+        assert_eq!(stored.len(), want, "discussion={discussion}: {stored:?}");
         assert_eq!(stored[0]["decision"], "rejected");
         assert_eq!(stored[0]["reviewer"], "r1");
         let task = p.task.clone();
         p.apply("continue", Some(&task), Value::Null).unwrap();
+        // w1's run reached no receipt (its handback was not judged), so the chair reruns.
+        p.checks("c2");
         let why = blocked(&p.stop()).to_owned();
         assert!(why.contains("rejected by r1"), "{why}");
     }
 }
 
-/// Another session's task is never written to, a rejection included.
+/// Guard of the ownership check: another session's task is never written to, a rejection
+/// included.
 #[test]
-fn another_sessions_rejection_records_nothing() {
+fn ownership_guard_another_sessions_rejection_records_nothing() {
     let mut p = production("other-session", required());
     p.checks("c1");
     assert_eq!(
