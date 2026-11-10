@@ -164,17 +164,19 @@ jobs:
 
       # WP6: Cargo.lock against the RustSec advisory database. Known vulnerabilities fail the job;
       # unmaintained, unsound and yanked notices only warn (cargo audit's defaults). The prebuilt
-      # binary is pinned by version and archive digest and kept in ~/.cargo/bin across runs.
+      # cargo-audit 0.22.2 archive is downloaded on every run into this job's own $RUNNER_TEMP,
+      # its SHA-256 checked on every run, and the binary run from there; nothing is installed or
+      # kept on the runner, so no cached binary is ever trusted.
       - name: Audit dependencies for known vulnerabilities
         run: |
           version=0.22.2
-          if ! cargo audit --version 2> /dev/null | grep -qx "cargo-audit-audit $version"; then
-            name="cargo-audit-x86_64-unknown-linux-musl-v$version"
-            curl -LsSf -o /tmp/cargo-audit.tgz "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv$version/$name.tgz"
-            echo "7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428  /tmp/cargo-audit.tgz" | sha256sum -c -
-            tar zxf /tmp/cargo-audit.tgz --strip-components=1 -C "${CARGO_HOME:-$HOME/.cargo}/bin" "$name/cargo-audit"
-          fi
-          cargo audit
+          name="cargo-audit-x86_64-unknown-linux-musl-v$version"
+          dir="$RUNNER_TEMP/cargo-audit"
+          rm -rf "$dir" && mkdir -p "$dir"
+          curl -LsSf -o "$dir/cargo-audit.tgz" "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv$version/$name.tgz"
+          echo "7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428  $dir/cargo-audit.tgz" | sha256sum -c -
+          tar zxf "$dir/cargo-audit.tgz" --strip-components=1 -C "$dir" "$name/cargo-audit"
+          "$dir/cargo-audit" audit
 
   # Formatting, lint and the dependency check are the same on both systems and run on Linux.
   windows-hosted:
