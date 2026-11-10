@@ -250,6 +250,38 @@ caller-supplied MCP candidate. This is an accepted risk under the same-user limi
 (tamper detected, not prevented), not something the verdict defends against. Do not
 describe `observed` as tamper-proof.
 
+### Signed receipts
+
+`supervisor receipt sign` signs the active task's stored state with this machine's Ed25519
+key and writes `signature.json` beside the task. What is signed is a short text statement:
+the task id, the SHA-256 of contract.json, gate.json's verified chain head and the
+candidate. The key is created at the first sign: in the Windows Credential Manager, or on
+Linux in `$XDG_CONFIG_HOME/coding-supervisor/signing-key` (else `~/.config/...`), mode
+0600. `SUPERVISOR_SIGNING_KEY_FILE=<path>` selects a key file instead (on Windows that file
+gets no permission check). When the key cannot be used, `sign` prints `unsigned` with a
+reason and writes nothing. It prints the entry to add to `supervisor-keys.json` at the
+repository root:
+
+```json
+{"keys":[{"key_id":"<16 hex>","public_key":"<64 hex>","revoked_at":null}]}
+```
+
+The key id is the first 16 hex characters of the SHA-256 of the public key. To rotate, add
+the new key and leave the old one; to revoke, set `revoked_at` (a revoked key fails
+whatever any time says).
+
+`supervisor receipt verify [--keys <file>]` recomputes the statement from the stored state
+and prints `valid` (exit 0), `unsigned` when there is no signature (exit 3), or `invalid`
+with a reason (exit 3): the state changed after signing, the signature does not match, or
+the key is unlisted, revoked or its keys file is absent or does not parse. `supervisor
+status` shows `signed <key_id> (<storage>)`, `stale`, `unsigned` or `unknown`; it compares
+the statement only and does not check the signature. Signing changes no gate decision and
+no verdict.
+
+A signature says "this machine's supervisor signed this state", not proof: an agent running
+as the same OS user can read the key and can set the override variable. The key list means
+something only when CI reads it from the base commit.
+
 ## Harness support
 
 | Harness | Supervisor integration and evidence |
