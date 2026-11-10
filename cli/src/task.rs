@@ -26,8 +26,7 @@ pub fn run(command: &str, flags: &Flags) -> Result<(), Failure> {
                 .map_err(|_| Failure::Error("contract is not valid JSON".to_owned()))?;
             lifecycle::start_as(
                 &root,
-                "task-start",
-                Some(&project),
+                &supervisor_claude_code::state::Writer::task_start(Some(&project)),
                 &contract,
                 command == "next",
                 flags.value("--disposition"),

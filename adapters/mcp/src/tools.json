@@ -52,7 +52,7 @@
             "required": ["id", "check", "mandatory", "command"]
           }
         },
-        "forbidden_effects": {"type": "array", "items": {"type": "string"}, "description": "Declared only; the gate does not enforce it."},
+        "forbidden_effects": {"type": "array", "items": {"type": "string"}, "description": "Effects the task must not cause. The Claude Code hooks refuse typed entries (deny_path:, deny_git:, deny_argv_prefix:, deny_git_push_target:, deny_git_force_push) in strict mode; other entries are recorded for a reviewer."},
         "scope": {"type": "array", "items": {"type": "string"}, "description": "Path prefixes the candidate may change."},
         "max_repair_rounds": {"type": "integer", "minimum": 0}
       },

@@ -400,7 +400,15 @@ fn assert_v2(c: &Value, via: &str) {
 fn task_start_writes_v2() {
     let d = dir("start");
     let root = d.0.join("state");
-    let started = lifecycle::start(&root, &v1(), false, None, None).unwrap();
+    let started = lifecycle::start_as(
+        &root,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &v1(),
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     let task = root
         .join("tasks")
         .join(started["task_id"].as_str().unwrap());
@@ -411,8 +419,24 @@ fn task_start_writes_v2() {
     // Replaying the same start request is still recognised as the same request.
     let mut request = v1();
     request["event_id"] = "once".into();
-    let first = lifecycle::start(&d.0.join("replay"), &request, false, None, None).unwrap();
-    let again = lifecycle::start(&d.0.join("replay"), &request, false, None, None).unwrap();
+    let first = lifecycle::start_as(
+        &d.0.join("replay"),
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &request,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    let again = lifecycle::start_as(
+        &d.0.join("replay"),
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &request,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(again["replayed"], true, "{again}");
     assert_eq!(first["task_id"], again["task_id"]);
 }
@@ -521,7 +545,15 @@ fn a_saved_contract_is_checked_before_it_is_written() {
         let d = dir(&format!("bad-{i}"));
         let root = d.0.join("state");
         assert!(
-            lifecycle::start(&root, &c, false, None, None).is_err(),
+            lifecycle::start_as(
+                &root,
+                &supervisor_claude_code::state::Writer::task_start(None),
+                &c,
+                false,
+                None,
+                None
+            )
+            .is_err(),
             "{c}"
         );
         assert!(!root.join("tasks").exists(), "{c}: a task was written");
@@ -573,7 +605,15 @@ fn a_revision_keeps_the_approval_isolation_and_base() {
     fs::create_dir(project.join(".git")).unwrap();
     let mut operator = v1();
     operator["criteria"][0]["command"] = "python verify.py".into();
-    let started = lifecycle::start(&root, &operator, false, None, None).unwrap();
+    let started = lifecycle::start_as(
+        &root,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &operator,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     let id = started["task_id"].as_str().unwrap().to_owned();
     let task = root.join("tasks").join(&id);
     let before = written(&task);
@@ -617,7 +657,15 @@ fn start_warns_when_it_replaces_caller_fields() {
     c["isolation"] = "worktree".into();
     c["approval"] = json!({"by":"someone","at":1,"via":"elsewhere"});
     c["base_sha"] = "0123456789abcdef0123456789abcdef01234567".into();
-    let started = lifecycle::start(&d.0.join("state"), &c, false, None, None).unwrap();
+    let started = lifecycle::start_as(
+        &d.0.join("state"),
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &c,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     let warnings = started["warnings"].to_string();
     for key in ["isolation", "approval", "base_sha"] {
         assert!(warnings.contains(key), "{key}: {started}");

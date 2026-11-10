@@ -113,31 +113,11 @@ fn legacy_pending(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// [`start_as`] by `task-start` with no project known, so no repository head is recorded.
-pub fn start(
-    root: &Path,
-    contract: &Value,
-    next: bool,
-    requested: Option<&str>,
-    expected: Option<&str>,
-) -> Result<Value, String> {
-    start_as(
-        root,
-        "task-start",
-        None,
-        contract,
-        next,
-        requested,
-        expected,
-    )
-}
-
 /// Start or replace an active task. The contract ID remains caller-owned; task_id is generated.
-/// `via` names the writer in the stored contract's approval; `project` supplies its base_sha.
+/// `writer` is recorded in the stored contract's approval and supplies its base_sha.
 pub fn start_as(
     root: &Path,
-    via: &str,
-    project: Option<&Path>,
+    writer: &state::Writer,
     contract: &Value,
     next: bool,
     requested: Option<&str>,
@@ -151,7 +131,7 @@ pub fn start_as(
     {
         return Err("autonomous tasks require a prompt-bound cancellation proposal".to_owned());
     }
-    let (response, writes) = plan_start(root, (via, project), contract, next, requested, expected)?;
+    let (response, writes) = plan_start(root, writer, contract, next, requested, expected)?;
     tx.commit(writes)?;
     Ok(response)
 }
@@ -159,13 +139,20 @@ pub fn start_as(
 /// Caller holds the project transaction lock; allows prompt consumption and activation to commit together.
 pub(crate) fn plan_start(
     root: &Path,
-    (via, project): (&str, Option<&Path>),
+    writer: &state::Writer,
     contract: &Value,
     next: bool,
     requested: Option<&str>,
     expected: Option<&str>,
 ) -> Result<(Value, Vec<(PathBuf, String)>), String> {
-    let parsed = state::contract_from(contract)?;
+    // What is saved is what is checked: a v1-shaped request is stored as v2, so its v2 fields
+    // must load as v2 now rather than fail every later read. The request digests below stay
+    // over the caller's contract, so a replay still matches.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let stored = state::stamp_v2(contract, writer, now);
+    let parsed = state::contract_from(&stored)?;
     legacy_pending(root)?;
     let previous = active_task(root)?;
     if let Some(previous) = &previous {
@@ -242,11 +229,6 @@ pub(crate) fn plan_start(
         ));
     }
     let prefix = PathBuf::from("tasks").join(&id);
-    // The request digests above stay over the caller's contract, so a replay still matches.
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let stored = state::stamp_v2(contract, via, project, now);
     writes.push((prefix.join("contract.json"), format!("{stored}\n")));
     writes.push((prefix.join("task.json"), format!("{}\n", json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"recovery_of":recovery_of,"start_event_id":contract.get("event_id"),"start_request_digest":crate::sha256::hex(contract.to_string().as_bytes())}))));
     writes.push((
@@ -254,11 +236,27 @@ pub(crate) fn plan_start(
         format!("{}\n", json!({"schema":2,"task_id":id})),
     ));
     let mut response = json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"state":"queued","recovery_of":recovery_of});
+    let mut warnings = Vec::new();
     if !parsed.forbidden_effects.is_empty() {
         // F13b: only typed entries in strict mode become refusals (M5); a reviewer checks the rest.
-        response["warnings"] = json!([
-            "forbidden_effects are recorded but not enforced, except typed entries (deny_path:, deny_git:, deny_argv_prefix:, deny_git_push_target:, deny_git_force_push) in strict mode; a reviewer must check the rest. Pushes to main, master or origin/HEAD, force-pushes and npm publish are refused by default from enforce up"
-        ]);
+        warnings.push("forbidden_effects are recorded but not enforced, except typed entries (deny_path:, deny_git:, deny_argv_prefix:, deny_git_push_target:, deny_git_force_push) in strict mode; a reviewer must check the rest. Pushes to main, master or origin/HEAD, force-pushes and npm publish are refused by default from enforce up".to_owned());
+    }
+    let replaced: Vec<&str> = ["isolation", "approval", "base_sha"]
+        .into_iter()
+        .filter(|key| {
+            contract
+                .get(*key)
+                .is_some_and(|v| Some(v) != stored.get(*key))
+        })
+        .collect();
+    if !replaced.is_empty() {
+        warnings.push(format!(
+            "{} replaced by the writer's own record: the gate stores who started the task, the repository head and isolation none (until WP3)",
+            replaced.join(", ")
+        ));
+    }
+    if !warnings.is_empty() {
+        response["warnings"] = warnings.into();
     }
     Ok((response, writes))
 }

@@ -53,6 +53,8 @@ pub struct TaskContract {
     pub artifacts: Vec<String>,
     pub review: Review,
     pub isolation: Isolation,
+    /// Loaded from a v1 file through the in-memory migration; the file itself stays v1.
+    pub migrated_from_v1: bool,
 }
 /// Recorded, not proven: the writer's own account of who applied a contract.
 #[derive(Clone, Debug, PartialEq, Eq)]

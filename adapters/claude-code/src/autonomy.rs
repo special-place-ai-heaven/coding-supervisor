@@ -1518,7 +1518,7 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         contract["event_id"] = format!("autonomy-{id}").into();
         let (mut response, task_writes) = lifecycle::plan_start(
             root,
-            ("agent-proposal", Some(project)),
+            &state::Writer::agent(project),
             &contract,
             active.is_some(),
             None,
@@ -1681,6 +1681,19 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 if let Some(floor) = metadata.get("requirement_floor") {
                     preserves(floor, &new, event["source"] == "hook")?;
                 }
+                // The agent cannot assert these: a revision keeps the task's approval (WP4 counts
+                // wall clock from approval.at), isolation and base. What is saved is checked.
+                let mut stored = new.clone();
+                if let Some(fields) = stored.as_object_mut() {
+                    fields.insert("schema_version".to_owned(), 2.into());
+                    for key in ["approval", "isolation", "base_sha"] {
+                        match old.get(key) {
+                            Some(kept) => fields.insert(key.to_owned(), kept.clone()),
+                            None => fields.remove(key),
+                        };
+                    }
+                }
+                state::contract_from(&stored)?;
                 let stage = root.join("autonomy-stage");
                 if stage.exists() {
                     fs::remove_dir_all(&stage).map_err(|e| e.to_string())?;
@@ -1719,10 +1732,6 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 }
                 metadata["invalidated_dispatches"] =
                     invalidated.into_iter().collect::<Vec<_>>().into();
-                // The agent cannot assert the approval; a revision keeps the task's base.
-                let mut stored =
-                    state::stamp_v2(&new, "agent-proposal", None, crate::adapter::now());
-                stored["base_sha"] = old.get("base_sha").cloned().unwrap_or(Value::Null);
                 atomic_write(
                     &stage.join("contract.json"),
                     format!("{stored}\n").as_bytes(),

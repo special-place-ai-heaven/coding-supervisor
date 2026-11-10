@@ -324,27 +324,24 @@ pub const V1_MIGRATION: &str = "v1-migration";
 pub const V1_MIGRATED_REASON: &str =
     "contract v1 migrated in memory: isolation none, no limits, no review requirement";
 
-/// A contract of any schema this binary reads. A file without `schema_version` (or with 1) is
-/// v1 and loads only through [`migrate_v1`]; the file itself is never rewritten, since gate.json
-/// is chained to its bytes. A newer schema is refused rather than read as v2. Unknown fields
-/// are ignored, as they always were.
+/// A contract of any schema this binary reads. `schema_version` as a JSON integer of 2 is v2
+/// and above 2 is refused rather than read as v2. Anything else (absent, null, 0, 1, a string,
+/// a float) is v1, because main ignored the field, and loads only through [`migrate_v1`]; the
+/// file itself is never rewritten, since gate.json is chained to its bytes. Unknown fields are
+/// ignored, as they always were.
 pub fn contract_from(v: &Value) -> Result<TaskContract, String> {
-    match v.get("schema_version") {
-        None => migrate_v1(v),
-        Some(n) => match n.as_u64() {
-            Some(1) => migrate_v1(v),
-            Some(2) => contract_v2(v),
-            Some(n) if n > 2 => Err(format!(
-                "contract schema_version {n} is newer than this supervisor {} reads (up to 2); update the supervisor",
-                env!("CARGO_PKG_VERSION")
-            )),
-            _ => Err("field schema_version is not 1 or 2".to_owned()),
-        },
+    match present(v, "schema_version").and_then(Value::as_u64) {
+        Some(2) => contract_v2(v),
+        Some(n) if n > 2 => Err(format!(
+            "contract schema_version {n} is newer than this supervisor {} reads (up to 2); update the supervisor",
+            env!("CARGO_PKG_VERSION")
+        )),
+        _ => migrate_v1(v),
     }
 }
 
 /// v1 in memory: shared checkout, no limits, no review requirement, no base, and an approval
-/// that says only that it was migrated.
+/// that says only that it was migrated. Nothing that loaded on main is refused here.
 fn migrate_v1(v: &Value) -> Result<TaskContract, String> {
     Ok(TaskContract {
         approval: Some(Approval {
@@ -352,12 +349,22 @@ fn migrate_v1(v: &Value) -> Result<TaskContract, String> {
             at: None,
             via: V1_MIGRATION.to_owned(),
         }),
+        migrated_from_v1: true,
         ..shared_fields(v)?
     })
 }
 
 fn contract_v2(v: &Value) -> Result<TaskContract, String> {
-    let approval = present(v, "approval")
+    let object = |key: &str| {
+        present(v, key)
+            .map(|x| {
+                x.is_object()
+                    .then_some(x)
+                    .ok_or_else(|| format!("field {key} is not an object"))
+            })
+            .transpose()
+    };
+    let approval = object("approval")?
         .map(|a| {
             Ok::<_, String>(Approval {
                 by: optional_string(a, "by", "approval.by")?,
@@ -371,8 +378,9 @@ fn contract_v2(v: &Value) -> Result<TaskContract, String> {
             })
         })
         .transpose()?;
+    let limits = object("limits")?;
     let limit = |key: &str| {
-        present(v, "limits")
+        limits
             .and_then(|l| present(l, key))
             .map(|n| {
                 n.as_u64()
@@ -381,7 +389,7 @@ fn contract_v2(v: &Value) -> Result<TaskContract, String> {
             })
             .transpose()
     };
-    let review = present(v, "review")
+    let review = object("review")?
         .map(|r| {
             let flag = |key: &str| {
                 field(r, key)?
@@ -404,6 +412,8 @@ fn contract_v2(v: &Value) -> Result<TaskContract, String> {
         None => Vec::new(),
         Some(_) => strings(v, "artifacts")?,
     };
+    let shared = shared_fields(v)?;
+    inside_repository("scope", &shared.scope)?;
     inside_repository("artifacts", &artifacts)?;
     Ok(TaskContract {
         base_sha: optional_string(v, "base_sha", "base_sha")?,
@@ -415,7 +425,7 @@ fn contract_v2(v: &Value) -> Result<TaskContract, String> {
         artifacts,
         review,
         isolation,
-        ..shared_fields(v)?
+        ..shared
     })
 }
 
@@ -433,10 +443,9 @@ fn optional_string(v: &Value, key: &str, name: &str) -> Result<Option<String>, S
         .transpose()
 }
 
-/// Repository-relative paths only: no `..` segment (also as a `{a,b}` alternative), no root,
-/// drive or UNC prefix, in either separator. Nothing else is refused, so every shape that
-/// loaded before still loads. Scope matching is exact or by prefix, never a glob, so a glob
-/// cannot reach further than these checks.
+/// v2 only: repository-relative paths, no `..` segment (also as a `{a,b}` alternative), no
+/// root, drive or UNC prefix, in either separator. This is a check of the text; scope matching
+/// itself runs on canonical paths at judgement time. Nothing else is refused.
 fn inside_repository(key: &str, paths: &[String]) -> Result<(), String> {
     for path in paths {
         let p = path.replace('\\', "/");
@@ -467,14 +476,12 @@ fn shared_fields(v: &Value) -> Result<TaskContract, String> {
             })
         })
         .collect::<Result<_, String>>()?;
-    let scope = strings(v, "scope")?;
-    inside_repository("scope", &scope)?;
     Ok(TaskContract {
         id: TaskId(string(v, "id")?),
         goal: string(v, "goal")?,
         criteria,
         forbidden_effects: strings(v, "forbidden_effects")?,
-        scope,
+        scope: strings(v, "scope")?,
         budget: Budget {
             max_repair_rounds: small(v, "max_repair_rounds")?,
         },
@@ -484,29 +491,66 @@ fn shared_fields(v: &Value) -> Result<TaskContract, String> {
         artifacts: vec![],
         review: Review::default(),
         isolation: Isolation::default(),
+        migrated_from_v1: false,
     })
+}
+
+/// Who writes a task's contract.json: the approval's `via`, the project whose HEAD becomes
+/// `base_sha`, and the OS user, which only a person's own `supervisor task start` records (an
+/// agent's environment would otherwise name a person as the approver). Recorded, not proven.
+pub struct Writer<'a> {
+    via: &'static str,
+    project: Option<&'a Path>,
+    by: Option<String>,
+}
+impl<'a> Writer<'a> {
+    /// `supervisor task start` or `task next`, run by a person.
+    pub fn task_start(project: Option<&'a Path>) -> Self {
+        let by = std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .ok();
+        Self {
+            via: "task-start",
+            project,
+            by,
+        }
+    }
+    /// The MCP `task_start` tool, called by an agent.
+    pub fn mcp(project: &'a Path) -> Self {
+        Self {
+            via: "mcp-task-start",
+            project: Some(project),
+            by: None,
+        }
+    }
+    /// A prompt-bound agent proposal.
+    pub fn agent(project: &'a Path) -> Self {
+        Self {
+            via: "agent-proposal",
+            project: Some(project),
+            by: None,
+        }
+    }
 }
 
 /// contract.json as a writer stores it: the caller's contract as v2, with `base_sha` the
 /// project's HEAD (null outside a repository, before the first commit, or with no project) and
-/// an approval naming the writer and the OS user where known. Recorded, not proven.
-/// `isolation` is `none` until worktree creation exists (WP3).
-pub fn stamp_v2(contract: &Value, via: &str, project: Option<&Path>, now: u64) -> Value {
-    let head = project
+/// the writer's approval. `isolation` is `none` until worktree creation exists (WP3). The
+/// caller checks the result with [`contract_from`] before saving it.
+pub fn stamp_v2(contract: &Value, writer: &Writer, now: u64) -> Value {
+    let head = writer
+        .project
         .and_then(|p| crate::git::run(p, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok())
         .filter(|out| out.status.success())
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
         .filter(|sha| !sha.is_empty());
-    let by = std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .ok();
     let mut c = contract.clone();
     if let Some(fields) = c.as_object_mut() {
         fields.insert("schema_version".to_owned(), 2.into());
         fields.insert("base_sha".to_owned(), head.into());
         fields.insert(
             "approval".to_owned(),
-            json!({"by": by, "at": now, "via": via}),
+            json!({"by": writer.by, "at": now, "via": writer.via}),
         );
         fields.insert("isolation".to_owned(), "none".into());
     }

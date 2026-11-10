@@ -67,13 +67,12 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
             "forbidden_effects": [],
             "scope": ["src/", "tests/"],
             "max_repair_rounds": 2,
+            // People commit the draft; `task start` records the approval and the base.
+            "schema_version": 2,
+            "isolation": "none",
         });
-        let contract = supervisor_claude_code::state::stamp_v2(
-            &contract,
-            "init-draft",
-            Some(&project),
-            supervisor_claude_code::adapter::now(),
-        );
+        supervisor_claude_code::state::contract_from(&contract)
+            .map_err(|e| Failure::Error(format!("contract: {e}")))?;
         let text = serde_json::to_string_pretty(&contract)
             .map_err(|e| Failure::Error(format!("contract: {e}")))?;
         supervisor_claude_code::transaction::atomic_write(&path, (text + "\n").as_bytes())

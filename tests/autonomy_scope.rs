@@ -16,6 +16,7 @@ fn acceptance(scope: &str, changed: &str) -> Result<(), GateError> {
         artifacts: vec![],
         review: Default::default(),
         isolation: Default::default(),
+        migrated_from_v1: false,
     });
     task.start_preparing().unwrap();
     task.observe_candidate(Candidate {

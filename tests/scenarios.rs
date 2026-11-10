@@ -40,6 +40,7 @@ fn contract() -> TaskContract {
         artifacts: vec![],
         review: Default::default(),
         isolation: Default::default(),
+        migrated_from_v1: false,
     }
 }
 fn candidate(digest: &str) -> Candidate {
