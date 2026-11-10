@@ -1640,8 +1640,8 @@ fn kx06_verdict_foreign_or_invalid_project_json_is_exit_one() {
 /// WP4 review: a budget_exhausted task never passes, whatever its receipts say. The verdict
 /// names the state, and the limit when a task limit is reached; the JSON keys are unchanged.
 #[test]
-fn t29_verdict_budget_exhausted_task_fails_and_names_its_limit() {
-    let f = Fixture::git("t29");
+fn t40_verdict_budget_exhausted_task_fails_and_names_its_limit() {
+    let f = Fixture::git("t40");
     let head = f.head();
     let (_, dir) = f.task_stored_with(
         TaskState::BudgetExhausted,
@@ -1669,4 +1669,23 @@ fn t29_verdict_budget_exhausted_task_fails_and_names_its_limit() {
         human.contains("task limit reached: 1 of 1 turns used"),
         "{human}"
     );
+}
+
+/// WP4 review round 2: a budget_exhausted task from spent repair rounds, with no limit set, fails
+/// too, and the text output names no limit.
+#[test]
+fn t41_verdict_repair_rounds_budget_exhausted_fails_without_limit_text() {
+    let f = Fixture::git("t41");
+    let head = f.head();
+    f.task_stored(
+        TaskState::BudgetExhausted,
+        &[("C2", true)],
+        &[rc("C2", "observed:{task}:a", &head, 0)],
+        &[("a", 0, &same)],
+    );
+    let (code, r) = f.verdict_json(&[]);
+    assert_eq!((code, &r["reason"]), (3, &json!("budget_exhausted")), "{r}");
+    let human = String::from_utf8_lossy(&f.verdict(&[]).stdout).into_owned();
+    assert!(human.contains("task state: budget_exhausted"), "{human}");
+    assert!(!human.contains("task limit"), "{human}");
 }

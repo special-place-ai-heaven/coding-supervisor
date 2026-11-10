@@ -164,7 +164,8 @@ fn the_turn_limit_admits_exactly_its_number_of_judged_calls() {
     );
     assert!(why.contains("still allowed: read-only tools"), "{why}");
     plain(why);
-    assert_eq!(gate_state(&env), TaskState::BudgetExhausted);
+    // A refusal changes no task state: both limits are recomputed at every call.
+    assert_eq!(gate_state(&env), TaskState::Verifying);
 }
 
 /// At a limit only read-only tools, intent proposals and the supervisor's own read-only status
@@ -261,7 +262,7 @@ fn the_wall_clock_is_checked_at_stop_with_no_tool_call_in_between() {
         "task limit reached",
         "elapsed 700 s of 600 s",
         "NOT certified",
-        "turns used 0",
+        "turns not counted (no turn limit)",
         "remaining criteria: C2",
         "work tree and logs are kept",
     ] {
@@ -502,18 +503,9 @@ fn an_unparsable_journal_line_is_a_turn_and_an_unreadable_journal_fails_closed()
         matches!(&decision, Decision::Deny(why) if why.contains("fails closed")),
         "{decision:?}"
     );
-    // Without a turn limit the journal is not read for limits.
-    let d = dir("unreadable-unlimited");
-    let mut unlimited = self::env(&d, &contract(json!({})));
-    fs::write(
-        unlimited.state_dir.join("events.jsonl"),
-        "not a journal line\n",
-    )
-    .unwrap();
-    assert_eq!(
-        handle(&write(&unlimited, "t1"), &mut unlimited),
-        Decision::None
-    );
+    // Without a turn limit the journal is not read for limits. Every judged call also appends
+    // to the journal, so a directory there fails any call; `limits::tests` shows the read is
+    // skipped for a wall-clock-only contract.
 }
 
 #[test]
@@ -651,6 +643,10 @@ fn an_agent_revision_cannot_raise_or_remove_a_limit() {
 
 /// The production layout: prompts registered (`intents.json`), the task under `tasks/<id>`.
 fn production(d: &Dir, limits: Value) -> (Env, String) {
+    production_rounds(d, limits, 2)
+}
+
+fn production_rounds(d: &Dir, limits: Value, rounds: u32) -> (Env, String) {
     set_clock(APPROVED_AT);
     fs::write(
         d.0.join("Cargo.toml"),
@@ -678,7 +674,7 @@ fn production(d: &Dir, limits: Value) -> (Env, String) {
         .unwrap()
         .unwrap();
     let contract = json!({"id":"wp4","goal":"limits","scope":["src/"],"forbidden_effects":[],
-        "max_repair_rounds":2,"limits":limits,
+        "max_repair_rounds":rounds,"limits":limits,
         "criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}]});
     let started = autonomy::propose(
         &env.state_dir,
@@ -797,4 +793,177 @@ fn a_memory_save_is_refused_at_the_limit_in_the_production_layout() {
     );
     let decision = handle(&save, &mut env);
     assert!(limit_denial(&decision), "{decision:?}");
+}
+
+/// A refused call after the last turn changes nothing: a task whose passing check was its last
+/// turn still completes, certified, at the next Stop.
+#[test]
+fn a_refused_call_after_the_last_turn_does_not_stop_certification() {
+    let d = dir("refused-then-stop");
+    let mut env = env(&d, &contract(json!({"turns":2})));
+    assert_eq!(handle(&write(&env, "t1"), &mut env), Decision::None);
+    run_check(&mut env, "c1");
+    assert!(limit_denial(&handle(&bash(&env, "g1", "git status"), &mut env)));
+    let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
+    assert!(
+        !matches!(&decision, Decision::Block(_))
+            && !matches!(&decision, Decision::System(text) if text.contains("NOT certified")),
+        "{decision:?}"
+    );
+    assert_eq!(gate_state(&env), TaskState::Completed);
+}
+
+/// The same with the wall clock: evidence complete, the clock expires, one call is refused,
+/// and the Stop still completes.
+#[test]
+fn a_refused_call_after_the_wall_clock_does_not_stop_certification() {
+    let d = dir("late-refused-then-stop");
+    let mut env = env(&d, &contract(json!({"wall_clock_s":600})));
+    assert_eq!(handle(&write(&env, "t1"), &mut env), Decision::None);
+    run_check(&mut env, "c1");
+    set_clock(APPROVED_AT + 900);
+    assert!(limit_denial(&handle(&write(&env, "t2"), &mut env)));
+    let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
+    assert!(
+        !matches!(&decision, Decision::Block(_))
+            && !matches!(&decision, Decision::System(text) if text.contains("NOT certified")),
+        "{decision:?}"
+    );
+    assert_eq!(gate_state(&env), TaskState::Completed);
+}
+
+fn task_gate(env: &Env, id: &str) -> state::Gate {
+    let dir = env.state_dir.join("tasks").join(id);
+    let (_, digest) = state::read_contract(&dir).unwrap();
+    match state::load_gate(&dir, &digest).unwrap() {
+        Stored::Valid(gate) => gate,
+        _ => panic!("no valid gate"),
+    }
+}
+
+/// A stop released for a limit spends no repair round on a refusal nobody saw, also when the
+/// repair budget is already spent, and its report names the limit.
+#[test]
+fn a_stop_released_for_a_limit_spends_no_repair_round() {
+    for rounds in [2, 0] {
+        let d = dir("release-rounds");
+        let (mut env, id) = production_rounds(&d, json!({"turns":1}), rounds);
+        let mut run = bash(&env, "c1", "cargo test");
+        assert_eq!(handle(&run, &mut env), Decision::None);
+        run["hook_event_name"] = "PostToolUseFailure".into();
+        run["error"] = "Exit code 101\nfailed".into();
+        handle(&run, &mut env);
+        let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
+        let Decision::System(report) = &decision else {
+            panic!("stop not released with a report: {decision:?}");
+        };
+        assert!(
+            report.contains("task limit reached (1 of 1 turns used)"),
+            "{rounds}: {report}"
+        );
+        let gate = task_gate(&env, &id);
+        assert_eq!(gate.checkpoint.consumed_repair_rounds, 0, "{rounds}: {report}");
+        assert_eq!(gate.repair_charged, None, "{rounds}: {report}");
+    }
+}
+
+/// Stops the gate would let through without certifying (the refusal cap, a pending job) are
+/// released at a reached limit with the report too.
+#[test]
+fn a_stop_past_the_refusal_cap_at_a_limit_gets_the_report() {
+    let d = dir("cap");
+    let mut env = env(&d, &contract(json!({"wall_clock_s":600})));
+    assert_eq!(handle(&write(&env, "t1"), &mut env), Decision::None);
+    for _ in 0..3 {
+        let refused = handle(&stop(&env, "Done. All checks pass."), &mut env);
+        assert!(matches!(refused, Decision::Block(_)), "{refused:?}");
+    }
+    set_clock(APPROVED_AT + 700);
+    let decision = handle(&stop(&env, "Done. All checks pass."), &mut env);
+    assert!(
+        matches!(&decision, Decision::System(text) if text.contains("task limit reached (elapsed 700 s of 600 s)") && text.contains("NOT certified")),
+        "{decision:?}"
+    );
+    assert_eq!(gate_state(&env), TaskState::BudgetExhausted);
+}
+
+/// A completed task's handback released at a limit is not called uncertified.
+#[test]
+fn a_completed_task_handback_at_the_limit_is_not_called_uncertified() {
+    let d = dir("completed-handback");
+    let mut env = env(&d, &contract(json!({"turns":1})));
+    let mut first = write(&env, "w1");
+    first["agent_id"] = "worker".into();
+    assert_eq!(handle(&first, &mut env), Decision::None);
+    set_gate_state(&env, TaskState::Completed);
+    let handback = json!({"hook_event_name":"SubagentStop","cwd":cwd(&env),"session_id":"session",
+        "agent_id":"worker","stop_hook_active":false,"last_assistant_message":"done"});
+    assert_eq!(handle(&handback, &mut env), Decision::None);
+    let journal = String::from_utf8(journal(&env)).unwrap();
+    let last: Value = serde_json::from_str(journal.lines().last().unwrap()).unwrap();
+    assert!(
+        last["reasons"].to_string().contains("task limit reached"),
+        "{last}"
+    );
+    assert!(
+        !last["reasons"].to_string().contains("NOT certified"),
+        "{last}"
+    );
+    assert_eq!(gate_state(&env), TaskState::Completed);
+}
+
+/// With prompts registered, a memory save whose task state cannot be read is not answered early:
+/// it goes on to the task gate and fails closed there (before WP4 it was answered early).
+#[test]
+fn a_memory_save_with_unreadable_task_state_fails_closed() {
+    let d = dir("memory-unreadable");
+    let (mut env, id) = production(&d, json!({"turns":5}));
+    fs::write(
+        env.state_dir.join("tasks").join(&id).join("contract.json"),
+        "{ not json",
+    )
+    .unwrap();
+    let save = tool(&env, "m1", "mcp__everos__memory_add", json!({"content":"x"}));
+    let decision = handle(&save, &mut env);
+    assert!(
+        matches!(&decision, Decision::Deny(why) if why.contains("fails closed")),
+        "{decision:?}"
+    );
+}
+
+/// At a limit the exempt proposal path cannot cancel, pause or replace the task: control actions
+/// need the person's own control prompt, and a new task needs the active one completed.
+#[test]
+fn the_proposal_path_cannot_lift_a_limit() {
+    let d = dir("proposal-at-limit");
+    let (mut env, id) = production(&d, json!({"turns":1}));
+    assert_eq!(handle(&bash(&env, "g1", "git status"), &mut env), Decision::None);
+    assert!(limit_denial(&handle(&write(&env, "w1"), &mut env)));
+    let prompt = json!({"hook_event_name":"UserPromptSubmit","cwd":d.0,"session_id":"session",
+        "prompt_id":"p2","prompt":"Keep going with the change"});
+    assert!(matches!(handle(&prompt, &mut env), Decision::Context { .. }));
+    let store: Value = serde_json::from_str(
+        &fs::read_to_string(env.state_dir.join("intents.json")).unwrap(),
+    )
+    .unwrap();
+    let latest = store["latest"]["session"].as_str().unwrap().to_owned();
+    let event = &store["events"][&latest];
+    for action in ["cancel", "pause"] {
+        let why = autonomy::propose(
+            &env.state_dir,
+            &d.0,
+            &json!({"event_id":latest,"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],
+                "action":action,"task_id":id}),
+        )
+        .unwrap_err();
+        assert!(why.contains("control prompt"), "{action}: {why}");
+    }
+    let why = autonomy::propose(
+        &env.state_dir,
+        &d.0,
+        &json!({"event_id":latest,"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],
+            "action":"start","task_id":null,"contract":contract(json!({}))}),
+    )
+    .unwrap_err();
+    assert!(why.contains("unfinished task retained"), "{why}");
 }

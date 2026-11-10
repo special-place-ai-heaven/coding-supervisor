@@ -150,4 +150,24 @@ mod tests {
         assert_eq!(shown, Some(json!({"state":"unknown"})));
         assert_eq!(none, None);
     }
+
+    /// A wall-clock-only contract does not read the journal, so it cannot fail on it.
+    #[test]
+    fn a_wall_clock_only_contract_does_not_read_the_journal() {
+        let dir = std::env::temp_dir().join(format!(
+            "supervisor-limits-wall-only-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("events.jsonl")).unwrap();
+        let contract = crate::state::contract_from(&json!({"schema_version":2,"id":"c",
+            "goal":"g","scope":[],"forbidden_effects":[],"max_repair_rounds":1,
+            "approval":{"by":null,"at":1_000,"via":"task-start"},"limits":{"wall_clock_s":600},
+            "criteria":[{"id":"C2","check":"t","mandatory":true,"command":"x"}]}))
+        .unwrap();
+        let usage = usage(&dir, &contract, 1_700);
+        let _ = fs::remove_dir_all(&dir);
+        let usage = usage.expect("the journal was read").expect("a limit is set");
+        assert!(usage.reached.is_some());
+    }
 }
