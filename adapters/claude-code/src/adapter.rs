@@ -1098,6 +1098,18 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                         IntentAuthority::Actionable => None,
                     };
                     if let Some(refusal) = refusal {
+                        // WP5: a reviewer's rejection on a pending or discussion turn of this
+                        // session is still recorded, record-only, under this lock and after the
+                        // ownership recheck above; the route's answer (none) is unchanged.
+                        if refusal == Decision::None
+                            && event == "SubagentStop"
+                            && opens_with_rejection(payload)
+                        {
+                            env.state_dir = dir.to_path_buf();
+                            let decision = handle_inner(payload, env, observed, &root, true);
+                            env.state_dir = root.clone();
+                            return Ok(decision?.to_json().unwrap_or(Value::Null));
+                        }
                         return Ok(refusal.to_json().unwrap_or(Value::Null));
                     }
                     if event == "PreToolUse"
@@ -1112,7 +1124,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     }
                 }
                 env.state_dir = dir.to_path_buf();
-                let decision = handle_inner(payload, env, observed, &root);
+                let decision = handle_inner(payload, env, observed, &root, false);
                 env.state_dir = root.clone();
                 // An Err leaves the staged task uncommitted.
                 Ok(decision?.to_json().unwrap_or(Value::Null))
@@ -1168,13 +1180,20 @@ fn decision_from_json(v: &Value) -> Option<Decision> {
     None
 }
 
+/// WP5: a final message that opens with `REVIEW: REJECTED`.
+fn opens_with_rejection(payload: &Value) -> bool {
+    crate::review::parse(text(payload, "last_assistant_message").unwrap_or_default())
+        .is_some_and(|p| p.decision == Some(coding_supervisor::ReviewDecision::Rejected))
+}
+
 /// `root` is the state root, which holds the project's `failure` setting; `env.state_dir` is the
-/// staged task here.
+/// staged task here. `review_only`: a SubagentStop that only records its review (WP5).
 fn handle_inner(
     payload: &Value,
     env: &mut Env,
     observed: Result<Candidate, String>,
     root: &Path,
+    review_only: bool,
 ) -> Result<Decision, String> {
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let agent = text(payload, "agent_id").unwrap_or("main");
@@ -1190,6 +1209,7 @@ fn handle_inner(
         observed,
         event,
         agent,
+        review_only,
         &mut reasons,
         &mut trace,
     )
@@ -1235,6 +1255,7 @@ fn process(
     observed: Result<Candidate, String>,
     event: &str,
     agent: &str,
+    review_only: bool,
     reasons: &mut Vec<String>,
     trace: &mut Trace,
 ) -> Result<Decision, String> {
@@ -1350,7 +1371,10 @@ fn process(
         session.tree = CurrentTree::new(Path::new(&tree_at), &env.state_dir);
     }
     if matches!(event, "Stop" | "SubagentStop") {
-        session.sync_observed_receipts(&env.state_dir, agent, now, reasons)?;
+        // Record-only: no receipt, handback judgement or refusal count changes on that route.
+        if !review_only {
+            session.sync_observed_receipts(&env.state_dir, agent, now, reasons)?;
+        }
         session.transfer_reviews(reasons);
     }
     let refusals = (
@@ -1365,6 +1389,12 @@ fn process(
     };
     let decision = match event {
         _ if let Some(denial) = refused_for_limit => denial,
+        "SubagentStop" if review_only => {
+            let message = text(payload, "last_assistant_message").unwrap_or_default();
+            session.take_review(message, &env.state_dir, agent, now, reasons)?;
+            reasons.push("review recorded on an unjudged turn".to_owned());
+            Decision::None
+        }
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
         // WP4: at a reached limit the stop is released whatever the judgement, so it spends no
         // repair round on a refusal nobody sees.
@@ -2789,8 +2819,14 @@ impl Session {
             return Ok(parsed.rest);
         };
         let Ok(current) = &self.observed else {
-            reasons
-                .push("review not recorded: candidate identity could not be observed".to_owned());
+            // A rejection is never dropped silently: it fails closed through `adapter_error`.
+            if decision == coding_supervisor::ReviewDecision::Rejected {
+                return Err(
+                    "a review rejection cannot be recorded: candidate identity could not be observed"
+                        .to_owned(),
+                );
+            }
+            reasons.push("review not recorded: candidate identity could not be observed".to_owned());
             return Ok(parsed.rest);
         };
         // The chair and any agent that changed something in this task review their own work.

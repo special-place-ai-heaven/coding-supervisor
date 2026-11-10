@@ -749,6 +749,23 @@ impl Production {
         }
         autonomy::propose(&self.env.state_dir, &self.project, &call)
     }
+    /// A prompt recorded for this session and left unclassified.
+    fn prompt_only(&mut self, message: &str) -> Value {
+        self.prompts += 1;
+        autonomy::record_prompt(
+            &self.env.state_dir,
+            &self.project,
+            &json!({"session_id":"session","prompt_id":format!("p{}", self.prompts),"prompt":message}),
+        )
+        .unwrap()
+    }
+    fn review_in(&mut self, session: &str, agent: &str, message: &str) -> Decision {
+        self.hook(json!({"hook_event_name":"SubagentStop","session_id":session,
+            "agent_id":agent,"stop_hook_active":false,"last_assistant_message":message}))
+    }
+    fn reviews(&self) -> Vec<Value> {
+        self.gate()["reviews"].as_array().cloned().unwrap_or_default()
+    }
     fn written(&self) -> Value {
         let dir = self.env.state_dir.join("tasks").join(&self.task);
         serde_json::from_str(&fs::read_to_string(dir.join("contract.json")).unwrap()).unwrap()
@@ -989,4 +1006,76 @@ fn an_approval_is_not_carried_onto_a_docs_only_edit() {
     let why = blocked(&r);
     assert!(why.contains("review required"), "the receipts carried, the review did not: {why}");
     assert_ne!(gate(&env)["state"], "completed");
+}
+
+/// A reviewer's rejection is recorded while this session's prompt is still unclassified, and
+/// while the prompt is a discussion turn; approvals there stay dropped (they fail toward review
+/// required). The write happens under the task lock after the ownership recheck.
+#[test]
+fn a_rejection_is_recorded_on_a_pending_or_discussion_turn() {
+    for discussion in [false, true] {
+        let mut p = production(
+            if discussion { "discussion-reject" } else { "pending-reject" },
+            required(),
+        );
+        p.checks("c1");
+        let event = p.prompt_only("hold on a moment");
+        if discussion {
+            supervisor_claude_code::autonomy::propose(
+                &p.env.state_dir,
+                &p.project,
+                &json!({"event_id":event["event_id"],"nonce":event["nonce"],
+                    "prompt_hash":event["prompt_hash"],"action":"discussion","task_id":p.task}),
+            )
+            .unwrap();
+        } else {
+            assert!(autonomy::pending(&p.env.state_dir, "session").unwrap().is_some());
+        }
+        assert_eq!(p.review("a1", "REVIEW: APPROVED"), Decision::None);
+        assert!(p.reviews().is_empty(), "an approval here stays dropped");
+        assert_eq!(
+            p.review("r1", "REVIEW: REJECTED\nFINDING: wrong result"),
+            Decision::None
+        );
+        let stored = p.reviews();
+        assert_eq!(stored.len(), 1, "discussion={discussion}: {stored:?}");
+        assert_eq!(stored[0]["decision"], "rejected");
+        assert_eq!(stored[0]["reviewer"], "r1");
+        let task = p.task.clone();
+        p.apply("continue", Some(&task), Value::Null).unwrap();
+        let why = blocked(&p.stop()).to_owned();
+        assert!(why.contains("rejected by r1"), "{why}");
+    }
+}
+
+/// Another session's task is never written to, a rejection included.
+#[test]
+fn another_sessions_rejection_records_nothing() {
+    let mut p = production("other-session", required());
+    p.checks("c1");
+    assert_eq!(
+        p.review_in("someone-else", "r1", "REVIEW: REJECTED\nFINDING: wrong"),
+        Decision::None
+    );
+    assert!(p.reviews().is_empty());
+}
+
+struct Unobservable;
+impl CandidateProvider for Unobservable {
+    fn observe(&self) -> Result<Candidate, String> {
+        Err("git rev-parse HEAD failed".into())
+    }
+}
+
+/// A rejection that cannot be bound to a candidate is not dropped silently: it is an adapter
+/// error, which fails closed at `enforce`. An approval there is only journaled.
+#[test]
+fn a_rejection_on_an_unobserved_candidate_fails_closed() {
+    let d = dir("unobserved");
+    let mut env = env_with(&d, &contract(required()), Box::new(Unobservable));
+    assert_eq!(subagent_stop(&mut env, "a1", "REVIEW: APPROVED"), Decision::None);
+    let r = subagent_stop(&mut env, "r1", "REVIEW: REJECTED\nFINDING: wrong");
+    let why = blocked(&r);
+    assert!(why.contains("fails closed"), "{why}");
+    plain(why);
 }
