@@ -1170,6 +1170,25 @@ fn a_revision_drops_approvals_and_keeps_rejections() {
     assert_eq!(kept[0]["decision"], "rejected");
 }
 
+/// Item 4: a builder's rejection on a pending-prompt turn gets the unclassified refusal, and the
+/// rejection is still recorded (caller-asserted), record-only.
+#[test]
+fn a_builders_rejection_on_a_pending_turn_is_recorded() {
+    let mut p = production("pending-builder", required());
+    p.checks("c1");
+    p.write_as("w1");
+    p.checks_as("w1", "w1-c");
+    p.prompt_only("hold on a moment");
+    let before = p.untouched();
+    let r = p.review("w1", "REVIEW: REJECTED\nFINDING: the tests fail");
+    assert!(matches!(r, Decision::Block(_)), "the route's refusal stays: {r:?}");
+    assert_eq!(p.untouched(), before);
+    let stored = p.reviews();
+    assert_eq!(stored.len(), 1, "{stored:?}");
+    assert_eq!(stored[0]["decision"], "rejected");
+    assert_eq!(stored[0]["provenance"], "caller-asserted");
+}
+
 /// Item 3 through the hook: a loosely written rejection is recorded, a loosely written approval
 /// is not.
 #[test]

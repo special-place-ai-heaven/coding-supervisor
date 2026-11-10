@@ -1106,15 +1106,13 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                         IntentAuthority::Actionable => None,
                     };
                     if let Some(refusal) = refusal {
-                        // WP5: a reviewer's rejection on a pending or discussion turn of this
-                        // session is still recorded, record-only, under this lock and after the
-                        // ownership recheck above; the route's answer (none) is unchanged.
-                        if refusal == Decision::None
-                            && event == "SubagentStop"
-                            && opens_with_rejection(payload)
-                        {
+                        // WP5: a rejection on a pending, discussion or changed-intent turn of
+                        // this session is still recorded, record-only, under this lock and after
+                        // the ownership recheck above; the route's own answer is unchanged.
+                        if event == "SubagentStop" && opens_with_rejection(payload) {
                             env.state_dir = dir.to_path_buf();
-                            let decision = handle_inner(payload, env, observed, &root, true);
+                            let decision =
+                                handle_inner(payload, env, observed, &root, Some(refusal));
                             env.state_dir = root.clone();
                             return Ok(decision?.to_json().unwrap_or(Value::Null));
                         }
@@ -1132,7 +1130,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     }
                 }
                 env.state_dir = dir.to_path_buf();
-                let decision = handle_inner(payload, env, observed, &root, false);
+                let decision = handle_inner(payload, env, observed, &root, None);
                 env.state_dir = root.clone();
                 // An Err leaves the staged task uncommitted.
                 Ok(decision?.to_json().unwrap_or(Value::Null))
@@ -1195,13 +1193,14 @@ fn opens_with_rejection(payload: &Value) -> bool {
 }
 
 /// `root` is the state root, which holds the project's `failure` setting; `env.state_dir` is the
-/// staged task here. `review_only`: a SubagentStop that only records its review (WP5).
+/// staged task here. `review_only`: a SubagentStop that only records its review and answers
+/// with the given decision, the route's own (WP5).
 fn handle_inner(
     payload: &Value,
     env: &mut Env,
     observed: Result<Candidate, String>,
     root: &Path,
-    review_only: bool,
+    review_only: Option<Decision>,
 ) -> Result<Decision, String> {
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let agent = text(payload, "agent_id").unwrap_or("main");
@@ -1261,7 +1260,7 @@ fn process(
     env: &mut Env,
     observed: Result<Candidate, String>,
     agent: &str,
-    review_only: bool,
+    review_only: Option<Decision>,
     reasons: &mut Vec<String>,
     trace: &mut Trace,
 ) -> Result<Decision, String> {
@@ -1379,7 +1378,7 @@ fn process(
     }
     if matches!(event, "Stop" | "SubagentStop") {
         // Record-only: no receipt, handback judgement or refusal count changes on that route.
-        if !review_only {
+        if review_only.is_none() {
             session.sync_observed_receipts(&env.state_dir, agent, now, reasons)?;
         }
         session.transfer_reviews(reasons);
@@ -1396,11 +1395,11 @@ fn process(
     };
     let decision = match event {
         _ if let Some(denial) = refused_for_limit => denial,
-        "SubagentStop" if review_only => {
+        "SubagentStop" if review_only.is_some() => {
             let message = text(payload, "last_assistant_message").unwrap_or_default();
             session.take_review(message, &env.state_dir, agent, now, reasons)?;
             reasons.push("review recorded on an unjudged turn".to_owned());
-            Decision::None
+            review_only.clone().unwrap_or(Decision::None)
         }
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
         // WP4: at a reached limit the stop is released whatever the judgement, so it spends no
@@ -1435,7 +1434,8 @@ fn process(
         Decision::System(_) => session.task.state() != TaskState::Completed,
         _ => false,
     };
-    let release = matches!(event, "Stop" | "SubagentStop") && uncertified;
+    // A record-only answer is the route's own and stays as it is.
+    let release = matches!(event, "Stop" | "SubagentStop") && uncertified && review_only.is_none();
     let decision = match (decision, reached, &usage) {
         (_, Some(reached), Some(usage)) if release => {
             (session.gate.continuations, session.gate.handback_refusals) = refusals.clone();
