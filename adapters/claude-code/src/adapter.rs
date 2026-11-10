@@ -876,6 +876,15 @@ fn no_limit_reached(root: &Path, now: u64) -> bool {
     }
 }
 
+/// G47: the active task is completed. A gate that cannot be read is not reported as completed,
+/// so the ordinary advice stays.
+fn active_task_completed(root: &Path) -> bool {
+    lifecycle::active_task(root)
+        .ok()
+        .flatten()
+        .is_some_and(|active| crate::autonomy::gate_state(&active.dir) == Ok("completed"))
+}
+
 /// The active task is bound to a different session than this prompt's. Unknown ownership is
 /// not reported as foreign, so the ordinary advice stays.
 fn foreign_task(root: &Path, payload: &Value) -> bool {
@@ -970,6 +979,15 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     call["action"] = "start".into();
                     format!(
                         "Next call for new work: intent_apply {call} plus \"contract\": a scoped contract, at least {}; for a question, the same fields with \"action\":\"discussion\".",
+                        crate::autonomy::MINIMAL_CONTRACT
+                    )
+                } else if active_task_completed(&root) {
+                    // G47: a completed task takes no more work, whichever session owned it, so
+                    // `continue` would be refused and a start from any session is accepted.
+                    call["action"] = "start".into();
+                    format!(
+                        "The active task {} is completed and takes no more work (continue is refused). Next call for new work: intent_apply {call} plus \"contract\": a scoped contract, at least {}; for a question, the same fields with \"action\":\"discussion\".",
+                        intent["task_id"].as_str().unwrap_or_default(),
                         crate::autonomy::MINIMAL_CONTRACT
                     )
                 } else if foreign_owner_ended(&root, payload) == Some(true) {

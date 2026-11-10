@@ -609,3 +609,62 @@ fn a_completed_task_still_allows_read_only_commands_and_names_the_next_step() {
         "{reason}"
     );
 }
+
+/// Review of G47: another session's completed task protects nothing (a start from this session
+/// is accepted), so this session gets the same advice, not "protected; start is refused".
+#[test]
+fn a_prompt_after_another_sessions_completion_advises_a_new_task() {
+    let (_d, mut env, _task) = autonomous();
+    run_autonomous_checks(&mut env, "initial");
+    assert_eq!(stop(&mut env, "Stop", "main"), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+    let done = supervisor_claude_code::lifecycle::active_task(&env.state_dir)
+        .unwrap()
+        .unwrap();
+    let mut contract: Value =
+        serde_json::from_slice(&fs::read(done.dir.join("contract.json")).unwrap()).unwrap();
+    contract["id"] = "second".into();
+    let Decision::Context { text, .. } = handle(
+        &json!({"hook_event_name":"UserPromptSubmit",
+        "cwd":env.state_dir.parent().unwrap(), "session_id":"other",
+        "prompt_id":"other-1","prompt":"Now add the other thing"}),
+        &mut env,
+    ) else {
+        panic!("a prompt gets its context");
+    };
+    assert!(
+        text.contains(r#""action":"start""#)
+            && text.contains("is completed")
+            && !text.contains("protected"),
+        "{text}"
+    );
+    let store: Value =
+        serde_json::from_slice(&fs::read(env.state_dir.join("intents.json")).unwrap()).unwrap();
+    let event = store["events"][store["latest"]["other"].as_str().unwrap()].clone();
+    let started = propose(&env, &event, "start", None, Some(contract));
+    assert_ne!(started["task_id"], done.task_id.as_str(), "{started}");
+}
+
+/// G47 (SymForge report 2026-11-10): after a task completed, the prompt hook still advised
+/// `continue` with its id, and that call is refused ("completed task is immutable").
+#[test]
+fn a_prompt_after_completion_advises_a_new_task() {
+    let (_d, mut env, _task) = autonomous();
+    run_autonomous_checks(&mut env, "initial");
+    assert_eq!(stop(&mut env, "Stop", "main"), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+    let Decision::Context { text, .. } = handle(
+        &json!({"hook_event_name":"UserPromptSubmit",
+        "cwd":env.state_dir.parent().unwrap(), "session_id":"session",
+        "prompt_id":"after","prompt":"Now add the other thing"}),
+        &mut env,
+    ) else {
+        panic!("a prompt gets its context");
+    };
+    assert!(
+        text.contains(r#""action":"start""#)
+            && text.contains("is completed")
+            && !text.contains(r#""action":"continue""#),
+        "{text}"
+    );
+}
