@@ -238,8 +238,9 @@ fn exempt_from_failing_closed(payload: &Value) -> bool {
         || read_only_command(payload)
 }
 
-/// Claude Code reads a stop reason that names something absent as not blocking, so a
-/// fail-closed text never says "no such file", "not found" or "missing" (any case).
+/// Defensive: a fail-closed text never says "no such file", "not found" or "missing" (any case).
+/// Claude Code reads such text as non-blocking on the plugin wrapper's exit-2 stderr path
+/// (`hooks/supervisor-hook.js`); this binary's JSON `decision: block` blocks either way.
 fn blocking_words(text: &str) -> String {
     let mut text = text.to_owned();
     for (word, with) in [
@@ -1288,7 +1289,7 @@ fn process(
     let decision = match event {
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
         "Stop" => session.stop(payload, &env.state_dir, agent, now, reasons)?,
-        "PreToolUse" => session.pre_tool_use(payload),
+        "PreToolUse" => session.pre_tool_use(payload)?,
         "PostToolUse" if text(payload, "tool_name") == Some("Agent") => {
             session.agent_result(payload)
         }
@@ -2450,7 +2451,8 @@ impl Session {
         }
     }
 
-    fn pre_tool_use(&mut self, payload: &Value) -> Decision {
+    /// `Err` is an adapter error, answered through `adapter_error` by the caller.
+    fn pre_tool_use(&mut self, payload: &Value) -> Result<Decision, String> {
         self.gate.continuations = 0;
         if !read_only_tool(payload) {
             match self
@@ -2459,14 +2461,12 @@ impl Session {
                 .map(|dir| crate::autonomy::is_paused(dir))
             {
                 Some(Ok(true)) => {
-                    return Decision::Deny(
+                    return Ok(Decision::Deny(
                         "GATE: task is paused; resume through a new user prompt before mutation"
                             .to_owned(),
-                    );
+                    ));
                 }
-                Some(Err(_)) => {
-                    return Decision::Deny("GATE: task lifecycle state unavailable".to_owned());
-                }
+                Some(Err(_)) => return Err("task lifecycle state unavailable".to_owned()),
                 _ => {}
             }
         }
@@ -2479,10 +2479,10 @@ impl Session {
                 .as_ref()
                 .is_some_and(|dir| crate::autonomy::is_autonomous_task(dir).unwrap_or(true))
         {
-            return Decision::Deny(format!(
+            return Ok(Decision::Deny(format!(
                 "GATE: task is {}; read-only tools and commands still run, and a new work prompt starts the next task (intent_apply start)",
                 state_name(self.task.state())
-            ));
+            )));
         }
         let tool = text(payload, "tool_name").unwrap_or_default();
         let input = &payload["tool_input"];
@@ -2491,10 +2491,10 @@ impl Session {
             && let Some(command) = text(input, "command")
             && let Some(criterion) = self.criteria.iter().find(|c| c.accepts(command))
         {
-            return Decision::Deny(format!(
+            return Ok(Decision::Deny(format!(
                 "GATE: {} is a required check; run it in the foreground. Background runs are never counted.",
                 criterion.id.0
-            ));
+            )));
         }
         // G19: a required check behind a pipe runs, but its exit code is the pipe's, so the
         // gate never counts it; say so before the run, not after.
@@ -2503,30 +2503,30 @@ impl Session {
             && let Some(head) = observation::before_pipe(command)
             && let Some(criterion) = self.criteria.iter().find(|c| c.accepts(head))
         {
-            return Decision::Context {
+            return Ok(Decision::Context {
                 event: "PreToolUse",
                 text: format!(
                     "GATE: {} will not count: run `{head}` without a pipe",
                     criterion.id.0
                 ),
-            };
+            });
         }
         if !matches!(tool, "Write" | "Edit" | "Agent") {
-            return Decision::None;
+            return Ok(Decision::None);
         }
         let state = self.task.state();
         if state.is_terminal() {
-            return Decision::Deny(format!(
+            return Ok(Decision::Deny(format!(
                 "GATE: {tool} refused: task is {}",
                 state_name(state)
-            ));
+            )));
         }
-        match &self.observed {
+        Ok(match &self.observed {
             Err(why) => Decision::Deny(format!(
                 "GATE: {tool} refused: candidate identity could not be observed ({why})"
             )),
             Ok(_) => Decision::None,
-        }
+        })
     }
 
     fn agent_result(&self, payload: &Value) -> Decision {
