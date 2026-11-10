@@ -351,6 +351,10 @@ fn read_only_tool(payload: &Value) -> bool {
     ) {
         return true;
     }
+    // G45: the gate's own skills explain how to propose an intent, so they load before one.
+    if tool == "Skill" {
+        return supervisor_skill(payload);
+    }
     if let Some(name) = tool.strip_prefix("mcp__symforge__") {
         return name.starts_with("get_")
             || name.starts_with("search_")
@@ -365,6 +369,18 @@ fn read_only_tool(payload: &Value) -> bool {
                     | "what_changed"
                     | "inspect_match"
                     | "symforge_retrieve"
+                    // G45: the server's other tools that cannot change the project, so a
+                    // question tool is not refused beside the search it wraps. `ask` only
+                    // routes queries (editing goes through `symforge_edit`, which stays
+                    // refused); `analyze_file_impact` refreshes SymForge's own index.
+                    | "ask"
+                    | "explore"
+                    | "analyze_file_impact"
+                    | "detect_impact"
+                    | "diff_symbols"
+                    | "context_inventory"
+                    | "investigation_suggest"
+                    | "validate_file_syntax"
             );
     }
     if let Some(name) = tool.strip_prefix("mcp__terminal_commander__") {
@@ -390,6 +406,32 @@ fn read_only_tool(payload: &Value) -> bool {
         tool,
         "mcp__supervisor__intent_apply" | "mcp__supervisor__task_state"
     )
+}
+
+/// A `Skill` call for one of the gate's own skills: the names `supervisor install` renders,
+/// bare or under this repository's plugin name. Any other spelling is another skill.
+fn supervisor_skill(payload: &Value) -> bool {
+    matches!(
+        payload["tool_input"]["skill"].as_str(),
+        Some(
+            "supervisor-chair"
+                | "supervisor-worker"
+                | "coding-supervisor:supervisor-chair"
+                | "coding-supervisor:supervisor-worker"
+        )
+    )
+}
+
+/// G45: why another skill is refused where the gate's own load, so the model stops retrying.
+// shortcut: other skills stay refused before a task because a skill may run commands or start
+// an agent while it loads, and the hook payload does not say which; allow them here once the
+// harness reports that.
+fn skill_hint(payload: &Value) -> &'static str {
+    if text(payload, "tool_name") == Some("Skill") {
+        "; before a task only the supervisor skills (supervisor-chair, supervisor-worker) load, because another skill may run commands while it loads"
+    } else {
+        ""
+    }
 }
 
 /// One read-only shell command with no shell syntax, usable before the prompt is classified.
@@ -870,13 +912,30 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
     if event == "PreToolUse" {
         if !inspection(payload) {
             match crate::autonomy::pending(&root, text(payload, "session_id").unwrap_or_default()) {
-                Ok(Some(_)) => return Decision::Deny("GATE: propose the current prompt intent and scoped contract before mutation or delegation".to_owned()),
-                Err(_) => return adapter_error(payload, env, &root, "prompt intent state unavailable"),
+                Ok(Some(_)) => {
+                    return Decision::Deny(format!(
+                        "GATE: propose the current prompt intent and scoped contract before mutation or delegation{}",
+                        skill_hint(payload)
+                    ));
+                }
+                Err(_) => {
+                    return adapter_error(payload, env, &root, "prompt intent state unavailable");
+                }
                 Ok(None) => {}
             }
-            match crate::autonomy::discussion_turn(&root, text(payload, "session_id").unwrap_or_default()) {
-                Ok(true) => return Decision::Deny("GATE: this prompt is classified as discussion; to work on it, apply start, continue or revise with the same event before mutation or delegation".to_owned()),
-                Err(_) => return adapter_error(payload, env, &root, "prompt intent state unavailable"),
+            match crate::autonomy::discussion_turn(
+                &root,
+                text(payload, "session_id").unwrap_or_default(),
+            ) {
+                Ok(true) => {
+                    return Decision::Deny(format!(
+                        "GATE: this prompt is classified as discussion; to work on it, apply start, continue or revise with the same event before mutation or delegation{}",
+                        skill_hint(payload)
+                    ));
+                }
+                Err(_) => {
+                    return adapter_error(payload, env, &root, "prompt intent state unavailable");
+                }
                 Ok(false) => {}
             }
             if root.join("intents.json").exists() {
