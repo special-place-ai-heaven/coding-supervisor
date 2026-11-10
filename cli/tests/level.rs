@@ -433,11 +433,14 @@ fn lite_reports_every_handback_refusal_without_counting_it() {
     let f = Fixture::new("klitesub");
     let task = f.start_task();
     f.set(&["lite"]);
-    // G21: a worker that changed nothing hands back a read-only report, so this one edits first.
+    // G21, G44: a worker that changed nothing hands back a report, so this one edits first,
+    // and the edit lands in the tree.
     f.hook(
         json!({"hook_event_name":"PreToolUse","agent_id":"w1","tool_use_id":"w1-edit",
         "tool_name":"Write","tool_input":{"file_path":"src/lib.rs","content":"x"}}),
     );
+    fs::create_dir_all(f.project.join("src")).unwrap();
+    fs::write(f.project.join("src/lib.rs"), "x").unwrap();
     let handback = json!({"hook_event_name":"SubagentStop","agent_id":"w1","agent_type":"worker","last_assistant_message":"done","stop_hook_active":false});
     for round in 1..=2 {
         let lite = f.hook(handback.clone());
