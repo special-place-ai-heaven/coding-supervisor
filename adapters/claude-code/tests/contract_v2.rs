@@ -99,6 +99,7 @@ fn v2_field_shapes_are_validated() {
         ("limits", json!([])),
         ("review", json!(true)),
         ("review", json!([])),
+        ("approval", json!("x")),
     ] {
         let mut c = v2();
         c[field] = value.clone();
@@ -562,6 +563,74 @@ fn a_saved_contract_is_checked_before_it_is_written() {
             "{c}: a task was activated"
         );
     }
+}
+
+/// A caller's newer schema is refused at start too, not silently stored as v2.
+#[test]
+fn a_newer_schema_is_refused_at_start() {
+    let d = dir("start-v3");
+    let root = d.0.join("state");
+    let mut c = v1();
+    c["schema_version"] = 3.into();
+    let why = lifecycle::start_as(
+        &root,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &c,
+        false,
+        None,
+        None,
+    )
+    .unwrap_err();
+    assert!(why.contains("schema_version 3"), "{why}");
+    assert!(why.contains(env!("CARGO_PKG_VERSION")), "{why}");
+    assert!(!root.join("tasks").exists(), "a task was written");
+    assert!(!root.join("active.json").exists(), "a task was activated");
+}
+
+/// A v1-shaped revision is saved as v2, so it is checked as v2 before anything is staged.
+#[test]
+fn a_revision_that_would_not_load_is_refused_before_staging() {
+    let d = dir("revise-bad");
+    let (project, root) = (d.0.join("project"), d.0.join("state"));
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir(project.join(".git")).unwrap();
+    let mut operator = v1();
+    operator["criteria"][0]["command"] = "python verify.py".into();
+    let started = lifecycle::start_as(
+        &root,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &operator,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    let id = started["task_id"].as_str().unwrap().to_owned();
+    let task = root.join("tasks").join(&id);
+    let apply = |prompt: &str, action: &str, contract: Option<Value>| {
+        let event = autonomy::record_prompt(
+            &root,
+            &project,
+            &json!({"session_id":"session","prompt_id":prompt,"prompt":"Continue the approved work"}),
+        )
+        .unwrap();
+        autonomy::propose(
+            &root,
+            &project,
+            &json!({"event_id":event["event_id"],"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],"action":action,"task_id":id,"contract":contract}),
+        )
+    };
+    apply("continue", "continue", None).unwrap();
+    let bytes = fs::read(task.join("contract.json")).unwrap();
+    let mut revised = operator.clone();
+    revised["artifacts"] = json!(["../out"]);
+    let result = apply("revise", "revise", Some(revised));
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(fs::read(task.join("contract.json")).unwrap(), bytes);
+    assert!(
+        !root.join("autonomy-stage").exists(),
+        "a revision was staged"
+    );
 }
 
 #[test]

@@ -249,3 +249,17 @@ fn task_start_refuses_a_contract_that_would_not_load_again() {
     );
     assert!(!s.state_dir().join("tasks").exists());
 }
+
+/// A caller's newer schema is refused, not silently stored as v2.
+#[test]
+fn task_start_refuses_a_newer_schema() {
+    let d = dir("contract-v3");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["schema_version"] = json!(3);
+    let (is_error, text) = call(&s, "task_start", contract);
+    assert!(is_error, "{text}");
+    assert!(text.contains("schema_version 3"), "{text}");
+    assert!(text.contains(env!("CARGO_PKG_VERSION")), "{text}");
+    assert!(!s.state_dir().join("tasks").exists());
+}

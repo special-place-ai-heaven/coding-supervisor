@@ -385,3 +385,19 @@ fn task_start_records_the_repository_head_in_contract_v2() {
     assert_eq!(c["approval"]["by"], json!(user), "{c}");
     assert_eq!(c["isolation"], "none", "{c}");
 }
+
+/// WP2: a contract file with a newer schema is refused by `task start`, and nothing is written.
+#[test]
+fn task_start_refuses_a_newer_schema() {
+    let f = Fixture::new("contract-v3");
+    let newer = f.root.join("newer.json");
+    let mut c: Value = serde_json::from_str(&fs::read_to_string(&f.contract).unwrap()).unwrap();
+    c["schema_version"] = json!(3);
+    fs::write(&newer, c.to_string()).unwrap();
+    let out = f.task("start", &["--contract", newer.to_str().unwrap()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("schema_version 3"), "{stderr}");
+    assert!(stderr.contains(env!("CARGO_PKG_VERSION")), "{stderr}");
+    assert!(!f.state_root().join("tasks").exists());
+}
