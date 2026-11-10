@@ -341,6 +341,12 @@ pub fn contract_from(v: &Value) -> Result<TaskContract, String> {
         budget: Budget {
             max_repair_rounds: small(v, "max_repair_rounds")?,
         },
+        base_sha: None,
+        approval: None,
+        limits: Default::default(),
+        artifacts: vec![],
+        review: Default::default(),
+        isolation: Default::default(),
     })
 }
 

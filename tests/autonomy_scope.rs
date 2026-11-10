@@ -10,6 +10,12 @@ fn acceptance(scope: &str, changed: &str) -> Result<(), GateError> {
         budget: Budget {
             max_repair_rounds: 1,
         },
+        base_sha: None,
+        approval: None,
+        limits: Default::default(),
+        artifacts: vec![],
+        review: Default::default(),
+        isolation: Default::default(),
     });
     task.start_preparing().unwrap();
     task.observe_candidate(Candidate {
