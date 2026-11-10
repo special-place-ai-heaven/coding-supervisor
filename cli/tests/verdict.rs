@@ -11,8 +11,8 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coding_supervisor::{
-    CandidateId, Checkpoint, CriterionId, ReviewDecision, ReviewProvenance, ReviewRecord, TaskState,
-    VerificationReceipt,
+    CandidateId, Checkpoint, CriterionId, ReviewDecision, ReviewProvenance, ReviewRecord,
+    TaskState, VerificationReceipt,
 };
 use serde_json::{Value, json};
 use supervisor_claude_code::lifecycle;
@@ -1741,7 +1741,13 @@ fn t42_verdict_does_not_claim_a_limit_it_did_not_cause() {
 }
 
 /// WP5: store one review on the task's gate, bound to `candidate`.
-fn add_review(dir: &Path, reviewer: &str, decision: ReviewDecision, provenance: ReviewProvenance, candidate: &CandidateId) {
+fn add_review(
+    dir: &Path,
+    reviewer: &str,
+    decision: ReviewDecision,
+    provenance: ReviewProvenance,
+    candidate: &CandidateId,
+) {
     let (_, digest) = read_contract(dir).unwrap();
     let supervisor_claude_code::state::Stored::Valid(mut gate) =
         supervisor_claude_code::state::load_gate(dir, &digest).unwrap()
@@ -1766,8 +1772,8 @@ fn add_review(dir: &Path, reviewer: &str, decision: ReviewDecision, provenance: 
 /// WP5: a review-required task whose checks pass fails with `review_unmet` until an approval on
 /// the head candidate is stored; the rule is the core's, shared with `try_accept`.
 #[test]
-fn t40_verdict_review_unmet_until_an_approval_at_head() {
-    let f = Fixture::git("t40");
+fn t44_verdict_review_unmet_until_an_approval_at_head() {
+    let f = Fixture::git("t44");
     let head = f.head();
     let (_, dir) = f.task_stored_with(
         TaskState::Verifying,
@@ -1783,12 +1789,24 @@ fn t40_verdict_review_unmet_until_an_approval_at_head() {
         r["review"],
         json!({"required":true,"independent":true,"met":false,"reason":"review_required","latest":null})
     );
-    add_review(&dir, "w1", ReviewDecision::Approved, ReviewProvenance::CallerAsserted, &head);
+    add_review(
+        &dir,
+        "w1",
+        ReviewDecision::Approved,
+        ReviewProvenance::CallerAsserted,
+        &head,
+    );
     let (code, r) = f.verdict_json(&[]);
     assert_eq!(code, 3, "{r}");
     assert_eq!(r["review"]["reason"], "review_not_independent");
     assert_eq!(r["review"]["latest"]["provenance"], "caller-asserted");
-    add_review(&dir, "r1", ReviewDecision::Approved, ReviewProvenance::Observed, &head);
+    add_review(
+        &dir,
+        "r1",
+        ReviewDecision::Approved,
+        ReviewProvenance::Observed,
+        &head,
+    );
     let (code, r) = f.verdict_json(&[]);
     assert_eq!(code, 0, "{r}");
     assert_eq!(r["reason"], Value::Null);
@@ -1798,19 +1816,35 @@ fn t40_verdict_review_unmet_until_an_approval_at_head() {
             "provenance":"observed","findings":2,"at":T0})
     );
     assert_eq!(r["review"]["met"], true);
-    add_review(&dir, "r2", ReviewDecision::Rejected, ReviewProvenance::Observed, &head);
+    add_review(
+        &dir,
+        "r2",
+        ReviewDecision::Rejected,
+        ReviewProvenance::Observed,
+        &head,
+    );
     let (code, r) = f.verdict_json(&[]);
-    assert_eq!((code, &r["review"]["reason"]), (3, &json!("review_rejected")), "{r}");
+    assert_eq!(
+        (code, &r["review"]["reason"]),
+        (3, &json!("review_rejected")),
+        "{r}"
+    );
     let human = String::from_utf8(f.verdict(&[]).stdout).unwrap();
     assert!(human.contains("review unmet"), "{human}");
 }
 
 /// WP5: with the policy off a stored rejection never fails the verdict.
 #[test]
-fn t41_verdict_review_policy_off_never_fails() {
-    let f = Fixture::git("t41");
+fn t45_verdict_review_policy_off_never_fails() {
+    let f = Fixture::git("t45");
     let (_, dir, head) = f.observed_pass();
-    add_review(&dir, "r1", ReviewDecision::Rejected, ReviewProvenance::Observed, &head);
+    add_review(
+        &dir,
+        "r1",
+        ReviewDecision::Rejected,
+        ReviewProvenance::Observed,
+        &head,
+    );
     let (code, r) = f.verdict_json(&[]);
     assert_eq!(code, 0, "{r}");
     assert_eq!(r["review"]["required"], false);

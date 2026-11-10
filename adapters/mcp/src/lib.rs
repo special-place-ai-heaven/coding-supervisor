@@ -728,6 +728,15 @@ fn describe(
         ("asserted_only", asserted_only.into()),
         ("verdict_note", verdict_note.into()),
         ("rejected_claims", rejected_claims.into()),
+        // WP5: shown only; reviews are recorded by the Claude Code hooks, never through MCP.
+        (
+            "review",
+            supervisor_claude_code::review::summary_json(
+                &task.contract().review,
+                &session.gate.reviews,
+                cp.candidate.as_ref(),
+            ),
+        ),
     ])
 }
 

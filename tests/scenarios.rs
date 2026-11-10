@@ -1457,10 +1457,20 @@ fn a_review_for_other_content_or_a_terminal_task_is_refused() {
     let mut t = Task::new(reviewed_contract(true, false));
     t.start_preparing().unwrap();
     t.observe_candidate(candidate("one")).unwrap();
-    let other = review_on("r", ReviewDecision::Approved, ReviewProvenance::Observed, "two");
+    let other = review_on(
+        "r",
+        ReviewDecision::Approved,
+        ReviewProvenance::Observed,
+        "two",
+    );
     assert!(t.record_review(other).is_err());
     t.cancel().unwrap();
-    let here = review_on("r", ReviewDecision::Approved, ReviewProvenance::Observed, "one");
+    let here = review_on(
+        "r",
+        ReviewDecision::Approved,
+        ReviewProvenance::Observed,
+        "one",
+    );
     assert!(t.record_review(here).is_err());
     assert!(t.reviews().is_empty());
 }
@@ -1470,7 +1480,12 @@ fn reviews_set_after_resume_count_without_a_transition() {
     let mut t = Task::new(reviewed_contract(true, false));
     t.start_preparing().unwrap();
     t.observe_candidate(candidate("one")).unwrap();
-    let approved = review_on("r", ReviewDecision::Approved, ReviewProvenance::Observed, "one");
+    let approved = review_on(
+        "r",
+        ReviewDecision::Approved,
+        ReviewProvenance::Observed,
+        "one",
+    );
     t.record_review(approved.clone()).unwrap();
     let mut resumed = Task::resume(reviewed_contract(true, false), t.checkpoint());
     resumed.set_reviews(vec![approved.clone()]);

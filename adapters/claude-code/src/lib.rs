@@ -20,6 +20,7 @@ pub mod location;
 pub mod measure;
 mod observation;
 pub mod policy;
+pub mod review;
 pub mod sha256;
 pub mod state;
 pub mod transaction;

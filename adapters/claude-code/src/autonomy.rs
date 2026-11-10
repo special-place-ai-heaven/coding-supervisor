@@ -1264,6 +1264,15 @@ fn preserves(old: &Value, new: &Value, allow_scope_change: bool) -> Result<(), S
     {
         return Err("contract revision raised or removed a task limit".into());
     }
+    // WP5: an agent may add a review requirement or an artifact, never drop one.
+    if (old.review.required && !new.review.required)
+        || (old.review.independent && !new.review.independent)
+    {
+        return Err("contract revision switched off a review requirement".into());
+    }
+    if old.artifacts.iter().any(|a| !new.artifacts.contains(a)) {
+        return Err("contract revision removed an artifact".into());
+    }
     if !allow_scope_change
         && new
             .scope

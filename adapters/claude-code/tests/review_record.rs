@@ -96,13 +96,21 @@ fn tool(env: &Env, agent: &str, id: &str, name: &str, input: Value) -> Value {
 /// `agent` edits a file in scope: from now on it is a builder of this task.
 fn write(env: &mut Env, agent: &str) {
     let path = cwd(env).join("src").join("lib.rs");
-    let p = tool(env, agent, &format!("w-{agent}"), "Write", json!({"file_path":path,"content":"x"}));
+    let id = format!("w-{agent}-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    let p = tool(
+        env,
+        agent,
+        &id,
+        "Write",
+        json!({"file_path":path,"content":"x"}),
+    );
     assert_eq!(handle(&p, env), Decision::None);
 }
 /// `agent` only reads.
 fn read(env: &mut Env, agent: &str) {
     let path = cwd(env).join("src").join("lib.rs");
-    let p = tool(env, agent, &format!("r-{agent}"), "Read", json!({"file_path":path}));
+    let id = format!("r-{agent}-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    let p = tool(env, agent, &id, "Read", json!({"file_path":path}));
     assert_eq!(handle(&p, env), Decision::None);
 }
 /// `agent` runs `command` in the foreground: PreToolUse, then its result.
@@ -210,7 +218,11 @@ fn a_rejection_by_a_reader_refuses_until_the_content_changes() {
         "r1",
         "REVIEW: REJECTED\nFINDING: off by one in the loop\nFINDING: no test for empty input",
     );
-    assert_eq!(r, Decision::None, "a reviewer's SubagentStop prints nothing");
+    assert_eq!(
+        r,
+        Decision::None,
+        "a reviewer's SubagentStop prints nothing"
+    );
     let stored = reviews(&env);
     assert_eq!(stored.len(), 1, "{stored:?}");
     assert_eq!(stored[0]["reviewer"], "r1");
@@ -223,23 +235,26 @@ fn a_rejection_by_a_reader_refuses_until_the_content_changes() {
     assert_eq!(stored[0]["at"], 1_000);
     assert_eq!(stored[0]["candidate"]["dirty_digest"], "one");
     let reasons = last_reasons(&env);
-    assert!(!reasons.contains("off by one"), "no finding text in the journal: {reasons}");
+    assert!(
+        !reasons.contains("off by one"),
+        "no finding text in the journal: {reasons}"
+    );
     let r = stop(&mut env, "Done.");
     let why = blocked(&r);
     assert!(why.contains("rejected"), "{why}");
     assert!(why.contains("finding"), "{why}");
     plain(why);
-    assert_eq!(
-        reviewer(&mut env, "r2", "REVIEW: APPROVED"),
-        Decision::None
-    );
+    assert_eq!(reviewer(&mut env, "r2", "REVIEW: APPROVED"), Decision::None);
     assert!(blocked(&stop(&mut env, "Done.")).contains("rejected"));
     assert_ne!(gate(&env)["state"], "completed");
     *digest.lock().unwrap() = "two";
     checks_pass(&mut env, "c2");
     let r = stop(&mut env, "Done.");
     let why = blocked(&r);
-    assert!(!why.contains("rejected"), "the rejection was of other content: {why}");
+    assert!(
+        !why.contains("rejected"),
+        "the rejection was of other content: {why}"
+    );
     assert!(why.contains("REVIEW: APPROVED"), "{why}");
     assert_eq!(reviewer(&mut env, "r3", "REVIEW: APPROVED"), Decision::None);
     assert_eq!(stop(&mut env, "Done."), Decision::None);
@@ -285,7 +300,11 @@ fn an_approval_by_a_reader_completes_and_is_stored_observed() {
     let (mut env, _) = setup(&d, &contract(independent()));
     checks_pass(&mut env, "c1");
     assert_eq!(
-        reviewer(&mut env, "r1", "\n  REVIEW: APPROVED  \nFINDING: naming could be clearer"),
+        reviewer(
+            &mut env,
+            "r1",
+            "\n  REVIEW: APPROVED  \nFINDING: naming could be clearer"
+        ),
         Decision::None
     );
     let stored = reviews(&env);
@@ -310,7 +329,11 @@ fn a_builders_review_is_caller_asserted() {
             "w1",
             "REVIEW: APPROVED\nVERDICT: PASS\nCHECKS RUN: 1\nCHECK C2 | cargo test | exit 0",
         );
-        assert_eq!(r, Decision::None, "{policy}: a review error is journaled, not refused");
+        assert_eq!(
+            r,
+            Decision::None,
+            "{policy}: a review error is journaled, not refused"
+        );
         let stored = reviews(&env);
         assert_eq!(stored[0]["provenance"], "caller-asserted", "{policy}");
         assert_eq!(stored[0]["reviewer"], "w1");
@@ -388,7 +411,11 @@ fn findings_are_capped() {
     reviewer(&mut env, "r1", &message);
     let findings = reviews(&env)[0]["findings"].as_array().unwrap().clone();
     assert_eq!(findings.len(), 20);
-    assert!(findings.iter().all(|f| f.as_str().unwrap().chars().count() == 300));
+    assert!(
+        findings
+            .iter()
+            .all(|f| f.as_str().unwrap().chars().count() == 300)
+    );
 }
 
 /// Foreground: SubagentStop arrives before the Agent tool's PostToolUse, which carries the
@@ -448,7 +475,11 @@ fn a_builder_handback_without_review_stays_verifying() {
         Decision::None
     );
     assert_eq!(gate(&env)["state"], "verifying");
-    assert!(last_reasons(&env).contains("review"), "{}", last_reasons(&env));
+    assert!(
+        last_reasons(&env).contains("review"),
+        "{}",
+        last_reasons(&env)
+    );
 }
 
 /// A rejection recorded while the task waits in review moves it back to verifying.
@@ -481,10 +512,18 @@ fn a_gate_written_before_reviews_verifies() {
         state::load_gate(&state_dir, &digest).unwrap(),
         Stored::Valid(_)
     ));
-    let mut env = env_with(&d, &serde_json::from_str(CONTRACT).unwrap(), Box::new(Fixed));
+    let mut env = env_with(
+        &d,
+        &serde_json::from_str(CONTRACT).unwrap(),
+        Box::new(Fixed),
+    );
     fs::write(state_dir.join("gate.json"), format!("{GATE}\n")).unwrap();
     read(&mut env, "main");
-    assert!(!last_reasons(&env).contains("tampered"), "{}", last_reasons(&env));
+    assert!(
+        !last_reasons(&env).contains("tampered"),
+        "{}",
+        last_reasons(&env)
+    );
     assert!(gate(&env).get("reviews").is_none());
 }
 
@@ -513,7 +552,9 @@ fn at_a_reached_limit_a_review_already_recorded_still_certifies() {
     checks_pass(&mut env, "c1");
     reviewer(&mut env, "r1", "REVIEW: APPROVED");
     let dispatch = tool(&env, "main", "agent-1", "Agent", json!({"prompt":"review"}));
-    assert!(matches!(handle(&dispatch, &mut env), Decision::Deny(why) if why.contains("task limit reached")));
+    assert!(
+        matches!(handle(&dispatch, &mut env), Decision::Deny(why) if why.contains("task limit reached"))
+    );
     assert_eq!(stop(&mut env, "Done."), Decision::None);
     assert_eq!(gate(&env)["state"], "completed");
 }
@@ -543,7 +584,11 @@ fn repository(name: &str) -> (Dir, Env) {
     git(&project, &["commit", "-q", "-m", "one"]);
     fs::write(project.join("src/a.rs"), "a2\n").unwrap();
     // The state directory is beside the project; payloads carry the project as cwd.
-    let env = env_with(&d, &contract(required()), Box::new(GitCandidate { cwd: project }));
+    let env = env_with(
+        &d,
+        &contract(required()),
+        Box::new(GitCandidate { cwd: project }),
+    );
     (d, env)
 }
 fn project_of(env: &Env) -> PathBuf {
@@ -597,7 +642,10 @@ fn a_commit_of_identical_content_keeps_an_approval_and_a_rejection() {
             assert_eq!(r, Decision::None, "the approval follows the commit");
             assert_eq!(gate(&env)["state"], "completed");
         } else {
-            assert!(blocked(&r).contains("rejected"), "the rejection follows the commit: {r:?}");
+            assert!(
+                blocked(&r).contains("rejected"),
+                "the rejection follows the commit: {r:?}"
+            );
         }
         let stored = reviews(&env);
         assert_eq!(stored.len(), 2, "{stored:?}");
@@ -655,13 +703,19 @@ fn production(name: &str, review: Value) -> Production {
     p
 }
 impl Production {
-    fn apply(&mut self, action: &str, task: Option<&str>, contract: Value) -> Result<Value, String> {
+    fn apply(
+        &mut self,
+        action: &str,
+        task: Option<&str>,
+        contract: Value,
+    ) -> Result<Value, String> {
         self.prompts += 1;
         let message = "Implement a small change";
-        let prompt = json!({"hook_event_name":"UserPromptSubmit","cwd":self.project,
-            "session_id":"session","prompt_id":format!("p{}", self.prompts),"prompt":message});
-        handle(&prompt, &mut self.env);
-        let event = autonomy::pending(&self.env.state_dir, "session").unwrap().unwrap();
+        let event = autonomy::record_prompt(
+            &self.env.state_dir,
+            &self.project,
+            &json!({"session_id":"session","prompt_id":format!("p{}", self.prompts),"prompt":message}),
+        )?;
         let mut call = json!({"event_id":event["event_id"],"nonce":event["nonce"],
             "prompt_hash":event["prompt_hash"],"action":action,"task_id":task});
         if !contract.is_null() {
@@ -697,8 +751,10 @@ impl Production {
         }
     }
     fn review(&mut self, agent: &str, message: &str) -> Decision {
-        self.hook(json!({"hook_event_name":"SubagentStop","session_id":"session",
-            "agent_id":agent,"stop_hook_active":false,"last_assistant_message":message}))
+        self.hook(
+            json!({"hook_event_name":"SubagentStop","session_id":"session",
+            "agent_id":agent,"stop_hook_active":false,"last_assistant_message":message}),
+        )
     }
     fn stop(&mut self) -> Decision {
         self.hook(json!({"hook_event_name":"Stop","session_id":"session",
@@ -718,8 +774,14 @@ fn a_revision_cannot_switch_review_off_or_remove_an_artifact() {
     assert_eq!(p.written()["review"], independent());
     let task = p.task.clone();
     for (change, what) in [
-        (json!({"review":{"required":false,"independent":true}}), "required off"),
-        (json!({"review":{"required":true,"independent":false}}), "independent off"),
+        (
+            json!({"review":{"required":false,"independent":true}}),
+            "required off",
+        ),
+        (
+            json!({"review":{"required":true,"independent":false}}),
+            "independent off",
+        ),
         (json!({"artifacts":[]}), "artifact removed"),
     ] {
         let mut revised = p.written();
@@ -727,7 +789,10 @@ fn a_revision_cannot_switch_review_off_or_remove_an_artifact() {
             revised[key] = value.clone();
         }
         let why = p.apply("revise", Some(&task), revised).expect_err(what);
-        assert!(why.contains("review") || why.contains("artifact"), "{what}: {why}");
+        assert!(
+            why.contains("review") || why.contains("artifact"),
+            "{what}: {why}"
+        );
     }
     let mut kept = p.written();
     kept["artifacts"] = json!(["src/lib.rs", "src/extra.rs"]);

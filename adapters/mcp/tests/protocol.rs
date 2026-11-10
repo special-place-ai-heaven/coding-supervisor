@@ -363,7 +363,9 @@ fn task_state_shows_no_turn_count_for_a_wall_clock_only_limit() {
 #[test]
 fn task_state_shows_the_review_policy_and_the_latest_review() {
     use coding_supervisor::{ReviewDecision, ReviewProvenance, ReviewRecord};
-    use supervisor_claude_code::state::{StoredReview, Stored, load_gate, read_contract, save_gate};
+    use supervisor_claude_code::state::{
+        Stored, StoredReview, load_gate, read_contract, save_gate,
+    };
     let d = dir("review");
     let s = server(&d);
     let mut contract = common::four();
