@@ -100,7 +100,7 @@ See the [amended goal and evidence](docs/research/2026-10-30-dogfood-rollout/AUT
 
 ## Explicit recovery and older installations
 
-`init` writes an inactive editable `supervisor-contract.json` in the project, or at the path supplied with `--output`. Edit the draft for the actual goal, scope, criteria, exact accepted commands and repair budget. Each criterion needs a command or list of commands; matching trims whitespace but otherwise requires an exact match. The generated examples are placeholders.
+`init` writes an inactive editable `supervisor-contract.json` in the project, or at the path supplied with `--output`. Edit the draft for the actual goal, scope, criteria, exact accepted commands and repair budget. Each criterion needs a command or list of commands; matching trims whitespace but otherwise requires an exact match. The generated examples are placeholders. The draft is contract v2 (`schema_version: 2`, `base_sha`, `approval`, `isolation`; optional `limits`, `artifacts`, `review`); `approval` is the writer's own record, not proof of who approved, and limits, artifacts, review and worktree isolation are stored but not yet enforced. A contract without `schema_version` still loads as v1 and is never rewritten. Scope and artifact paths must stay inside the repository: no `..` segment and no root, drive or UNC prefix.
 
 ```sh
 supervisor task start --project <project> --contract <project>/supervisor-contract.json

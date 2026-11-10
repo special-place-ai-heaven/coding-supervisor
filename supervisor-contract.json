@@ -1,4 +1,9 @@
 {
+  "approval": {
+    "at": 1794268800,
+    "via": "init-draft"
+  },
+  "base_sha": null,
   "criteria": [
     {
       "check": "baseline_reproduces_reported_failure",
@@ -28,7 +33,9 @@
   "forbidden_effects": [],
   "goal": "Describe what this task must achieve.",
   "id": "coding-supervisor",
+  "isolation": "none",
   "max_repair_rounds": 2,
+  "schema_version": 2,
   "scope": [
     "src/",
     "tests/"
