@@ -1444,6 +1444,17 @@ fn process(
         }
         reasons.push("level audit: reported, not blocked".to_owned());
     }
+    // WP5/G21: the mutation row is written into this transaction's stage, once the harness is
+    // known to let the tool run. Appended after the commit, a concurrent hook that had copied the
+    // task folder could commit over it, and the builder's own review would read as observed.
+    // `note_agent_effects` still appends on routes that run no transaction.
+    if event == "PreToolUse"
+        && !inspection(payload)
+        && (!matches!(decision, Decision::Deny(_) | Decision::Block(_))
+            || env.level.level == Level::Audit)
+    {
+        observation::record_mutation(&env.state_dir, payload, &task_id, agent, now)?;
+    }
     session.gate.checkpoint = session.task.checkpoint();
     session.gate.starting = session.task.starting_candidate().cloned().map(Box::new);
     trace.state_after = Some(session.task.state());
@@ -3407,5 +3418,79 @@ mod deny_path_tests {
         let _ = fs::remove_dir(&link);
         let _ = fs::remove_dir_all(&root);
         assert_eq!(effect.as_deref(), Some("deny_path:src/"));
+    }
+}
+
+#[cfg(test)]
+mod mutation_row_tests {
+    use super::{Env, handle, handle_at_level, note_agent_effects};
+    use crate::candidate::CandidateProvider;
+    use crate::level::{Level, Setting};
+    use coding_supervisor::{Candidate, CandidateId};
+    use serde_json::{Value, json};
+    use std::fs;
+
+    struct Fixed;
+    impl CandidateProvider for Fixed {
+        fn observe(&self) -> Result<Candidate, String> {
+            Ok(Candidate {
+                id: CandidateId {
+                    base_commit: "base".into(),
+                    dirty_digest: "one".into(),
+                },
+                provenance: "fake".into(),
+                changed_paths: vec!["src/lib.rs".into()],
+            })
+        }
+    }
+
+    /// WP5: a builder's mutation row must survive a concurrent hook that copied the task folder
+    /// before the row was written and commits it after; otherwise the builder's own approval
+    /// reads as observed. Deterministic: the second hook is a real `with_task` whose action runs
+    /// the first hook's post-transaction step.
+    #[test]
+    fn a_mutation_row_survives_a_concurrent_commit() {
+        let root =
+            std::env::temp_dir().join(format!("supervisor-mutation-row-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let state = root.join("state");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        fs::write(
+            state.join("contract.json"),
+            json!({"id":"rows","goal":"rows","scope":["src/"],"forbidden_effects":[],
+                "max_repair_rounds":2,
+                "criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let mut env = Env {
+            state_dir: state.clone(),
+            state_location: "test",
+            candidate: Box::new(Fixed),
+            clock: || 1_000,
+            level: Setting {
+                level: Level::Enforce,
+                ..Default::default()
+            },
+        };
+        let write = |agent: &str| {
+            json!({"hook_event_name":"PreToolUse","cwd":root,"session_id":"session",
+                "agent_id":agent,"tool_use_id":format!("w-{agent}"),"tool_name":"Write",
+                "tool_input":{"file_path":root.join("src").join("lib.rs"),"content":"x"}})
+        };
+        // w0 makes delegations.jsonl exist, so the second hook's copy holds it.
+        assert_eq!(handle(&write("w0"), &mut env), super::Decision::None);
+        let first = write("w1");
+        let decision = handle_at_level(&first, &mut env);
+        assert_eq!(decision, super::Decision::None);
+        crate::lifecycle::with_task(&state, None, Some("session"), None, |_stage| {
+            assert!(note_agent_effects(&first, &env, &decision).is_none());
+            Ok(Value::Null)
+        })
+        .unwrap();
+        let made = crate::observation::made_mutation(&state, "w1").unwrap();
+        let _ = fs::remove_dir_all(&root);
+        assert!(made, "the mutation row of w1 was lost");
     }
 }
