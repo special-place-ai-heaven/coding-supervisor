@@ -191,15 +191,130 @@ impl Decision {
     }
 }
 
+/// The advisory answer to an adapter error: the call goes ahead. Used where nothing is governed
+/// (no payload or project known, level `off` or `audit`, a person's `failure open`) and for
+/// read-only calls and events that cannot refuse; see [`adapter_error`].
 pub fn fail_open(what: &str) -> Decision {
-    // shortcut: fails open on adapter error, upgrade to fail-closed once the adapter has a month of clean journals
     Decision::System(format!("GATE adapter error: {what}"))
+}
+
+/// An adapter error in a project at `enforce` or `strict` (an unreadable level runs there too)
+/// fails closed: a non-read-only PreToolUse is denied and a stop refused. A `failure` file
+/// reading `open` in the state `root` is the person's per-project way out
+/// (`supervisor level <level> --failure open`).
+fn adapter_error(payload: &Value, env: &Env, root: &Path, what: &str) -> Decision {
+    if env.level.level < Level::Enforce || level::failure_open(root) {
+        return fail_open(what);
+    }
+    closed(
+        text(payload, "hook_event_name").unwrap_or_default(),
+        payload.get("stop_hook_active").and_then(Value::as_bool) == Some(true),
+        exempt_from_failing_closed(payload),
+        what,
+    )
+    .unwrap_or_else(|| fail_open(what))
+}
+
+/// The fail-closed answer for `event`, or `None` where the call goes ahead with the advisory
+/// message. A stop Claude Code already continued once (`stop_hook_active`) goes ahead with a
+/// warning, so a broken gate cannot loop the session (as `hooks/supervisor-hook.js` does).
+fn closed(event: &str, stop_hook_active: bool, exempt: bool, what: &str) -> Option<Decision> {
+    let why = || blocking_words(&format!("GATE: the gate fails closed: {what}"));
+    match event {
+        "PreToolUse" if !exempt => Some(Decision::Deny(why())),
+        "Stop" | "SubagentStop" if stop_hook_active => Some(Decision::System(blocking_words(
+            &format!("GATE: WARNING, this {event} went ahead NOT certified: {what}"),
+        ))),
+        "Stop" | "SubagentStop" => Some(Decision::Block(why())),
+        _ => None,
+    }
+}
+
+/// The read-only calls an adapter error still lets through, so a broken gate stays
+/// diagnosable. Deliberately narrower than [`inspection`]: `intent_apply`, proposal commands
+/// and memory saves change state.
+fn exempt_from_failing_closed(payload: &Value) -> bool {
+    (read_only_tool(payload) && text(payload, "tool_name") != Some("mcp__supervisor__intent_apply"))
+        || read_only_command(payload)
+}
+
+/// Defensive: a fail-closed text never says "no such file", "not found" or "missing" (any case).
+/// Claude Code reads such text as non-blocking on the plugin wrapper's exit-2 stderr path
+/// (`hooks/supervisor-hook.js`); this binary's JSON `decision: block` blocks either way.
+fn blocking_words(text: &str) -> String {
+    let mut text = text.to_owned();
+    for (word, with) in [
+        ("no such file", "no file"),
+        ("not found", "absent"),
+        ("missing", "absent"),
+    ] {
+        while let Some(at) = text.to_ascii_lowercase().find(word) {
+            text.replace_range(at..at + word.len(), with);
+        }
+    }
+    text
+}
+
+/// serde_json refuses a `\uD800`-`\uDFFF` escape that is not half of a high+low pair, so such a
+/// payload would never be judged. Each one becomes the U+FFFD escape, of the same length. A
+/// backslash always consumes the byte after it, so an escaped backslash before `u` is kept.
+fn lone_surrogates_replaced(input: &str) -> std::borrow::Cow<'_, str> {
+    let bytes = input.as_bytes();
+    let escape = |at: usize| -> Option<u16> {
+        let six = bytes.get(at..at + 6)?;
+        if &six[..2] != b"\\u" || !six[2..].iter().all(u8::is_ascii_hexdigit) {
+            return None;
+        }
+        u16::from_str_radix(std::str::from_utf8(&six[2..]).ok()?, 16).ok()
+    };
+    let mut out: Option<Vec<u8>> = None;
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != b'\\' {
+            at += 1;
+            continue;
+        }
+        match escape(at) {
+            Some(0xD800..=0xDBFF) if matches!(escape(at + 6), Some(0xDC00..=0xDFFF)) => at += 12,
+            Some(0xD800..=0xDFFF) => {
+                out.get_or_insert_with(|| bytes.to_vec())[at..at + 6].copy_from_slice(b"\\uFFFD");
+                at += 6;
+            }
+            Some(_) => at += 6,
+            None => at += 2,
+        }
+    }
+    match out.map(String::from_utf8) {
+        Some(Ok(text)) => std::borrow::Cow::Owned(text),
+        _ => std::borrow::Cow::Borrowed(input),
+    }
+}
+
+/// Payload text that is not JSON: no project, so no level, is known, and a call that can refuse
+/// counts as governed. The event is read from the raw text.
+fn unparsed(input: &str, what: &str) -> Decision {
+    let raw = |key: &str| {
+        let at = input.find(&format!("\"{key}\""))? + key.len() + 2;
+        input[at..]
+            .trim_start()
+            .strip_prefix(':')
+            .map(str::trim_start)
+    };
+    let event = ["PreToolUse", "Stop", "SubagentStop"]
+        .into_iter()
+        .find(|e| raw("hook_event_name").is_some_and(|v| v.starts_with(&format!("\"{e}\""))));
+    let active = raw("stop_hook_active").is_some_and(|v| v.starts_with("true"));
+    event
+        .and_then(|event| closed(event, active, false, what))
+        .unwrap_or_else(|| fail_open(what))
 }
 
 /// The binary's whole job: payload text in, decision JSON text out.
 pub fn run_hook(input: &str) -> Option<String> {
-    let decision = match serde_json::from_str::<Value>(input) {
-        Err(e) => fail_open(&format!("payload is not JSON ({e}); not journaled")),
+    let input = lone_surrogates_replaced(input);
+    let decision = match serde_json::from_str::<Value>(&input) {
+        Err(e) => unparsed(&input, &format!("payload is not JSON ({e}); not journaled")),
+        // Without a cwd no project, so no level, is known: the call goes ahead.
         Ok(payload) => match payload.get("cwd").and_then(Value::as_str) {
             Some(cwd) => handle(
                 &payload,
@@ -624,11 +739,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
             &crate::binding::state_project(&root, Path::new(text(payload, "cwd").unwrap_or("."))),
         )
     {
-        return match event {
-            "PreToolUse" => Decision::Deny(format!("GATE: state unavailable: {what}")),
-            "Stop" | "SubagentStop" => Decision::Block(format!("GATE: state unavailable: {what}")),
-            _ => fail_open(&what),
-        };
+        return adapter_error(payload, env, &root, &format!("state unavailable: {what}"));
     }
     // Only a current-layout root takes refusal lines; legacy state stays untouched until migrated.
     if root.join("active.json").exists() || root.join("intents.json").exists() {
@@ -720,10 +831,18 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     ),
                 }
             }
-            Err(_) => Decision::Block(
-                "GATE: prompt intent could not be recorded; task activation remains unverified"
-                    .to_owned(),
-            ),
+            // Unlike other adapter errors at this event, an unrecorded prompt is refused.
+            Err(_) => {
+                let what =
+                    "prompt intent could not be recorded; task activation remains unverified";
+                if level::failure_open(&root) {
+                    fail_open(what)
+                } else {
+                    Decision::Block(blocking_words(&format!(
+                        "GATE: the gate fails closed: {what}"
+                    )))
+                }
+            }
         };
     }
     if event == "PreToolUse"
@@ -742,11 +861,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
         ) {
             Ok(snapshot) => Some(snapshot),
             Err(_) => {
-                return if event == "PreToolUse" {
-                    Decision::Deny("GATE: prompt intent state unavailable".to_owned())
-                } else {
-                    Decision::Block("GATE: prompt intent state unavailable".to_owned())
-                };
+                return adapter_error(payload, env, &root, "prompt intent state unavailable");
             }
         }
     } else {
@@ -756,22 +871,22 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
         if !inspection(payload) {
             match crate::autonomy::pending(&root, text(payload, "session_id").unwrap_or_default()) {
                 Ok(Some(_)) => return Decision::Deny("GATE: propose the current prompt intent and scoped contract before mutation or delegation".to_owned()),
-                Err(_) => return Decision::Deny("GATE: prompt intent state unavailable".to_owned()),
+                Err(_) => return adapter_error(payload, env, &root, "prompt intent state unavailable"),
                 Ok(None) => {}
             }
             match crate::autonomy::discussion_turn(&root, text(payload, "session_id").unwrap_or_default()) {
                 Ok(true) => return Decision::Deny("GATE: this prompt is classified as discussion; to work on it, apply start, continue or revise with the same event before mutation or delegation".to_owned()),
-                Err(_) => return Decision::Deny("GATE: prompt intent state unavailable".to_owned()),
+                Err(_) => return adapter_error(payload, env, &root, "prompt intent state unavailable"),
                 Ok(false) => {}
             }
             if root.join("intents.json").exists() {
                 match lifecycle::active_task(&root) {
                     Ok(None) => return Decision::Deny("GATE: source mutation requires an active scoped task; discussion does not authorize edits".to_owned()),
-                    Err(_) => return Decision::Deny("GATE: task lifecycle state unavailable".to_owned()),
+                    Err(_) => return adapter_error(payload, env, &root, "task lifecycle state unavailable"),
                     Ok(Some(active)) => match crate::autonomy::owns_session(&active.dir, text(payload, "session_id").unwrap_or_default()) {
                         Ok(true) => {},
                         Ok(false) => return Decision::Deny("GATE: this task belongs to another session; explicit user resume is required before mutation".to_owned()),
-                        Err(_) => return Decision::Deny("GATE: task session ownership unavailable".to_owned()),
+                        Err(_) => return adapter_error(payload, env, &root, "task session ownership unavailable"),
                     }
                 }
             }
@@ -821,7 +936,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     "GATE: classify the current prompt with intent_apply before stopping; discussion needs no task",
                 );
             }
-            Err(_) => return Decision::Block("GATE: prompt intent state unavailable".to_owned()),
+            Err(_) => return adapter_error(payload, env, &root, "prompt intent state unavailable"),
             Ok(None) => {}
         }
     }
@@ -831,7 +946,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
             text(payload, "session_id").unwrap_or_default(),
         ) {
             Ok(true) => return Decision::None,
-            Err(_) => return Decision::Block("GATE: prompt intent state unavailable".to_owned()),
+            Err(_) => return adapter_error(payload, env, &root, "prompt intent state unavailable"),
             Ok(false) => {}
         }
     }
@@ -846,28 +961,17 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                 Ok(false) => return Decision::None,
                 Ok(true) => {}
                 Err(_) => {
-                    return match event {
-                        "PreToolUse" => {
-                            Decision::Deny("GATE: task session ownership unavailable".to_owned())
-                        }
-                        "Stop" | "SubagentStop" => {
-                            Decision::Block("GATE: task session ownership unavailable".to_owned())
-                        }
-                        _ => Decision::None,
-                    };
+                    return adapter_error(
+                        payload,
+                        env,
+                        &root,
+                        "task session ownership unavailable",
+                    );
                 }
             },
             Ok(None) => {}
             Err(_) => {
-                return match event {
-                    "PreToolUse" => {
-                        Decision::Deny("GATE: task lifecycle state unavailable".to_owned())
-                    }
-                    "Stop" | "SubagentStop" => {
-                        Decision::Block("GATE: task lifecycle state unavailable".to_owned())
-                    }
-                    _ => Decision::None,
-                };
+                return adapter_error(payload, env, &root, "task lifecycle state unavailable");
             }
         }
     }
@@ -964,37 +1068,45 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     }
                 }
                 env.state_dir = dir.to_path_buf();
-                let decision = handle_inner(payload, env, observed);
+                let decision = handle_inner(payload, env, observed, &root);
                 env.state_dir = root.clone();
-                Ok(decision.to_json().unwrap_or(Value::Null))
+                // An Err leaves the staged task uncommitted.
+                Ok(decision?.to_json().unwrap_or(Value::Null))
             },
         )
     });
     match result {
         Ok(Value::Null) => Decision::None,
-        Ok(v) => decision_from_json(&v),
-        Err(what) => match event {
+        Ok(v) => decision_from_json(&v)
+            .unwrap_or_else(|| adapter_error(payload, env, &root, "invalid cached hook response")),
+        // Not an adapter error but an operator requirement: every PreToolUse is refused until
+        // a person migrates the legacy state, read-only calls and `failure open` included.
+        Err(what) if lifecycle::legacy_migration_pending(&root) => match event {
             "PreToolUse" => Decision::Deny(format!("GATE: {what}")),
             "Stop" | "SubagentStop" => Decision::Block(format!("GATE: {what}")),
             _ => fail_open(&what),
         },
+        Err(what) => adapter_error(payload, env, &root, &what),
     }
 }
 
-fn decision_from_json(v: &Value) -> Decision {
+/// `None` when `v` holds no decision (a corrupt cached response).
+fn decision_from_json(v: &Value) -> Option<Decision> {
     if let Some(message) = v.get("systemMessage").and_then(Value::as_str) {
-        return Decision::System(message.to_owned());
+        return Some(Decision::System(message.to_owned()));
     }
     if v.get("decision").and_then(Value::as_str) == Some("block") {
-        return Decision::Block(text(v, "reason").unwrap_or_default().to_owned());
+        return Some(Decision::Block(
+            text(v, "reason").unwrap_or_default().to_owned(),
+        ));
     }
     if let Some(output) = v.get("hookSpecificOutput") {
         if text(output, "permissionDecision") == Some("deny") {
-            return Decision::Deny(
+            return Some(Decision::Deny(
                 text(output, "permissionDecisionReason")
                     .unwrap_or_default()
                     .to_owned(),
-            );
+            ));
         }
         // The event name rides in the cached JSON; keep it (a PreToolUse advisory stays one).
         let event = match text(output, "hookEventName") {
@@ -1002,17 +1114,24 @@ fn decision_from_json(v: &Value) -> Decision {
             Some("UserPromptSubmit") => "UserPromptSubmit",
             _ => "PostToolUse",
         };
-        return Decision::Context {
+        return Some(Decision::Context {
             event,
             text: text(output, "additionalContext")
                 .unwrap_or_default()
                 .to_owned(),
-        };
+        });
     }
-    fail_open("invalid cached hook response")
+    None
 }
 
-fn handle_inner(payload: &Value, env: &mut Env, observed: Result<Candidate, String>) -> Decision {
+/// `root` is the state root, which holds the project's `failure` setting; `env.state_dir` is the
+/// staged task here.
+fn handle_inner(
+    payload: &Value,
+    env: &mut Env,
+    observed: Result<Candidate, String>,
+    root: &Path,
+) -> Result<Decision, String> {
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let agent = text(payload, "agent_id").unwrap_or("main");
     let mut reasons: Vec<String> = env.level.error.iter().cloned().collect();
@@ -1032,12 +1151,14 @@ fn handle_inner(payload: &Value, env: &mut Env, observed: Result<Candidate, Stri
     )
     .unwrap_or_else(|what| {
         reasons.push(format!("adapter error: {what}"));
-        match event {
-            "Stop" | "SubagentStop" => {
-                Decision::Block(format!("GATE: evidence unavailable: {what}"))
-            }
-            _ => fail_open(&what),
+        if env.level.level >= Level::Enforce && level::failure_open(root) {
+            reasons.push("failure open (advisory)".to_owned());
         }
+        let what = match event {
+            "Stop" | "SubagentStop" => format!("evidence unavailable: {what}"),
+            _ => what,
+        };
+        adapter_error(payload, env, root, &what)
     });
     let line = journal::line(
         payload,
@@ -1049,8 +1170,14 @@ fn handle_inner(payload: &Value, env: &mut Env, observed: Result<Candidate, Stri
     );
     JOURNAL.set(Journal::Written);
     match state::append_line(&env.state_dir.join("events.jsonl"), &line) {
-        Ok(()) => decision,
-        Err(what) => fail_open(&format!("events journal not written: {what}")),
+        Ok(()) => Ok(decision),
+        Err(what) if env.level.level < Level::Enforce => {
+            Ok(fail_open(&format!("events journal not written: {what}")))
+        }
+        // A refusal stands whether or not its line was written.
+        Err(_) if matches!(decision, Decision::Deny(_) | Decision::Block(_)) => Ok(decision),
+        // Anything else is not committed: the caller answers through `adapter_error`.
+        Err(what) => Err(format!("events journal not written: {what}")),
     }
 }
 
@@ -1175,7 +1302,7 @@ fn process(
     let decision = match event {
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
         "Stop" => session.stop(payload, &env.state_dir, agent, now, reasons)?,
-        "PreToolUse" => session.pre_tool_use(payload),
+        "PreToolUse" => session.pre_tool_use(payload)?,
         "PostToolUse" if text(payload, "tool_name") == Some("Agent") => {
             session.agent_result(payload)
         }
@@ -2337,7 +2464,8 @@ impl Session {
         }
     }
 
-    fn pre_tool_use(&mut self, payload: &Value) -> Decision {
+    /// `Err` is an adapter error, answered through `adapter_error` by the caller.
+    fn pre_tool_use(&mut self, payload: &Value) -> Result<Decision, String> {
         self.gate.continuations = 0;
         if !read_only_tool(payload) {
             match self
@@ -2346,14 +2474,12 @@ impl Session {
                 .map(|dir| crate::autonomy::is_paused(dir))
             {
                 Some(Ok(true)) => {
-                    return Decision::Deny(
+                    return Ok(Decision::Deny(
                         "GATE: task is paused; resume through a new user prompt before mutation"
                             .to_owned(),
-                    );
+                    ));
                 }
-                Some(Err(_)) => {
-                    return Decision::Deny("GATE: task lifecycle state unavailable".to_owned());
-                }
+                Some(Err(_)) => return Err("task lifecycle state unavailable".to_owned()),
                 _ => {}
             }
         }
@@ -2366,10 +2492,10 @@ impl Session {
                 .as_ref()
                 .is_some_and(|dir| crate::autonomy::is_autonomous_task(dir).unwrap_or(true))
         {
-            return Decision::Deny(format!(
+            return Ok(Decision::Deny(format!(
                 "GATE: task is {}; read-only tools and commands still run, and a new work prompt starts the next task (intent_apply start)",
                 state_name(self.task.state())
-            ));
+            )));
         }
         let tool = text(payload, "tool_name").unwrap_or_default();
         let input = &payload["tool_input"];
@@ -2378,10 +2504,10 @@ impl Session {
             && let Some(command) = text(input, "command")
             && let Some(criterion) = self.criteria.iter().find(|c| c.accepts(command))
         {
-            return Decision::Deny(format!(
+            return Ok(Decision::Deny(format!(
                 "GATE: {} is a required check; run it in the foreground. Background runs are never counted.",
                 criterion.id.0
-            ));
+            )));
         }
         // G19: a required check behind a pipe runs, but its exit code is the pipe's, so the
         // gate never counts it; say so before the run, not after.
@@ -2390,30 +2516,30 @@ impl Session {
             && let Some(head) = observation::before_pipe(command)
             && let Some(criterion) = self.criteria.iter().find(|c| c.accepts(head))
         {
-            return Decision::Context {
+            return Ok(Decision::Context {
                 event: "PreToolUse",
                 text: format!(
                     "GATE: {} will not count: run `{head}` without a pipe",
                     criterion.id.0
                 ),
-            };
+            });
         }
         if !matches!(tool, "Write" | "Edit" | "Agent") {
-            return Decision::None;
+            return Ok(Decision::None);
         }
         let state = self.task.state();
         if state.is_terminal() {
-            return Decision::Deny(format!(
+            return Ok(Decision::Deny(format!(
                 "GATE: {tool} refused: task is {}",
                 state_name(state)
-            ));
+            )));
         }
-        match &self.observed {
+        Ok(match &self.observed {
             Err(why) => Decision::Deny(format!(
                 "GATE: {tool} refused: candidate identity could not be observed ({why})"
             )),
             Ok(_) => Decision::None,
-        }
+        })
     }
 
     fn agent_result(&self, payload: &Value) -> Decision {
@@ -2724,4 +2850,52 @@ fn restore(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod fail_closed_tests {
+    use super::{blocking_words, lone_surrogates_replaced};
+
+    /// The JSON escape `\u` followed by `hex`, built so no escape appears in this source.
+    fn esc(hex: &str) -> String {
+        format!("{}u{hex}", '\\')
+    }
+
+    #[test]
+    fn only_lone_surrogate_escapes_are_replaced() {
+        let (high, low, fffd) = (esc("d800"), esc("DC00"), esc("FFFD"));
+        let pair = format!("{}{}", esc("d83d"), esc("de00"));
+        let backslash = '\\';
+        for (raw, cleaned) in [
+            (format!("\"a{high}b\""), format!("\"a{fffd}b\"")),
+            (format!("\"a{low}b\""), format!("\"a{fffd}b\"")),
+            (format!("\"{high}{pair}\""), format!("\"{fffd}{pair}\"")),
+            (format!("\"pair {pair}\""), format!("\"pair {pair}\"")),
+            (
+                format!("\"escaped {backslash}{high}\""),
+                format!("\"escaped {backslash}{high}\""),
+            ),
+            (
+                format!("\"short {}\"", esc("d80")),
+                format!("\"short {}\"", esc("d80")),
+            ),
+            (
+                format!("\"{} n\"", esc("00e9")),
+                format!("\"{} n\"", esc("00e9")),
+            ),
+        ] {
+            assert_eq!(lone_surrogates_replaced(&raw), cleaned, "{raw}");
+        }
+        let parsed: String =
+            serde_json::from_str(&lone_surrogates_replaced(&format!("\"a{high}b\""))).unwrap();
+        assert_eq!(parsed, "a\u{fffd}b");
+    }
+
+    #[test]
+    fn fail_closed_texts_never_name_something_absent() {
+        assert_eq!(
+            blocking_words("x: No such file or directory; Missing field; NOT FOUND"),
+            "x: no file or directory; absent field; absent"
+        );
+    }
 }

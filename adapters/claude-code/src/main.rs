@@ -23,6 +23,7 @@ fn hook() -> ExitCode {
     let mut input = String::new();
     let output = match io::stdin().read_to_string(&mut input) {
         Ok(_) => run_hook(&input),
+        // No payload, so no project or level is known: the call goes ahead.
         Err(e) => fail_open(&format!("stdin not read ({e}); not journaled"))
             .to_json()
             .map(|v| v.to_string()),

@@ -118,6 +118,12 @@ pub fn effective(
     Ok((Level::Enforce, "default"))
 }
 
+/// Whether a person set `failure open` for the project: the `failure` file beside its `level`
+/// file reads `open`. Anything else, an absent file or an unreadable one, means closed.
+pub fn failure_open(state_root: &Path) -> bool {
+    fs::read_to_string(state_root.join("failure")).is_ok_and(|text| text.trim() == "open")
+}
+
 /// The level a hook runs at and its source, as stamped on records: an unusable `level` file runs
 /// the hook at `enforce` from source `unreadable`.
 pub fn in_effect(state_root: &Path, config_dir: Option<&Path>) -> (Level, &'static str) {

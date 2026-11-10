@@ -729,10 +729,12 @@ fn merge_settings(before: Option<&str>, command: Option<&str>) -> Result<String,
         if let Some(m) = matcher {
             group.insert("matcher".into(), m.into());
         }
-        group.insert(
-            "hooks".into(),
-            json!([{ "type": "command", "command": command }]),
-        );
+        let mut hook = json!({ "type": "command", "command": command });
+        // As in hooks/hooks.json: a hook that crashes or times out refuses the tool call.
+        if event == "PreToolUse" {
+            hook["onFailure"] = "block".into();
+        }
+        group.insert("hooks".into(), json!([hook]));
         groups.push(Value::Object(group));
     }
     if command.is_none() && !had_hooks {

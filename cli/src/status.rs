@@ -353,7 +353,7 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
         "registration":configuration(project,harness),"hooks":hooks,
         "connection":connection(root,harness),
         "action_policy":supervisor_claude_code::policy::configuration_status(root),
-        "task":active,"mode":mode,"effective_level":effective.name(),"requested_level":requested.name(),"level_note":level_note,"level_source":level_source,"receipt_provenance":provenance,
+        "task":active,"mode":mode,"effective_level":effective.name(),"requested_level":requested.name(),"failure_mode":if level::failure_open(root) {"open"} else {"closed"},"level_note":level_note,"level_source":level_source,"receipt_provenance":provenance,
         "coverage":{"completion":completion,"basis":"supported unrestricted project hook configuration; adapter fixtures and recorded Claude 2.1.312 trials; global settings and current model loading unproven","action_policy":"configured simple commands and exact tools only; see COVERAGE.md","same_user_security_boundary":false}
     })
 }
@@ -404,7 +404,7 @@ fn human(report: &Value) -> String {
         })
         .unwrap_or_else(|| "unknown".to_owned());
     let mut text = format!(
-        "supervisor {} ({})\nharness: {}\nproject: {}\nregistration: {} (configured binary: {}; configured version: {})\nconnection: {}; model session loaded: {}\ntask: {} (gate: {}; id: {})\nmode: {}\nlevel: {} ({})\nreceipts: {} observed; {} reconstructed; {} asserted; {} unverified\ncompletion coverage: {}\nbasis: {}\naction policy: {}\ncoverage: {}; same-user security boundary: false",
+        "supervisor {} ({})\nharness: {}\nproject: {}\nregistration: {} (configured binary: {}; configured version: {})\nconnection: {}; model session loaded: {}\ntask: {} (gate: {}; id: {})\nmode: {}\nlevel: {} ({})\nfailure: {}\nreceipts: {} observed; {} reconstructed; {} asserted; {} unverified\ncompletion coverage: {}\nbasis: {}\naction policy: {}\ncoverage: {}; same-user security boundary: false",
         s("/reporting_binary/version"),
         s("/reporting_binary/path"),
         s("/harness"),
@@ -423,6 +423,10 @@ fn human(report: &Value) -> String {
         s("/mode"),
         s("/effective_level"),
         s("/level_source"),
+        match s("/failure_mode") {
+            "open" => "open (advisory)",
+            other => other,
+        },
         count("/receipt_provenance/observed"),
         count("/receipt_provenance/reconstructed"),
         count("/receipt_provenance/asserted"),
