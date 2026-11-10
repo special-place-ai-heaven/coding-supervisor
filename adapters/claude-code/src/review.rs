@@ -43,6 +43,8 @@ pub fn parse(message: &str) -> Option<Parsed<'_>> {
             rest = &message[start..];
             break;
         };
+        // Control characters (ESC and C1 included) would reach a terminal through `status`.
+        let finding: String = finding.chars().filter(|c| !c.is_control()).collect();
         let finding: String = finding.trim().chars().take(MAX_FINDING_CHARS).collect();
         if !finding.is_empty() && findings.len() < MAX_FINDINGS {
             findings.push(finding);
@@ -127,6 +129,19 @@ mod tests {
         ] {
             assert_eq!(parse(line).unwrap().decision, None, "{line}");
         }
+    }
+
+    /// A finding is shown in a terminal by `status`; control characters (ESC included) never
+    /// reach gate.json, and they do not count toward the cap.
+    #[test]
+    fn control_characters_are_stripped_from_findings() {
+        let message = "REVIEW: REJECTED\nFINDING: \u{1b}[31mred\u{1b}[0m text\u{7}\u{9b}2J end \u{1b}";
+        let p = parse(message).unwrap();
+        assert_eq!(p.findings, ["[31mred[0m text2J end"]);
+        let long = format!("FINDING: {}{}", "\u{1b}".repeat(50), "x".repeat(400));
+        let message = format!("REVIEW: REJECTED\n{long}");
+        let p = parse(&message).unwrap();
+        assert_eq!(p.findings[0], "x".repeat(MAX_FINDING_CHARS));
     }
 
     #[test]
