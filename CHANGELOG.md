@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.3](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.17.2...v0.17.3) (2026-11-10)
+
+
+### Bug Fixes
+
+* **gate:** checks scale to what changed (G46) ([1f41bac](https://github.com/special-place-ai-heaven/coding-supervisor/commit/1f41bacedc9e0e500cd2598543d6e15dfac1ae2e))
+
 ## [0.17.2](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.17.1...v0.17.2) (2026-11-10)
 
 
