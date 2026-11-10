@@ -1,9 +1,4 @@
 {
-  "approval": {
-    "at": 1794268800,
-    "via": "init-draft"
-  },
-  "base_sha": null,
   "criteria": [
     {
       "check": "baseline_reproduces_reported_failure",
