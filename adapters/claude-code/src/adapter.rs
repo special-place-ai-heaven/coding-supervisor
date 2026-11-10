@@ -3573,11 +3573,13 @@ mod mutation_row_tests {
             .to_string(),
         )
         .unwrap();
-        // w0 makes delegations.jsonl exist, so the holder's stage copy holds it.
+        // w0 makes delegations.jsonl exist, so the holder's stage copy holds it (an absent file
+        // would not be committed over, and the test would pass with nothing to lose).
         assert_eq!(
             handle(&write(&root, "w0"), &mut env(&state)),
             Decision::None
         );
+        assert!(crate::observation::made_mutation(&state, "w0").unwrap());
         let (done, appended) = mpsc::channel();
         let mut worker = None;
         crate::lifecycle::with_task(&state, None, Some("session"), None, |_stage| {
@@ -3603,4 +3605,5 @@ mod mutation_row_tests {
             "the append landed inside the transaction and was overwritten"
         );
     }
+
 }
