@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.17.0...v0.17.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **gate:** a subagent that left the tree unchanged hands back its report (G44) ([d5a1b2b](https://github.com/special-place-ai-heaven/coding-supervisor/commit/d5a1b2b4af2e82423b20e0c07cd33273c35858bb))
+
 ## [0.17.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.16.0...v0.17.0) (2026-11-10)
 
 
