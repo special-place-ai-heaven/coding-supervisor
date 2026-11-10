@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.17.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.16.0...v0.17.0) (2026-11-10)
+
+
+### Features
+
+* **gate:** reviewer record (WP5) ([f435f38](https://github.com/special-place-ai-heaven/coding-supervisor/commit/f435f380899a5ab41cd38216c617b67d7867e48a))
+* **gate:** reviewer record (WP5) ([7f32a47](https://github.com/special-place-ai-heaven/coding-supervisor/commit/7f32a47b0b35563e400b9198da1e861f017674e5))
+
+
+### Bug Fixes
+
+* **gate:** a contract revision drops approvals and keeps rejections ([236e162](https://github.com/special-place-ai-heaven/coding-supervisor/commit/236e162fbbfa3f80740dc611882cb8f39bc70a05))
+* **gate:** a new session takes over a task whose session ended (G43) ([f0f41aa](https://github.com/special-place-ai-heaven/coding-supervisor/commit/f0f41aa7aae4bf9f1db8720fa5f8809d45735c59))
+* **gate:** a review refusal names task cancel as the way out ([26d3187](https://github.com/special-place-ai-heaven/coding-supervisor/commit/26d3187be1408ca4ca687ee5e879e8e81a3d7b22))
+* **gate:** an approval binds to the content the reviewer was launched on ([dc4c7ff](https://github.com/special-place-ai-heaven/coding-supervisor/commit/dc4c7ff0b3f4300f71fb86b2d0a5e20042a7a1fe))
+* **gate:** an unreadable launch record counts as unknown content ([358078e](https://github.com/special-place-ai-heaven/coding-supervisor/commit/358078ee6a7faa1b864628234120c76a02a6950a))
+* **gate:** append the mutation row under the state lock ([3d1ab71](https://github.com/special-place-ai-heaven/coding-supervisor/commit/3d1ab714e6f3f28dfc18e0fd76e32b61725b239b))
+* **gate:** read a rejection loosely, an approval exactly ([42ddf71](https://github.com/special-place-ai-heaven/coding-supervisor/commit/42ddf71bf6cffcf9b497b98f662c652258c166ae))
+* **gate:** read mutations from the transaction-written journal too ([bd16cf2](https://github.com/special-place-ai-heaven/coding-supervisor/commit/bd16cf2c1de22494a5165d3a73357b0d1f73d610))
+* **gate:** record a rejection on a pending or discussion turn ([bc01de8](https://github.com/special-place-ai-heaven/coding-supervisor/commit/bc01de8a1bc68f4fa0a492b795c6eb38f36c278a))
+* **gate:** record a rejection on a refused pending or changed-intent turn ([d87a46b](https://github.com/special-place-ai-heaven/coding-supervisor/commit/d87a46b57b86ffda082c3bfe5b9aa6f8309929bf))
+* **gate:** review summary says whether the rule is met ([5ee9e80](https://github.com/special-place-ai-heaven/coding-supervisor/commit/5ee9e809b44b05e0641f17d8550bd67bc99fe931))
+* **gate:** reviews follow the full content, documentation included ([3e411a2](https://github.com/special-place-ai-heaven/coding-supervisor/commit/3e411a20e7e822822831eca3efac49017628a128))
+* **gate:** strip control characters from review findings ([b02368e](https://github.com/special-place-ai-heaven/coding-supervisor/commit/b02368edaed80b86061e88e7cfae9cd446b558e7))
+* **gate:** the limit report names an unmet review ([5a0ed79](https://github.com/special-place-ai-heaven/coding-supervisor/commit/5a0ed79822de4b15dbff905d031e813625dcbee0))
+* **gate:** the review refusal names the read-only set the gate uses ([e5b4f27](https://github.com/special-place-ai-heaven/coding-supervisor/commit/e5b4f27b852b335402aee5f8201ef6a239357996))
+* **gate:** unreadable launch content drops a background approval ([30a76b3](https://github.com/special-place-ai-heaven/coding-supervisor/commit/30a76b3488731a6a1e3ed4274eb1c76d5afcba99))
+* **gate:** word the mutation journal refusal like other fail-closed texts ([d02a3b2](https://github.com/special-place-ai-heaven/coding-supervisor/commit/d02a3b282c7af400e0847ca1c2bc20de8dc79650))
+* **gate:** write the mutation row inside the hook transaction ([317dcf8](https://github.com/special-place-ai-heaven/coding-supervisor/commit/317dcf87744a5fb8ed6062b4ce72083db81fe5ce))
+
+
+### Performance Improvements
+
+* **gate:** build the content tree only when a review can matter ([02b20f0](https://github.com/special-place-ai-heaven/coding-supervisor/commit/02b20f0848ae44b00bdbb1e62e23f41bd5dbd101))
+
 ## [0.16.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.15.0...v0.16.0) (2026-11-10)
 
 
