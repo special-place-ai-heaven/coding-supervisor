@@ -1284,6 +1284,8 @@ fn process(
         }
         _ => {}
     }
+    // WP4: an unreadable journal or clock fails closed through `adapter_error`, never unlimited.
+    let usage = crate::limits::usage(&env.state_dir, &contract, now)?;
     let mut session = Session::open_with_observed(
         contract,
         stored,
@@ -1304,7 +1306,11 @@ fn process(
         session.gate.continuations,
         session.gate.handback_refusals.clone(),
     );
+    let at_limit = usage
+        .as_ref()
+        .and_then(|usage| session.at_limit(payload, event, usage, reasons));
     let decision = match event {
+        _ if let Some(decision) = at_limit => decision,
         "SubagentStop" => session.subagent_stop(payload, &env.state_dir, agent, now, reasons)?,
         "Stop" => session.stop(payload, &env.state_dir, agent, now, reasons)?,
         "PreToolUse" => session.pre_tool_use(payload)?,
@@ -2137,6 +2143,73 @@ impl Session {
         Ok(())
     }
 
+    /// WP4: at a reached limit a task that is not completed moves to `budget_exhausted` (a
+    /// terminal one keeps its state). A non-read-only PreToolUse is denied; a Stop goes ahead
+    /// NOT certified with the report; a SubagentStop is released silently, because any output
+    /// there keeps the worker running. `None`: judge the event as usual.
+    fn at_limit(
+        &mut self,
+        payload: &Value,
+        event: &str,
+        usage: &crate::limits::Usage,
+        reasons: &mut Vec<String>,
+    ) -> Option<Decision> {
+        let reached = usage.reached?;
+        if self.task.state() == TaskState::Completed {
+            return None;
+        }
+        let _ = self.task.exhaust_limit(reached);
+        let what = crate::limits::reached_text(&reached);
+        reasons.push(format!("task limit reached: {what}"));
+        match event {
+            "PreToolUse" if !inspection(payload) => Some(Decision::Deny(format!(
+                "GATE: task limit reached: {what}; new work is refused; read-only tools still work; stop and report"
+            ))),
+            "Stop" => {
+                let remaining = self.remaining_criteria();
+                Some(Decision::System(blocking_words(&format!(
+                    "GATE: task limit reached ({what}); this stop goes ahead NOT certified; elapsed {}; turns used {}; remaining criteria: {}; the work tree and logs are kept; new work needs a new task with a new contract",
+                    usage
+                        .elapsed_s
+                        .map_or("unknown (no approval time)".to_owned(), |s| format!(
+                            "{s} s"
+                        )),
+                    usage.turns_used,
+                    if remaining.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        remaining.join(", ")
+                    }
+                ))))
+            }
+            "SubagentStop" => Some(Decision::None),
+            _ => None,
+        }
+    }
+
+    /// Mandatory criteria with no passing, hook-linked receipt on the task's candidate.
+    fn remaining_criteria(&self) -> Vec<&str> {
+        self.criteria
+            .iter()
+            .filter(|c| c.mandatory && !self.passing_on_checkpoint(c))
+            .map(|c| c.id.0.as_str())
+            .collect()
+    }
+
+    /// A stored receipt for `c` on the task's candidate that the acceptance path would count:
+    /// exit 0, claim supported, not caller-asserted.
+    fn passing_on_checkpoint(&self, c: &Criterion) -> bool {
+        self.task.candidate().is_some_and(|candidate| {
+            self.gate.receipts.iter().any(|r| {
+                r.criterion == c.id
+                    && &r.candidate == candidate
+                    && !r.output_ref.starts_with(MCP_ASSERTED)
+                    && r.exit_code == Some(0)
+                    && r.claim_supported
+            })
+        })
+    }
+
     fn subagent_stop(
         &mut self,
         payload: &Value,
@@ -2738,26 +2811,13 @@ impl Session {
         // Repair: restore() skips receipt replay for terminal states, so after a resume the
         // persisted gate receipts are the only evidence the summary can still report.
         let recorded: Vec<&str> = if cp.state.is_terminal() {
-            cp.candidate
-                .map(|candidate| {
-                    self.criteria
-                        .iter()
-                        .filter(|c| {
-                            self.gate.receipts.iter().any(|r| {
-                                r.criterion == c.id
-                                    && r.candidate == candidate
-                                    // The acceptance path refuses mcp-asserted receipts
-                                    // here and a failing run satisfies nothing; the
-                                    // display must agree with it.
-                                    && !r.output_ref.starts_with(MCP_ASSERTED)
-                                    && r.exit_code == Some(0)
-                                    && r.claim_supported
-                            })
-                        })
-                        .map(|c| c.id.0.as_str())
-                        .collect()
-                })
-                .unwrap_or_default()
+            // The acceptance path refuses mcp-asserted receipts here and a failing run
+            // satisfies nothing; the display must agree with it.
+            self.criteria
+                .iter()
+                .filter(|c| self.passing_on_checkpoint(c))
+                .map(|c| c.id.0.as_str())
+                .collect()
         } else {
             Vec::new()
         };

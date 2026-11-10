@@ -731,6 +731,51 @@ fn matrix_fail() {
 fn matrix_cancel() {
     matrix_stop("cancel", TaskState::Cancelled, Task::cancel, "");
 }
+/// WP4: a reached limit ends every non-terminal task, an unobserved resumed one included, and
+/// never changes a terminal one (a completed task stays completed).
+#[test]
+fn matrix_exhaust_limit() {
+    matrix_stop(
+        "exhaust_limit",
+        TaskState::BudgetExhausted,
+        |t| {
+            t.exhaust_limit(LimitReached {
+                kind: LimitKind::Turns,
+                used: 3,
+                max: 3,
+            })
+        },
+        "task limit reached: 3 of 3 turns",
+    );
+}
+#[test]
+fn a_limit_is_reached_when_its_use_meets_its_maximum() {
+    let limits = Limits {
+        turns: std::num::NonZeroU64::new(3),
+        wall_clock_s: std::num::NonZeroU64::new(600),
+    };
+    assert_eq!(limits.reached(2, Some(599)), None);
+    assert_eq!(
+        limits.reached(3, Some(0)),
+        Some(LimitReached {
+            kind: LimitKind::Turns,
+            used: 3,
+            max: 3
+        })
+    );
+    assert_eq!(
+        limits.reached(0, Some(600)),
+        Some(LimitReached {
+            kind: LimitKind::WallClock,
+            used: 600,
+            max: 600
+        })
+    );
+    // No approval time: no wall-clock limit.
+    assert_eq!(limits.reached(0, None), None);
+    assert_eq!(Limits::default().reached(u64::MAX, Some(u64::MAX)), None);
+    assert!(limits.is_set() && !Limits::default().is_set());
+}
 
 #[test]
 fn a18_self_reported_pass_is_not_accepted() {

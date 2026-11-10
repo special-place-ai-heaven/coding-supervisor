@@ -65,11 +65,51 @@ pub struct Approval {
     /// The writer, e.g. `task-start`, `agent-proposal`, `v1-migration`.
     pub via: String,
 }
-/// Stored, not yet enforced.
+/// Per-task ceilings. A turn is one PreToolUse call judged for the task; wall clock runs from
+/// `approval.at`. The caller counts both; the core only compares (see [`Limits::reached`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Limits {
     pub wall_clock_s: Option<std::num::NonZeroU64>,
     pub turns: Option<std::num::NonZeroU64>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LimitKind {
+    Turns,
+    WallClock,
+}
+/// A limit at or past its maximum: `used` turns or elapsed seconds against `max`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LimitReached {
+    pub kind: LimitKind,
+    pub used: u64,
+    pub max: u64,
+}
+impl Limits {
+    pub fn is_set(&self) -> bool {
+        self.turns.is_some() || self.wall_clock_s.is_some()
+    }
+    /// `turns_used` judged calls before this one, `elapsed_s` since approval (`None` when the
+    /// approval time is unknown, which means no wall-clock limit). `turns: n` admits exactly n
+    /// calls; the turn limit is reported first when both are reached.
+    pub fn reached(&self, turns_used: u64, elapsed_s: Option<u64>) -> Option<LimitReached> {
+        let turns = self.turns.map(|max| LimitReached {
+            kind: LimitKind::Turns,
+            used: turns_used,
+            max: max.get(),
+        });
+        let clock = self
+            .wall_clock_s
+            .zip(elapsed_s)
+            .map(|(max, used)| LimitReached {
+                kind: LimitKind::WallClock,
+                used,
+                max: max.get(),
+            });
+        [turns, clock]
+            .into_iter()
+            .flatten()
+            .find(|l| l.used >= l.max)
+    }
 }
 /// Stored, not yet enforced.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -522,6 +562,22 @@ impl Task {
     }
     pub fn cancel(&mut self) -> Result<(), GateError> {
         self.stop(TaskState::Cancelled, "cancel", String::new())
+    }
+    /// A task limit was reached: no further work. Like `block`, this needs no observed
+    /// candidate, and a terminal task (a completed one included) never changes.
+    pub fn exhaust_limit(&mut self, reached: LimitReached) -> Result<(), GateError> {
+        let what = match reached.kind {
+            LimitKind::Turns => "turns",
+            LimitKind::WallClock => "seconds",
+        };
+        self.stop(
+            TaskState::BudgetExhausted,
+            "exhaust_limit",
+            format!(
+                "task limit reached: {} of {} {what}",
+                reached.used, reached.max
+            ),
+        )
     }
     pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint {

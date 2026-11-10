@@ -313,7 +313,7 @@ pub fn reset_rounds(root: &Path, expected: &str, reason: &str) -> Result<Value, 
     if active.task_id != expected {
         return Err("active task changed".to_owned());
     }
-    let (_, digest) = state::read_contract(&active.dir)?;
+    let (contract, digest) = state::read_contract(&active.dir)?;
     let mut gate = match state::load_gate(&active.dir, &digest)? {
         Stored::Valid(gate) => gate,
         Stored::Absent => {
@@ -329,13 +329,25 @@ pub fn reset_rounds(root: &Path, expected: &str, reason: &str) -> Result<Value, 
             "task is {before}; only a budget_exhausted task can have its rounds reset"
         ));
     }
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // WP4: a reached task limit is recomputed at every hook call, so reopening the rounds would
+    // not reopen the task; a new contract does.
+    if let Some(contract) = &contract
+        && let Some(reached) =
+            crate::limits::usage(&active.dir, contract, t)?.and_then(|usage| usage.reached)
+    {
+        return Err(format!(
+            "task limit reached: {}; reset-rounds does not lift a task limit; start new work with a new contract: supervisor task next --task {} --contract <file>",
+            crate::limits::reached_text(&reached),
+            active.task_id
+        ));
+    }
     let rounds_before = gate.checkpoint.consumed_repair_rounds;
     gate.checkpoint.state = coding_supervisor::TaskState::Repairing;
     gate.checkpoint.consumed_repair_rounds = 0;
     gate.continuations = 0;
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
     let line = json!({"t":t,"event":"reset_rounds","task_id":active.task_id,"reason":reason,"rounds_before":rounds_before,"state_before":before,"state":"repairing"});
     let prefix = PathBuf::from("tasks").join(&active.task_id);
     let mut journal = match fs::read_to_string(active.dir.join("events.jsonl")) {

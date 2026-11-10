@@ -1254,6 +1254,16 @@ fn preserves(old: &Value, new: &Value, allow_scope_change: bool) -> Result<(), S
             "contract revision changed the repair budget or removed a forbidden effect".into(),
         );
     }
+    // WP4: an agent may lower or add a task limit, never raise or remove one.
+    if [
+        (old.limits.turns, new.limits.turns),
+        (old.limits.wall_clock_s, new.limits.wall_clock_s),
+    ]
+    .into_iter()
+    .any(|(old, new)| old.is_some_and(|old| new.is_none_or(|new| new > old)))
+    {
+        return Err("contract revision raised or removed a task limit".into());
+    }
     if !allow_scope_change
         && new
             .scope

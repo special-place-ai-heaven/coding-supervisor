@@ -300,6 +300,14 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
             }
             _ => active["lifecycle_state"] = "unknown".into(),
         }
+        if let Ok((Some(contract), _)) = read_contract(&task.dir) {
+            let now = supervisor_claude_code::adapter::now();
+            match supervisor_claude_code::limits::usage(&task.dir, &contract, now) {
+                Ok(Some(usage)) => active["limits"] = usage.json(),
+                Ok(None) => {}
+                Err(_) => active["limits"] = json!({"state":"unknown"}),
+            }
+        }
     }
     let hooks = if harness == "claude-code" {
         hook_configuration(project)
@@ -439,7 +447,33 @@ fn human(report: &Value) -> String {
     if let Some(worktree) = report.pointer("/task/worktree").and_then(Value::as_str) {
         text.push_str(&format!("\nbound worktree: {worktree}"));
     }
+    if let Some(limits) = report.pointer("/task/limits") {
+        text.push_str(&format!("\nlimits: {}", limits_line(limits)));
+    }
     text
+}
+
+/// Counts only: hook payloads carry no cost data, so no spend is ever shown.
+fn limits_line(limits: &Value) -> String {
+    if limits.get("state").is_some() {
+        return "unknown (task journal or clock unreadable)".to_owned();
+    }
+    let number = |key: &str| limits.get(key).and_then(Value::as_u64);
+    let used = number("turns_used").map_or("unknown".to_owned(), |n| n.to_string());
+    let mut parts = vec![match number("turns") {
+        Some(max) => format!("{used} of {max} turns used"),
+        None => format!("{used} turns used (no turn limit)"),
+    }];
+    if let Some(max) = number("wall_clock_s") {
+        parts.push(match number("elapsed_s") {
+            Some(elapsed) => format!("elapsed {elapsed} s of {max} s"),
+            None => format!("no wall clock without an approval time ({max} s set)"),
+        });
+    }
+    if let Some(reached) = limits.get("reached").and_then(Value::as_str) {
+        parts.push(format!("reached: {reached}"));
+    }
+    parts.join("; ")
 }
 
 #[cfg(test)]
