@@ -1288,3 +1288,194 @@ fn k6_a_baseline_receipt_for_the_starting_candidate_is_accepted_after_the_fix() 
         Err(GateError::ReceiptForOtherCandidate { .. })
     ));
 }
+
+// ---- WP5: the reviewer record ------------------------------------------------------------
+
+fn review_on(
+    reviewer: &str,
+    decision: ReviewDecision,
+    provenance: ReviewProvenance,
+    digest: &str,
+) -> ReviewRecord {
+    ReviewRecord {
+        reviewer: reviewer.into(),
+        model: None,
+        decision,
+        findings: vec![],
+        at: 7,
+        candidate: candidate(digest).id,
+        provenance,
+    }
+}
+fn policy(required: bool, independent: bool) -> Review {
+    Review {
+        required,
+        independent,
+    }
+}
+
+/// The one rule `try_accept` and `supervisor verdict` share.
+#[test]
+fn review_rule_table() {
+    use ReviewDecision::{Approved, Rejected};
+    use ReviewProvenance::{CallerAsserted, Observed};
+    let here = candidate("one").id;
+    let rejected = || GateError::ReviewRejected {
+        reviewer: "r".into(),
+        findings: 0,
+    };
+    let cases: Vec<(Review, Vec<ReviewRecord>, Result<(), GateError>)> = vec![
+        // Policy off: nothing blocks, a rejection included.
+        (policy(false, false), vec![], Ok(())),
+        (
+            policy(false, false),
+            vec![review_on("r", Rejected, Observed, "one")],
+            Ok(()),
+        ),
+        // Required: an approval of either provenance on this candidate.
+        (policy(true, false), vec![], Err(GateError::ReviewRequired)),
+        (
+            policy(true, false),
+            vec![review_on("r", Approved, CallerAsserted, "one")],
+            Ok(()),
+        ),
+        (
+            policy(true, false),
+            vec![review_on("r", Approved, Observed, "two")],
+            Err(GateError::ReviewRequired),
+        ),
+        // Independent implies required, and needs an observed approval.
+        (policy(false, true), vec![], Err(GateError::ReviewRequired)),
+        (
+            policy(true, true),
+            vec![review_on("r", Approved, CallerAsserted, "one")],
+            Err(GateError::ReviewNotIndependent),
+        ),
+        (
+            policy(false, true),
+            vec![
+                review_on("b", Approved, CallerAsserted, "one"),
+                review_on("r", Approved, Observed, "one"),
+            ],
+            Ok(()),
+        ),
+        // A rejection on this candidate, of either provenance, is sticky.
+        (
+            policy(true, false),
+            vec![
+                review_on("r", Rejected, CallerAsserted, "one"),
+                review_on("s", Approved, Observed, "one"),
+            ],
+            Err(rejected()),
+        ),
+        (
+            policy(true, true),
+            vec![
+                review_on("s", Approved, Observed, "one"),
+                review_on("r", Rejected, Observed, "one"),
+            ],
+            Err(rejected()),
+        ),
+        // A rejection of other content does not count.
+        (
+            policy(true, false),
+            vec![
+                review_on("r", Rejected, Observed, "two"),
+                review_on("s", Approved, Observed, "one"),
+            ],
+            Ok(()),
+        ),
+    ];
+    for (i, (policy, reviews, want)) in cases.into_iter().enumerate() {
+        assert_eq!(review_met(&policy, &reviews, &here), want, "case {i}");
+    }
+}
+
+fn reviewed_contract(required: bool, independent: bool) -> TaskContract {
+    TaskContract {
+        review: policy(required, independent),
+        ..contract()
+    }
+}
+fn all_pass(t: &mut Task) {
+    for id in ["C1", "C2", "C3", "C4"] {
+        pass(t, id);
+    }
+}
+
+#[test]
+fn review_required_keeps_the_task_out_of_review_until_an_approval() {
+    let mut t = Task::new(reviewed_contract(true, false));
+    t.start_preparing().unwrap();
+    t.observe_candidate(candidate("one")).unwrap();
+    all_pass(&mut t);
+    assert_eq!(t.try_accept(), Err(GateError::ReviewRequired));
+    assert_eq!(t.state(), TaskState::Verifying);
+    t.record_review(review_on(
+        "r",
+        ReviewDecision::Approved,
+        ReviewProvenance::Observed,
+        "one",
+    ))
+    .unwrap();
+    t.try_accept().unwrap();
+    t.complete().unwrap();
+    assert_eq!(t.state(), TaskState::Completed);
+}
+
+#[test]
+fn a_rejection_in_review_moves_back_to_verifying_and_needs_new_content() {
+    let mut t = Task::new(reviewed_contract(true, false));
+    t.start_preparing().unwrap();
+    t.observe_candidate(candidate("one")).unwrap();
+    all_pass(&mut t);
+    let approve = |d| review_on("r", ReviewDecision::Approved, ReviewProvenance::Observed, d);
+    t.record_review(approve("one")).unwrap();
+    t.try_accept().unwrap();
+    t.record_review(review_on(
+        "s",
+        ReviewDecision::Rejected,
+        ReviewProvenance::Observed,
+        "one",
+    ))
+    .unwrap();
+    assert_eq!(t.state(), TaskState::Verifying);
+    assert!(matches!(
+        t.try_accept(),
+        Err(GateError::ReviewRejected { .. })
+    ));
+    assert_eq!(t.open_findings(), vec![], "a rejection opens no finding");
+    t.observe_candidate(candidate("two")).unwrap();
+    all_pass(&mut t);
+    assert_eq!(t.try_accept(), Err(GateError::ReviewRequired));
+    t.record_review(approve("two")).unwrap();
+    t.try_accept().unwrap();
+}
+
+#[test]
+fn a_review_for_other_content_or_a_terminal_task_is_refused() {
+    let mut t = Task::new(reviewed_contract(true, false));
+    t.start_preparing().unwrap();
+    t.observe_candidate(candidate("one")).unwrap();
+    let other = review_on("r", ReviewDecision::Approved, ReviewProvenance::Observed, "two");
+    assert!(t.record_review(other).is_err());
+    t.cancel().unwrap();
+    let here = review_on("r", ReviewDecision::Approved, ReviewProvenance::Observed, "one");
+    assert!(t.record_review(here).is_err());
+    assert!(t.reviews().is_empty());
+}
+
+#[test]
+fn reviews_set_after_resume_count_without_a_transition() {
+    let mut t = Task::new(reviewed_contract(true, false));
+    t.start_preparing().unwrap();
+    t.observe_candidate(candidate("one")).unwrap();
+    let approved = review_on("r", ReviewDecision::Approved, ReviewProvenance::Observed, "one");
+    t.record_review(approved.clone()).unwrap();
+    let mut resumed = Task::resume(reviewed_contract(true, false), t.checkpoint());
+    resumed.set_reviews(vec![approved.clone()]);
+    resumed.observe_candidate(candidate("one")).unwrap();
+    all_pass(&mut resumed);
+    resumed.try_accept().unwrap();
+    assert_eq!(resumed.reviews(), &[approved]);
+}

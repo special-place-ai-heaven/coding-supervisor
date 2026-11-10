@@ -1,0 +1,761 @@
+//! WP5: the reviewer record. A reviewer's final message starts with `REVIEW: APPROVED` or
+//! `REVIEW: REJECTED` (with `FINDING:` lines below); the gate stores reviewer, model, decision,
+//! findings, time, candidate and provenance. A review from an agent that changed something in the
+//! task, or from the chair, is `caller-asserted` and does not count as independent. Replay of hook
+//! payloads, not a live harness run.
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use coding_supervisor::{Candidate, CandidateId};
+use serde_json::{Value, json};
+use supervisor_claude_code::adapter::{Decision, Env, handle};
+use supervisor_claude_code::candidate::{CandidateProvider, GitCandidate};
+use supervisor_claude_code::level::{Level, Setting};
+use supervisor_claude_code::state::{self, Stored};
+use supervisor_claude_code::{autonomy, lifecycle};
+
+static NEXT: AtomicU64 = AtomicU64::new(0);
+
+struct Dir(PathBuf);
+impl Drop for Dir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+fn dir(name: &str) -> Dir {
+    let path = std::env::temp_dir().join(format!(
+        "supervisor-review-{name}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = fs::remove_dir_all(&path);
+    fs::create_dir_all(path.join("src")).unwrap();
+    Dir(path)
+}
+
+/// A candidate whose dirty digest the test can move, as an edit would.
+struct Switch(Arc<Mutex<&'static str>>);
+impl CandidateProvider for Switch {
+    fn observe(&self) -> Result<Candidate, String> {
+        Ok(Candidate {
+            id: CandidateId {
+                base_commit: "base".into(),
+                dirty_digest: (*self.0.lock().unwrap()).into(),
+            },
+            provenance: "fake".into(),
+            changed_paths: vec!["src/lib.rs".into()],
+        })
+    }
+}
+
+/// A person's v2 contract with one mandatory check, `cargo test`, and `review`.
+fn contract(review: Value) -> Value {
+    json!({"schema_version":2,"id":"wp5","goal":"review","scope":["src/"],"forbidden_effects":[],
+        "max_repair_rounds":2,"base_sha":null,
+        "approval":{"by":"person","at":1000,"via":"task-start"},
+        "limits":{},"artifacts":[],"review":review,"isolation":"none",
+        "criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}]})
+}
+fn required() -> Value {
+    json!({"required":true,"independent":false})
+}
+fn independent() -> Value {
+    json!({"required":true,"independent":true})
+}
+
+fn env_with(d: &Dir, contract: &Value, candidate: Box<dyn CandidateProvider>) -> Env {
+    let state = d.0.join("state");
+    fs::create_dir_all(&state).unwrap();
+    fs::write(state.join("contract.json"), format!("{contract}\n")).unwrap();
+    Env {
+        state_dir: state,
+        state_location: "test",
+        candidate,
+        clock: || 1_000,
+        level: Setting {
+            level: Level::Enforce,
+            ..Default::default()
+        },
+    }
+}
+fn setup(d: &Dir, contract: &Value) -> (Env, Arc<Mutex<&'static str>>) {
+    let digest = Arc::new(Mutex::new("one"));
+    let env = env_with(d, contract, Box::new(Switch(digest.clone())));
+    (env, digest)
+}
+fn cwd(env: &Env) -> PathBuf {
+    env.state_dir.parent().unwrap().to_path_buf()
+}
+fn tool(env: &Env, agent: &str, id: &str, name: &str, input: Value) -> Value {
+    json!({"hook_event_name":"PreToolUse","cwd":cwd(env),"session_id":"session","agent_id":agent,
+        "agent_type":"general-purpose","tool_use_id":id,"tool_name":name,"tool_input":input})
+}
+/// `agent` edits a file in scope: from now on it is a builder of this task.
+fn write(env: &mut Env, agent: &str) {
+    let path = cwd(env).join("src").join("lib.rs");
+    let p = tool(env, agent, &format!("w-{agent}"), "Write", json!({"file_path":path,"content":"x"}));
+    assert_eq!(handle(&p, env), Decision::None);
+}
+/// `agent` only reads.
+fn read(env: &mut Env, agent: &str) {
+    let path = cwd(env).join("src").join("lib.rs");
+    let p = tool(env, agent, &format!("r-{agent}"), "Read", json!({"file_path":path}));
+    assert_eq!(handle(&p, env), Decision::None);
+}
+/// `agent` runs `command` in the foreground: PreToolUse, then its result.
+fn run(env: &mut Env, agent: &str, id: &str, command: &str, exit: i32) {
+    let mut p = tool(env, agent, id, "Bash", json!({"command":command}));
+    assert_eq!(handle(&p, env), Decision::None);
+    if exit == 0 {
+        p["hook_event_name"] = "PostToolUse".into();
+        p["tool_response"] = json!({"stdout":"ok","stderr":"","interrupted":false});
+    } else {
+        p["hook_event_name"] = "PostToolUseFailure".into();
+        p["error"] = format!("Exit code {exit}\nfailed").into();
+    }
+    handle(&p, env);
+}
+fn checks_pass(env: &mut Env, id: &str) {
+    run(env, "main", id, "cargo test", 0);
+}
+fn subagent_stop(env: &mut Env, agent: &str, message: &str) -> Decision {
+    handle(
+        &json!({"hook_event_name":"SubagentStop","cwd":cwd(env),"session_id":"session",
+            "agent_id":agent,"agent_type":"general-purpose","stop_hook_active":false,
+            "last_assistant_message":message}),
+        env,
+    )
+}
+/// A reader dispatched as a reviewer: it reads, then hands back `message`.
+fn reviewer(env: &mut Env, agent: &str, message: &str) -> Decision {
+    read(env, agent);
+    subagent_stop(env, agent, message)
+}
+fn stop(env: &mut Env, message: &str) -> Decision {
+    handle(
+        &json!({"hook_event_name":"Stop","cwd":cwd(env),"session_id":"session",
+            "stop_hook_active":false,"last_assistant_message":message}),
+        env,
+    )
+}
+/// The Agent tool's PostToolUse for `agent`: `completed` (foreground) or `async_launched`.
+fn agent_post(env: &mut Env, agent: &str, status: &str, model: &str) -> Decision {
+    handle(
+        &json!({"hook_event_name":"PostToolUse","cwd":cwd(env),"session_id":"session",
+            "tool_name":"Agent","tool_use_id":format!("a-{agent}"),
+            "tool_input":{"description":"review","prompt":"review the change"},
+            "tool_response":{"status":status,"agentId":agent,"resolvedModel":model,
+                "content":[{"type":"text","text":"REVIEW: APPROVED"}]}}),
+        env,
+    )
+}
+fn task_dir(env: &Env) -> PathBuf {
+    lifecycle::active_task(&env.state_dir)
+        .unwrap()
+        .map_or_else(|| env.state_dir.clone(), |task| task.dir)
+}
+fn gate(env: &Env) -> Value {
+    serde_json::from_slice(&fs::read(task_dir(env).join("gate.json")).unwrap()).unwrap()
+}
+fn reviews(env: &Env) -> Vec<Value> {
+    gate(env)["reviews"].as_array().cloned().unwrap_or_default()
+}
+fn blocked(d: &Decision) -> &str {
+    match d {
+        Decision::Block(reason) => reason,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+fn last_reasons(env: &Env) -> String {
+    let journal = fs::read_to_string(task_dir(env).join("events.jsonl")).unwrap();
+    let last: Value = serde_json::from_str(journal.lines().last().unwrap()).unwrap();
+    last["reasons"].to_string()
+}
+
+/// No new text names something absent with the words the fail-closed rewording avoids.
+fn plain(text: &str) {
+    for word in ["missing", "not found", "no such file"] {
+        assert!(!text.to_lowercase().contains(word), "{word:?} in {text}");
+    }
+}
+
+#[test]
+fn required_review_with_none_refuses_and_teaches_the_protocol() {
+    let d = dir("required");
+    let (mut env, _) = setup(&d, &contract(required()));
+    checks_pass(&mut env, "c1");
+    let r = stop(&mut env, "Done.");
+    let why = blocked(&r);
+    assert!(why.contains("REVIEW: APPROVED"), "{why}");
+    assert!(why.contains("REVIEW: REJECTED"), "{why}");
+    assert!(why.contains("only reads"), "{why}");
+    assert!(why.contains("supervisor task"), "a person's way out: {why}");
+    assert!(!why.contains("run the required check commands"), "{why}");
+    plain(why);
+    assert_eq!(gate(&env)["state"], "verifying");
+}
+
+/// Spec matrix case 11: a rejection prevents approval; a second reviewer cannot override it on
+/// the same content; a content change sheds it, and then a fresh review is needed.
+#[test]
+fn a_rejection_by_a_reader_refuses_until_the_content_changes() {
+    let d = dir("rejected");
+    let (mut env, digest) = setup(&d, &contract(required()));
+    checks_pass(&mut env, "c1");
+    let r = reviewer(
+        &mut env,
+        "r1",
+        "REVIEW: REJECTED\nFINDING: off by one in the loop\nFINDING: no test for empty input",
+    );
+    assert_eq!(r, Decision::None, "a reviewer's SubagentStop prints nothing");
+    let stored = reviews(&env);
+    assert_eq!(stored.len(), 1, "{stored:?}");
+    assert_eq!(stored[0]["reviewer"], "r1");
+    assert_eq!(stored[0]["decision"], "rejected");
+    assert_eq!(stored[0]["provenance"], "observed");
+    assert_eq!(
+        stored[0]["findings"],
+        json!(["off by one in the loop", "no test for empty input"])
+    );
+    assert_eq!(stored[0]["at"], 1_000);
+    assert_eq!(stored[0]["candidate"]["dirty_digest"], "one");
+    let reasons = last_reasons(&env);
+    assert!(!reasons.contains("off by one"), "no finding text in the journal: {reasons}");
+    let r = stop(&mut env, "Done.");
+    let why = blocked(&r);
+    assert!(why.contains("rejected"), "{why}");
+    assert!(why.contains("finding"), "{why}");
+    plain(why);
+    assert_eq!(
+        reviewer(&mut env, "r2", "REVIEW: APPROVED"),
+        Decision::None
+    );
+    assert!(blocked(&stop(&mut env, "Done.")).contains("rejected"));
+    assert_ne!(gate(&env)["state"], "completed");
+    *digest.lock().unwrap() = "two";
+    checks_pass(&mut env, "c2");
+    let r = stop(&mut env, "Done.");
+    let why = blocked(&r);
+    assert!(!why.contains("rejected"), "the rejection was of other content: {why}");
+    assert!(why.contains("REVIEW: APPROVED"), "{why}");
+    assert_eq!(reviewer(&mut env, "r3", "REVIEW: APPROVED"), Decision::None);
+    assert_eq!(stop(&mut env, "Done."), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+}
+
+/// Spec matrix case 12: a timeout or inconclusive answer is not a decision; nothing is stored
+/// and approval stays refused.
+#[test]
+fn an_inconclusive_or_empty_review_stores_nothing_and_still_refuses() {
+    let d = dir("inconclusive");
+    let (mut env, _) = setup(&d, &contract(required()));
+    checks_pass(&mut env, "c1");
+    for (agent, message) in [
+        ("r1", "REVIEW: INCONCLUSIVE\nFINDING: could not finish"),
+        ("r2", "REVIEW:"),
+        ("r3", "REVIEW: timed out after 600 s"),
+        ("r4", "REVIEW: approved"),
+    ] {
+        assert_eq!(reviewer(&mut env, agent, message), Decision::None);
+        assert!(
+            last_reasons(&env).contains("not a decision"),
+            "{agent}: {}",
+            last_reasons(&env)
+        );
+    }
+    assert!(gate(&env).get("reviews").is_none(), "{}", gate(&env));
+    assert!(blocked(&stop(&mut env, "Done.")).contains("REVIEW: APPROVED"));
+}
+
+#[test]
+fn a_line_before_the_review_line_is_not_a_review() {
+    let d = dir("first-line");
+    let (mut env, _) = setup(&d, &contract(required()));
+    checks_pass(&mut env, "c1");
+    reviewer(&mut env, "r1", "Looks fine to me.\nREVIEW: APPROVED");
+    assert!(reviews(&env).is_empty());
+}
+
+#[test]
+fn an_approval_by_a_reader_completes_and_is_stored_observed() {
+    let d = dir("approved");
+    let (mut env, _) = setup(&d, &contract(independent()));
+    checks_pass(&mut env, "c1");
+    assert_eq!(
+        reviewer(&mut env, "r1", "\n  REVIEW: APPROVED  \nFINDING: naming could be clearer"),
+        Decision::None
+    );
+    let stored = reviews(&env);
+    assert_eq!(stored[0]["provenance"], "observed");
+    assert_eq!(stored[0]["model"], Value::Null);
+    assert_eq!(stored[0]["findings"], json!(["naming could be clearer"]));
+    assert_eq!(stop(&mut env, "Done."), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+}
+
+/// A builder's own review, with its normal handback header below it, is caller-asserted: it
+/// satisfies `required` and not `independent`.
+#[test]
+fn a_builders_review_is_caller_asserted() {
+    for (policy, completes) in [(required(), true), (independent(), false)] {
+        let d = dir("builder");
+        let (mut env, _) = setup(&d, &contract(policy.clone()));
+        write(&mut env, "w1");
+        run(&mut env, "w1", "w1-c", "cargo test", 0);
+        let r = subagent_stop(
+            &mut env,
+            "w1",
+            "REVIEW: APPROVED\nVERDICT: PASS\nCHECKS RUN: 1\nCHECK C2 | cargo test | exit 0",
+        );
+        assert_eq!(r, Decision::None, "{policy}: a review error is journaled, not refused");
+        let stored = reviews(&env);
+        assert_eq!(stored[0]["provenance"], "caller-asserted", "{policy}");
+        assert_eq!(stored[0]["reviewer"], "w1");
+        let r = stop(&mut env, "Done.");
+        if completes {
+            assert_eq!(r, Decision::None, "{policy}");
+            assert_eq!(gate(&env)["state"], "completed");
+        } else {
+            let why = blocked(&r);
+            assert!(why.contains("independent"), "{why}");
+            plain(why);
+        }
+    }
+}
+
+#[test]
+fn the_chairs_review_is_caller_asserted() {
+    for (policy, completes) in [(required(), true), (independent(), false)] {
+        let d = dir("chair");
+        let (mut env, _) = setup(&d, &contract(policy.clone()));
+        checks_pass(&mut env, "c1");
+        let r = stop(&mut env, "REVIEW: APPROVED\nDone, the task is complete.");
+        let stored = reviews(&env);
+        assert_eq!(stored[0]["reviewer"], "main", "{policy}");
+        assert_eq!(stored[0]["provenance"], "caller-asserted", "{policy}");
+        if completes {
+            assert_eq!(r, Decision::None, "{policy}");
+        } else {
+            assert!(blocked(&r).contains("independent"), "{r:?}");
+        }
+    }
+}
+
+#[test]
+fn independent_alone_behaves_as_required() {
+    let d = dir("independent-only");
+    let (mut env, _) = setup(&d, &contract(json!({"required":false,"independent":true})));
+    checks_pass(&mut env, "c1");
+    assert!(blocked(&stop(&mut env, "Done.")).contains("REVIEW: APPROVED"));
+    reviewer(&mut env, "r1", "REVIEW: APPROVED");
+    assert_eq!(stop(&mut env, "Done."), Decision::None);
+}
+
+#[test]
+fn with_the_policy_off_reviews_are_stored_and_never_block() {
+    let d = dir("off");
+    let (mut env, _) = setup(&d, &contract(json!({"required":false,"independent":false})));
+    checks_pass(&mut env, "c1");
+    reviewer(&mut env, "r1", "REVIEW: REJECTED\nFINDING: needs work");
+    assert_eq!(reviews(&env)[0]["decision"], "rejected");
+    assert_eq!(stop(&mut env, "Done."), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+}
+
+#[test]
+fn the_same_review_twice_is_stored_once() {
+    let d = dir("dedupe");
+    let (mut env, _) = setup(&d, &contract(required()));
+    checks_pass(&mut env, "c1");
+    reviewer(&mut env, "r1", "REVIEW: APPROVED");
+    reviewer(&mut env, "r1", "REVIEW: APPROVED\nFINDING: again");
+    assert_eq!(reviews(&env).len(), 1);
+}
+
+#[test]
+fn findings_are_capped() {
+    let d = dir("cap");
+    let (mut env, _) = setup(&d, &contract(required()));
+    checks_pass(&mut env, "c1");
+    let long = "x".repeat(400);
+    let mut message = "REVIEW: REJECTED".to_owned();
+    for _ in 0..25 {
+        message.push_str(&format!("\nFINDING: {long}"));
+    }
+    reviewer(&mut env, "r1", &message);
+    let findings = reviews(&env)[0]["findings"].as_array().unwrap().clone();
+    assert_eq!(findings.len(), 20);
+    assert!(findings.iter().all(|f| f.as_str().unwrap().chars().count() == 300));
+}
+
+/// Foreground: SubagentStop arrives before the Agent tool's PostToolUse, which carries the
+/// model; background: the launch carries it and SubagentStop comes later (Claude Code 2.1.312).
+#[test]
+fn the_model_comes_from_the_agent_tool() {
+    let d = dir("model-fg");
+    let (mut env, _) = setup(&d, &contract(required()));
+    checks_pass(&mut env, "c1");
+    reviewer(&mut env, "r1", "REVIEW: APPROVED");
+    assert_eq!(reviews(&env)[0]["model"], Value::Null);
+    agent_post(&mut env, "r1", "completed", "claude-haiku-5-5");
+    assert_eq!(reviews(&env)[0]["model"], "claude-haiku-5-5");
+
+    let d = dir("model-bg");
+    let (mut env, _) = setup(&d, &contract(required()));
+    checks_pass(&mut env, "c1");
+    agent_post(&mut env, "r2", "async_launched", "claude-opus-5-5");
+    reviewer(&mut env, "r2", "REVIEW: APPROVED");
+    assert_eq!(reviews(&env)[0]["model"], "claude-opus-5-5");
+}
+
+/// A resumed task gets its reviews back before the receipts are replayed, so review state is
+/// not lost on the next unrelated hook call (the replay passes through an older candidate).
+#[test]
+fn a_reviewed_task_keeps_its_state_on_a_later_unrelated_call() {
+    let d = dir("survives");
+    let (mut env, digest) = setup(&d, &contract(required()));
+    write(&mut env, "w1");
+    run(&mut env, "w1", "w1-a", "cargo test", 0);
+    subagent_stop(&mut env, "w1", "VERDICT: PASS\nCHECKS RUN: 0");
+    *digest.lock().unwrap() = "two";
+    reviewer(&mut env, "r1", "REVIEW: APPROVED");
+    write(&mut env, "w2");
+    run(&mut env, "w2", "w2-a", "cargo test", 0);
+    assert_eq!(
+        subagent_stop(&mut env, "w2", "VERDICT: PASS\nCHECKS RUN: 0"),
+        Decision::None
+    );
+    assert_eq!(gate(&env)["state"], "ready_for_review");
+    read(&mut env, "main");
+    assert_eq!(gate(&env)["state"], "ready_for_review");
+    assert_eq!(stop(&mut env, "Done."), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+}
+
+/// A builder's handback does not reach review without a counting review; the review error is
+/// journaled and the handback is not refused for it.
+#[test]
+fn a_builder_handback_without_review_stays_verifying() {
+    let d = dir("handback");
+    let (mut env, _) = setup(&d, &contract(required()));
+    write(&mut env, "w1");
+    run(&mut env, "w1", "w1-a", "cargo test", 0);
+    assert_eq!(
+        subagent_stop(&mut env, "w1", "VERDICT: PASS\nCHECKS RUN: 0"),
+        Decision::None
+    );
+    assert_eq!(gate(&env)["state"], "verifying");
+    assert!(last_reasons(&env).contains("review"), "{}", last_reasons(&env));
+}
+
+/// A rejection recorded while the task waits in review moves it back to verifying.
+#[test]
+fn a_rejection_in_review_moves_the_task_back_to_verifying() {
+    let d = dir("back");
+    let (mut env, _) = setup(&d, &contract(required()));
+    reviewer(&mut env, "r1", "REVIEW: APPROVED");
+    write(&mut env, "w1");
+    run(&mut env, "w1", "w1-a", "cargo test", 0);
+    subagent_stop(&mut env, "w1", "VERDICT: PASS\nCHECKS RUN: 0");
+    assert_eq!(gate(&env)["state"], "ready_for_review");
+    reviewer(&mut env, "r2", "REVIEW: REJECTED\nFINDING: wrong");
+    assert_eq!(gate(&env)["state"], "verifying");
+    assert!(blocked(&stop(&mut env, "Done.")).contains("rejected"));
+}
+
+/// A gate.json written before WP5 (no `reviews` key) still verifies.
+#[test]
+fn a_gate_written_before_reviews_verifies() {
+    const CONTRACT: &str = r#"{"approval":{"at":1000,"by":"person","via":"task-start"},"artifacts":[],"base_sha":null,"criteria":[{"check":"test","command":"cargo test","id":"C2","mandatory":true}],"forbidden_effects":[],"goal":"old gate","id":"wp5-old","isolation":"none","limits":{},"max_repair_rounds":2,"review":{"independent":false,"required":true},"schema_version":2,"scope":["src/"]}"#;
+    const GATE: &str = r#"{"candidate":{"base_commit":"base","dirty_digest":"one"},"checkpoint_hash":"12749df194674ac7cd2ba0ec551905314cd8a86bec6f5ea6e274a338a303f37c","consumed_repair_rounds":0,"continuations":0,"contract_id":"wp5-old","handback_refusals":{},"next_action":"","open_findings":[],"prompt_id":null,"receipts":[{"candidate":{"base_commit":"base","dirty_digest":"one"},"claim_supported":true,"command":"cargo test","criterion":"C2","cwd":"c:/temp/cs-capture","exit_code":0,"finished_at":1000,"hash":"8378b6eeee5f3ea6f80f17ea405b7b3247590fe91d6eae8834d0cf48bf47b687","output_ref":"observed:wp5-old:run","prev":"genesis","started_at":1000}],"starting_candidate":{"base_commit":"base","dirty_digest":"one"},"state":"completed"}"#;
+    let d = dir("old-gate");
+    let state_dir = d.0.join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(state_dir.join("contract.json"), format!("{CONTRACT}\n")).unwrap();
+    fs::write(state_dir.join("gate.json"), format!("{GATE}\n")).unwrap();
+    let (_, digest) = state::read_contract(&state_dir).unwrap();
+    assert!(matches!(
+        state::load_gate(&state_dir, &digest).unwrap(),
+        Stored::Valid(_)
+    ));
+    let mut env = env_with(&d, &serde_json::from_str(CONTRACT).unwrap(), Box::new(Fixed));
+    fs::write(state_dir.join("gate.json"), format!("{GATE}\n")).unwrap();
+    read(&mut env, "main");
+    assert!(!last_reasons(&env).contains("tampered"), "{}", last_reasons(&env));
+    assert!(gate(&env).get("reviews").is_none());
+}
+
+struct Fixed;
+impl CandidateProvider for Fixed {
+    fn observe(&self) -> Result<Candidate, String> {
+        Ok(Candidate {
+            id: CandidateId {
+                base_commit: "base".into(),
+                dirty_digest: "one".into(),
+            },
+            provenance: "fake".into(),
+            changed_paths: vec!["src/lib.rs".into()],
+        })
+    }
+}
+
+/// WP4 interplay: at a reached turn limit a new reviewer cannot be dispatched, but Stop is
+/// judged first, so evidence and a counting review still certify.
+#[test]
+fn at_a_reached_limit_a_review_already_recorded_still_certifies() {
+    let d = dir("limit");
+    let mut c = contract(required());
+    c["limits"] = json!({"turns":2});
+    let (mut env, _) = setup(&d, &c);
+    checks_pass(&mut env, "c1");
+    reviewer(&mut env, "r1", "REVIEW: APPROVED");
+    let dispatch = tool(&env, "main", "agent-1", "Agent", json!({"prompt":"review"}));
+    assert!(matches!(handle(&dispatch, &mut env), Decision::Deny(why) if why.contains("task limit reached")));
+    assert_eq!(stop(&mut env, "Done."), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+}
+
+// ---- identical-tree transfer: real git -------------------------------------------------
+
+fn git(project: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+}
+
+/// A repository with a committed file, then modified; the state lives outside it.
+fn repository(name: &str) -> (Dir, Env) {
+    let d = dir(name);
+    let project = d.0.join("project");
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/a.rs"), "a1\n").unwrap();
+    git(&project, &["init", "-q"]);
+    git(&project, &["add", "."]);
+    git(&project, &["commit", "-q", "-m", "one"]);
+    fs::write(project.join("src/a.rs"), "a2\n").unwrap();
+    // The state directory is beside the project; payloads carry the project as cwd.
+    let env = env_with(&d, &contract(required()), Box::new(GitCandidate { cwd: project }));
+    (d, env)
+}
+fn project_of(env: &Env) -> PathBuf {
+    env.state_dir.parent().unwrap().join("project")
+}
+fn in_project(env: &Env, mut payload: Value) -> Value {
+    payload["cwd"] = json!(project_of(env));
+    payload
+}
+
+#[test]
+fn a_commit_of_identical_content_keeps_an_approval_and_a_rejection() {
+    for decision in ["APPROVED", "REJECTED"] {
+        let (_d, mut env) = repository("tree");
+        let project = project_of(&env);
+        let run = |env: &mut Env, kind: &str| {
+            let mut p = in_project(
+                env,
+                json!({"hook_event_name":kind,"session_id":"session","agent_id":"main",
+                    "tool_use_id":"run","tool_name":"Bash","tool_input":{"command":"cargo test"}}),
+            );
+            if kind == "PostToolUse" {
+                p["tool_response"] = json!({"interrupted":false});
+            }
+            assert_eq!(handle(&p, env), Decision::None);
+        };
+        run(&mut env, "PreToolUse");
+        run(&mut env, "PostToolUse");
+        let read = in_project(
+            &env,
+            json!({"hook_event_name":"PreToolUse","session_id":"session","agent_id":"r1",
+                "tool_use_id":"read","tool_name":"Read",
+                "tool_input":{"file_path":project.join("src/a.rs")}}),
+        );
+        assert_eq!(handle(&read, &mut env), Decision::None);
+        let review = in_project(
+            &env,
+            json!({"hook_event_name":"SubagentStop","session_id":"session","agent_id":"r1",
+                "stop_hook_active":false,
+                "last_assistant_message":format!("REVIEW: {decision}\nFINDING: one")}),
+        );
+        assert_eq!(handle(&review, &mut env), Decision::None);
+        git(&project, &["commit", "-q", "-a", "-m", "work"]);
+        let stop = in_project(
+            &env,
+            json!({"hook_event_name":"Stop","session_id":"session","stop_hook_active":false,
+                "last_assistant_message":"Done."}),
+        );
+        let r = handle(&stop, &mut env);
+        if decision == "APPROVED" {
+            assert_eq!(r, Decision::None, "the approval follows the commit");
+            assert_eq!(gate(&env)["state"], "completed");
+        } else {
+            assert!(blocked(&r).contains("rejected"), "the rejection follows the commit: {r:?}");
+        }
+        let stored = reviews(&env);
+        assert_eq!(stored.len(), 2, "{stored:?}");
+        assert!(stored.iter().all(|r| r["tree"].is_string()), "{stored:?}");
+        assert_ne!(stored[0]["candidate"], stored[1]["candidate"]);
+    }
+}
+
+// ---- contract revisions and repair rounds: the production layout ------------------------
+
+struct Production {
+    _d: Dir,
+    env: Env,
+    project: PathBuf,
+    task: String,
+    prompts: u64,
+}
+
+fn production(name: &str, review: Value) -> Production {
+    let d = dir(name);
+    let project = d.0.join("project");
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    git(&project, &["init", "-q"]);
+    git(&project, &["add", "Cargo.toml"]);
+    git(&project, &["commit", "-q", "-m", "one"]);
+    let root = d.0.join("state");
+    fs::create_dir_all(&root).unwrap();
+    let env = Env {
+        state_dir: root,
+        state_location: "test",
+        candidate: Box::new(Switch(Arc::new(Mutex::new("one")))),
+        clock: || 1_000,
+        level: Setting {
+            level: Level::Enforce,
+            ..Default::default()
+        },
+    };
+    let mut p = Production {
+        _d: d,
+        env,
+        project,
+        task: String::new(),
+        prompts: 0,
+    };
+    let proposal = json!({"id":"wp5","goal":"review","scope":["src/"],"forbidden_effects":[],
+        "max_repair_rounds":2,"review":review,"artifacts":["src/lib.rs"],
+        "criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test -p fixture"}]});
+    let started = p.apply("start", None, proposal).unwrap();
+    p.task = started["task_id"].as_str().unwrap().to_owned();
+    p
+}
+impl Production {
+    fn apply(&mut self, action: &str, task: Option<&str>, contract: Value) -> Result<Value, String> {
+        self.prompts += 1;
+        let message = "Implement a small change";
+        let prompt = json!({"hook_event_name":"UserPromptSubmit","cwd":self.project,
+            "session_id":"session","prompt_id":format!("p{}", self.prompts),"prompt":message});
+        handle(&prompt, &mut self.env);
+        let event = autonomy::pending(&self.env.state_dir, "session").unwrap().unwrap();
+        let mut call = json!({"event_id":event["event_id"],"nonce":event["nonce"],
+            "prompt_hash":event["prompt_hash"],"action":action,"task_id":task});
+        if !contract.is_null() {
+            call["contract"] = contract;
+        }
+        autonomy::propose(&self.env.state_dir, &self.project, &call)
+    }
+    fn written(&self) -> Value {
+        let dir = self.env.state_dir.join("tasks").join(&self.task);
+        serde_json::from_str(&fs::read_to_string(dir.join("contract.json")).unwrap()).unwrap()
+    }
+    fn hook(&mut self, mut payload: Value) -> Decision {
+        payload["cwd"] = json!(self.project);
+        handle(&payload, &mut self.env)
+    }
+    /// Every mandatory criterion of the written contract runs once, exit 0.
+    fn checks(&mut self, id: &str) {
+        let written = self.written();
+        for (n, criterion) in written["criteria"].as_array().unwrap().iter().enumerate() {
+            if criterion["mandatory"] != true {
+                continue;
+            }
+            let command = match &criterion["command"] {
+                Value::Array(list) => list[0].clone(),
+                one => one.clone(),
+            };
+            for kind in ["PreToolUse", "PostToolUse"] {
+                let d = self.hook(json!({"hook_event_name":kind,"session_id":"session",
+                    "agent_id":"main","tool_use_id":format!("{id}-{n}"),"tool_name":"Bash",
+                    "tool_input":{"command":command},"tool_response":{"interrupted":false}}));
+                assert_eq!(d, Decision::None, "{kind}");
+            }
+        }
+    }
+    fn review(&mut self, agent: &str, message: &str) -> Decision {
+        self.hook(json!({"hook_event_name":"SubagentStop","session_id":"session",
+            "agent_id":agent,"stop_hook_active":false,"last_assistant_message":message}))
+    }
+    fn stop(&mut self) -> Decision {
+        self.hook(json!({"hook_event_name":"Stop","session_id":"session",
+            "stop_hook_active":false,"last_assistant_message":"Done."}))
+    }
+    fn gate(&self) -> Value {
+        let dir = self.env.state_dir.join("tasks").join(&self.task);
+        serde_json::from_slice(&fs::read(dir.join("gate.json")).unwrap()).unwrap()
+    }
+}
+
+/// An agent's start may set `review` itself (a deliberate deviation from the WP2 follow-up); a
+/// revision cannot switch it off, and cannot remove an artifact.
+#[test]
+fn a_revision_cannot_switch_review_off_or_remove_an_artifact() {
+    let mut p = production("preserves", independent());
+    assert_eq!(p.written()["review"], independent());
+    let task = p.task.clone();
+    for (change, what) in [
+        (json!({"review":{"required":false,"independent":true}}), "required off"),
+        (json!({"review":{"required":true,"independent":false}}), "independent off"),
+        (json!({"artifacts":[]}), "artifact removed"),
+    ] {
+        let mut revised = p.written();
+        for (key, value) in change.as_object().unwrap() {
+            revised[key] = value.clone();
+        }
+        let why = p.apply("revise", Some(&task), revised).expect_err(what);
+        assert!(why.contains("review") || why.contains("artifact"), "{what}: {why}");
+    }
+    let mut kept = p.written();
+    kept["artifacts"] = json!(["src/lib.rs", "src/extra.rs"]);
+    p.apply("revise", Some(&task), kept).unwrap();
+}
+
+/// A rejection is the candidate judged wrong, so it spends a repair round (once per version of
+/// the code); an absent review spends none.
+#[test]
+fn a_rejection_spends_a_repair_round_and_an_absent_review_does_not() {
+    let mut p = production("rounds-absent", required());
+    p.checks("c1");
+    let why = blocked(&p.stop()).to_owned();
+    assert!(why.contains("no repair round spent"), "{why}");
+    assert_eq!(p.gate()["consumed_repair_rounds"], 0);
+
+    let mut p = production("rounds-rejected", required());
+    p.checks("c1");
+    assert_eq!(
+        p.review("r1", "REVIEW: REJECTED\nFINDING: wrong result"),
+        Decision::None
+    );
+    let why = blocked(&p.stop()).to_owned();
+    assert!(why.contains("rejected"), "{why}");
+    assert_eq!(p.gate()["consumed_repair_rounds"], 1, "{why}");
+    let task = p.task.clone();
+    p.apply("continue", Some(&task), Value::Null).unwrap();
+    let why = blocked(&p.stop()).to_owned();
+    assert!(why.contains("already charged"), "{why}");
+    assert_eq!(p.gate()["consumed_repair_rounds"], 1);
+}

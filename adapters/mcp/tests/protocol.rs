@@ -357,3 +357,56 @@ fn task_state_shows_no_turn_count_for_a_wall_clock_only_limit() {
     assert_eq!(state["limits"]["turns"], Value::Null, "{state}");
     assert_eq!(state["limits"]["turns_used"], Value::Null, "{state}");
 }
+
+/// WP5: `task_state` shows the review policy and the latest review for the checkpoint's
+/// candidate; the MCP server records no review, so a review-required task does not reach review.
+#[test]
+fn task_state_shows_the_review_policy_and_the_latest_review() {
+    use coding_supervisor::{ReviewDecision, ReviewProvenance, ReviewRecord};
+    use supervisor_claude_code::state::{StoredReview, Stored, load_gate, read_contract, save_gate};
+    let d = dir("review");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["review"] = json!({"required":true,"independent":false});
+    common::ok(&s, "task_start", contract);
+    common::observe(&s, "one", &["src/lib.rs"]);
+    for c in ["C1", "C2", "C3", "C4"] {
+        common::pass(&s, c);
+    }
+    let why = common::refused(&s, "accept_try", json!({}));
+    assert!(why.contains("review"), "{why}");
+    let state = common::task_state(&s);
+    assert_eq!(
+        state["review"],
+        json!({"required":true,"independent":false,"latest":null}),
+        "{state}"
+    );
+    let task = supervisor_claude_code::lifecycle::active_task(s.state_dir())
+        .unwrap()
+        .unwrap();
+    let (_, digest) = read_contract(&task.dir).unwrap();
+    let Stored::Valid(mut gate) = load_gate(&task.dir, &digest).unwrap() else {
+        panic!("no valid gate");
+    };
+    let candidate = gate.checkpoint.candidate.clone().unwrap();
+    gate.reviews.push(StoredReview {
+        review: ReviewRecord {
+            reviewer: "r1".into(),
+            model: Some("claude-haiku-5-5".into()),
+            decision: ReviewDecision::Approved,
+            findings: vec![],
+            at: 5,
+            candidate,
+            provenance: ReviewProvenance::Observed,
+        },
+        tree: None,
+    });
+    save_gate(&task.dir, &gate, &digest).unwrap();
+    let state = common::task_state(&s);
+    assert_eq!(
+        state["review"]["latest"],
+        json!({"reviewer":"r1","model":"claude-haiku-5-5","decision":"approved","provenance":"observed","findings":0,"at":5}),
+        "{state}"
+    );
+    common::ok(&s, "accept_try", json!({}));
+}
