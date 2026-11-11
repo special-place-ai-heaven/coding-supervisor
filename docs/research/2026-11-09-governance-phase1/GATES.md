@@ -23,8 +23,8 @@ The cargo gates use the commands the supervisor contract (`supervisor-contract.j
   EXPECT: heavy ones skipped
   EVIDENCE: automatic-evidence=v1; definition-sha256=57aef9b317b838f543e4723ac4e758ad951523670bf0c96e93ba49d5100cba9c; exit=0; EXPECT=matched; output-sha256=d0fb5dd57dd610adaf05b9f5c8a656dcea5249f9d59ef90ebea4268abaf8455c; output-bytes=58; shell=C:\WINDOWS\system32\cmd.exe; cwd=E:\project\cs-wt\docs-ledger; path=7b67f14e9903/87 entries
 
-- [ ] W0.3: the owner was told the exact check names to require in ruleset 26854669
-  EVIDENCE: pending
+- [x] W0.3: the owner was told the exact check names to require in ruleset 26854669
+  EVIDENCE: told in session on 2026-11-11 (`Decide whether to run`, `Linux: format, lint, test, core dependency check`, `Windows (hosted): test`, and later `Verify supervisor receipts`). The owner then decided against branch protection: "no need for branch protection since any commiter needs to be vetted by me", with the standing rule that no agent merges while a check is red.
 
 - [x] W1.1: fail-closed by default is merged into main
   CHECK: node docs/research/2026-11-09-governance-phase1/check.mjs merged feat/fail-closed
