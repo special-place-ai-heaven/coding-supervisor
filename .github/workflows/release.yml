@@ -29,6 +29,12 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
     secrets: inherit
+    # A called workflow's job gets no more than this: ci.yml's receipt job asks to read pull
+    # requests and issues (the label timeline), and on a tag it only prints that none is needed.
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
 
   runner:
     uses: ./.github/workflows/pick-runner.yml

@@ -1,10 +1,18 @@
 # G26: the hang.rs tests measure wall-clock bounds; they run one at a time (see cli/tests/hang.rs).
 [test-groups]
 serial-hang = { max-threads = 1 }
+# WP7: each receipt test drives many real git processes under the gate's 5 s git deadline; four
+# at once on a loaded Windows host failed to compute a tree, most likely that deadline. The
+# deadline stays.
+receipt-git = { max-threads = 2 }
 
 [[profile.default.overrides]]
 filter = 'binary(hang)'
 test-group = 'serial-hang'
+
+[[profile.default.overrides]]
+filter = 'binary(receipt_verify) | binary(receipt_in_tree)'
+test-group = 'receipt-git'
 
 # The node hook suite asserts 20-25 s answer bounds on spawned processes; it runs with nothing
 # else beside it (G42), so other tests cannot starve it past them. Bounds unchanged.

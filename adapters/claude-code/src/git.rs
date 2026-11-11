@@ -10,6 +10,12 @@ use std::time::{Duration, Instant};
 
 const DEADLINE: Duration = Duration::from_secs(5);
 
+/// WP7: where committed receipt bundles live, repository-relative. Left out of the candidate
+/// identity (dirty digest, changed paths and every tree), so committing a bundle does not make
+/// the evidence it carries stale.
+pub const RECEIPTS_DIR: &str = "supervisor-receipts";
+const RECEIPTS_EXCLUDE: &str = ":(top,exclude)supervisor-receipts/";
+
 /// Why git gave no exit status to read.
 pub enum Failure {
     /// git could not be started or waited for.
@@ -122,12 +128,7 @@ pub fn only_docs_changed_since(cwd: &Path, state_dir: &Path, base: &str) -> bool
     if base.len() < 7 || !base.bytes().all(|b| b.is_ascii_hexdigit()) {
         return false;
     }
-    let docs = ci_docs_only(|file| {
-        run(cwd, &["show", &format!("{base}:{file}")])
-            .ok()
-            .filter(|out| out.status.success())
-            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
-    });
+    let docs = docs_list_at(cwd, base);
     // An index entry marked skip-worktree or assume-unchanged hides an edit from `git add`, so
     // the worktree's tree would not show it: every entry must be a plain cached one (`H`).
     let plain_index = run(cwd, &["ls-files", "-v"])
@@ -144,12 +145,113 @@ pub fn only_docs_changed_since(cwd: &Path, state_dir: &Path, base: &str) -> bool
             .is_some_and(|was| tree(cwd, state_dir, None, &docs) == Some(was))
 }
 
-/// The tree of `commit`, or of the worktree, without the `docs` globs.
-fn tree(cwd: &Path, state_dir: &Path, commit: Option<&str>, docs: &[String]) -> Option<String> {
-    let ok = |args: &[&str], env: &[(&str, &std::ffi::OsStr)]| {
-        run_with_env(cwd, args, env)
+/// WP7: a full object id (40 hex for SHA-1, 64 for SHA-256), safe to hand to git as a commit:
+/// never an option, a ref name or a revision expression.
+pub fn is_commit_id(text: &str) -> bool {
+    matches!(text.len(), 40 | 64) && text.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The documentation list as commit `base` holds it (see [`ci_docs_only`]).
+pub fn docs_list_at(cwd: &Path, base: &str) -> Vec<String> {
+    ci_docs_only(|file| {
+        run(cwd, &["show", &format!("{base}:{file}")])
             .ok()
             .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+    })
+}
+
+/// WP7: the tree a receipt bundle names: of `commit`, or of the worktree with `None`, without
+/// the `docs` globs and without `supervisor-receipts/`, built in a scratch index under
+/// `scratch_dir`. Export and `receipt verify --bundle` both use it, with the documentation list
+/// of the same base commit. `Err` says whether git timed out or failed.
+pub fn bundle_tree(
+    cwd: &Path,
+    scratch_dir: &Path,
+    commit: Option<&str>,
+    docs: &[String],
+) -> Result<String, &'static str> {
+    let timed_out = std::cell::Cell::new(false);
+    tree_noting(cwd, scratch_dir, commit, docs, &timed_out).ok_or(if timed_out.get() {
+        "git did not answer within its deadline (the machine may be busy; try again)"
+    } else {
+        "git failed"
+    })
+}
+
+/// WP7: the paths that differ between two trees, sorted, renames listed as both paths.
+pub fn changed_between(cwd: &Path, from: &str, to: &str) -> Option<Vec<String>> {
+    let out = run(
+        cwd,
+        &[
+            "diff-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            "--no-renames",
+            from,
+            to,
+        ],
+    )
+    .ok()
+    .filter(|out| out.status.success())?;
+    let mut paths: Vec<String> = out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Some(paths)
+}
+
+/// WP7: the repository's identity, its root commits sorted (a merged history can have more than
+/// one). `Err` names why there is none; a shallow clone is refused, since its oldest commit is
+/// not the root.
+pub fn root_commits(cwd: &Path) -> Result<Vec<String>, &'static str> {
+    let ok = |args: &[&str]| {
+        run(cwd, args)
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    match ok(&["rev-parse", "--is-shallow-repository"])
+        .as_deref()
+        .map(str::trim)
+    {
+        Some("false") => {}
+        Some(_) => return Err("the repository is a shallow clone; fetch its full history"),
+        None => return Err("git could not read the repository"),
+    }
+    let text = ok(&["rev-list", "--max-parents=0", "HEAD"]).ok_or("git could not read HEAD")?;
+    let mut roots: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+    roots.sort();
+    if roots.is_empty() {
+        return Err("the repository has no commit");
+    }
+    Ok(roots)
+}
+
+/// The tree of `commit`, or of the worktree, without the `docs` globs.
+fn tree(cwd: &Path, state_dir: &Path, commit: Option<&str>, docs: &[String]) -> Option<String> {
+    tree_noting(cwd, state_dir, commit, docs, &std::cell::Cell::new(false))
+}
+
+/// [`tree`], setting `timed_out` when a git it ran passed the deadline.
+fn tree_noting(
+    cwd: &Path,
+    state_dir: &Path,
+    commit: Option<&str>,
+    docs: &[String],
+    timed_out: &std::cell::Cell<bool>,
+) -> Option<String> {
+    let ok = |args: &[&str], env: &[(&str, &std::ffi::OsStr)]| match run_with_env(cwd, args, env) {
+        Ok(out) => Some(out).filter(|out| out.status.success()),
+        Err(failure) => {
+            timed_out.set(timed_out.get() || matches!(failure, Failure::TimedOut(_)));
+            None
+        }
     };
     // Per process: parallel hook calls must not share one scratch index.
     let scratch = state_dir.join(format!("scratch-index-{}", std::process::id()));
@@ -178,15 +280,35 @@ fn tree(cwd: &Path, state_dir: &Path, commit: Option<&str>, docs: &[String]) -> 
         .collect();
     let mut add = match commit {
         Some(commit) => vec!["read-tree", commit],
-        // The gate's own fallback state directory inside the project is not content.
-        None => vec!["add", "-A", "--", ":/", ":(top,exclude).supervisor/"],
+        // The gate's own fallback state directory inside the project is not content, and
+        // neither are committed receipt bundles (WP7), which describe the tree they sit in.
+        None => vec![
+            "add",
+            "-A",
+            "--",
+            ":/",
+            ":(top,exclude).supervisor/",
+            RECEIPTS_EXCLUDE,
+        ],
     };
     if commit.is_none() {
         add.extend(excludes.iter().map(String::as_str));
     }
     // Tracked and committed documentation leaves the scratch index too, so a committed docs
-    // edit does not change the tree either.
-    let includes: Vec<String> = docs.iter().map(|p| format!(":(top,glob){p}")).collect();
+    // edit does not change the tree either. So do tracked bundles; for the worktree only when the
+    // folder is there, so a project that never exports runs no extra git.
+    // shortcut: a bundle deleted from the worktree but still in the index stays in the tree
+    // until that deletion is committed; check the index instead if that ever matters.
+    let mut includes: Vec<String> = docs.iter().map(|p| format!(":(top,glob){p}")).collect();
+    let receipts_here = match commit {
+        Some(_) => true,
+        None => {
+            crate::location::worktree_root(cwd).is_some_and(|top| top.join(RECEIPTS_DIR).is_dir())
+        }
+    };
+    if receipts_here {
+        includes.push(format!(":(top){RECEIPTS_DIR}/"));
+    }
     let mut remove = vec!["rm", "--cached", "-r", "-q", "--ignore-unmatch", "--"];
     remove.extend(includes.iter().map(String::as_str));
     let tree = ok(&add, &env)

@@ -180,6 +180,168 @@ jobs:
           tar zxf "$dir/cargo-audit.tgz" --strip-components=1 -C "$dir" "$name/cargo-audit"
           "$dir/cargo-audit" audit
 
+  # WP7: every pull request, whatever its base, must add a receipt bundle under
+  # supervisor-receipts/ that `supervisor receipt verify --bundle` accepts, and the bundled
+  # contracts' acceptance commands are run again here, unless `supervisor receipt required` finds
+  # an exemption (documentation only, release-please's version-only pull request, or the
+  # receipt-exempt label applied by the owner after the last push). The event's base is never
+  # used: changing a pull request's base starts no new run, so a pull request is judged on
+  # everything it would bring to the default branch. The key list, the docs list, the
+  # release-please config and the diff base all come from the default branch's tip at run time
+  # (origin/<default branch>; changed paths are merge-base(tip, head)...head), and the labels and
+  # who applied them from the API, read before any pull request code is built. A push to the
+  # default branch and a tag (release.yml's call carries its tag push) are a no-op success; any
+  # other event fails this job, so a new trigger cannot pass unchecked.
+  # Limit: on every pull request, a fork's included, this workflow file and the verifier binary
+  # both come from the pull request itself; the protection rests on review plus the key list read
+  # from the default branch. After the owner applies the label, re-run this job: label events do
+  # not start CI, and a later push needs the label removed and applied again. GitHub-hosted on
+  # purpose: a fork's pull request must never run on a self-hosted machine, the job runs for
+  # docs-only changes too (the picker is skipped then), and it needs gh and jq, which the fresh
+  # runners lack. Re-running the acceptance commands repeats part of the test job; it is kept to
+  # the bundled contracts' own commands.
+  receipts:
+    name: Verify supervisor receipts
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # The label timeline: GET /repos/.../issues/<n>/timeline.
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Decide what this event needs
+        id: event
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            echo "pr=true" >> "$GITHUB_OUTPUT"
+            echo "A pull request: its receipt is checked."
+          elif [ "$EVENT" = push ] && [ -n "$DEFAULT" ] && [ "$REF" = "refs/heads/$DEFAULT" ]; then
+            echo "No receipt is required for a push to $REF."
+          elif [ "$EVENT" = push ] && [ "${REF#refs/tags/}" != "$REF" ]; then
+            echo "No receipt is required for the tag $REF."
+          else
+            echo "::error::a $EVENT event ($REF) is not one this job knows; it fails rather than pass unchecked"
+            exit 1
+          fi
+
+      # The only step with a token, run before any pull request code is built or run. The file it
+      # writes stays writable by the later build of pull request code; that is inside the stated
+      # limit that the verifier itself comes from the pull request.
+      - name: Read the label timeline from the API
+        if: steps.event.outputs.pr == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/receipts"
+          gh api --paginate "repos/$REPO/issues/$PR/timeline" --jq '.[] | @json' > "$RUNNER_TEMP/receipts/timeline.jsonl"
+
+      # The pull request's own head commit, not the merge commit: a bundle names the tree of the
+      # commit it was made for. fetch-depth 0 also fetches every branch; no credentials are left
+      # in .git/config.
+      - uses: actions/checkout@v7
+        if: steps.event.outputs.pr == 'true'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        if: steps.event.outputs.pr == 'true'
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.event.outputs.pr == 'true'
+        continue-on-error: true
+
+      - name: Build the verifier from this pull request
+        if: steps.event.outputs.pr == 'true'
+        run: |
+          cargo build --locked -p supervisor
+          cp target/debug/supervisor "$RUNNER_TEMP/receipts/supervisor"
+
+      - name: Decide whether a receipt is required, then verify every bundle this pull request adds
+        id: verify
+        if: steps.event.outputs.pr == 'true'
+        env:
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+          # The repository belongs to an organisation, which never applies a label, so the
+          # owner's own login decides the label and is release-please's author (its token is
+          # the owner's).
+          OWNER_LOGIN: special-place-administrator
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/receipts"
+          bin="$dir/supervisor"
+          if [ "$(git rev-parse HEAD)" != "$HEAD" ]; then
+            echo "::error::the checkout is not the pull request's head commit $HEAD"
+            exit 1
+          fi
+          # The default branch's tip, fetched again explicitly; without it nothing is judged.
+          git fetch --no-tags --quiet origin "+refs/heads/$DEFAULT:refs/remotes/origin/$DEFAULT"
+          if ! tip=$(git rev-parse --verify --quiet "refs/remotes/origin/$DEFAULT^{commit}"); then
+            echo "::error::the default branch $DEFAULT could not be resolved"
+            exit 1
+          fi
+          fork=$(git merge-base "$tip" "$HEAD") || { echo "::error::this pull request shares no history with $DEFAULT, so there is no point to compare from"; exit 1; }
+          echo "default branch $DEFAULT at $tip; this pull request leaves it at $fork"
+          # Lists from the default branch, so a pull request cannot widen them for itself.
+          git show "$tip:.github/docs-paths.txt" > "$dir/docs-paths.txt" 2>/dev/null || : > "$dir/docs-paths.txt"
+          git show "$tip:.github/release-please-config.json" > "$dir/release-please-config.json" 2>/dev/null || echo '{}' > "$dir/release-please-config.json"
+          git diff --name-only --no-renames "$fork" "$HEAD" > "$dir/changed.txt"
+          "$bin" receipt required --event "$GITHUB_EVENT_PATH" --labels "$dir/timeline.jsonl" \
+            --changed "$dir/changed.txt" --docs-paths "$dir/docs-paths.txt" \
+            --release-config "$dir/release-please-config.json" --owner "$OWNER_LOGIN" > "$dir/required.json"
+          cat "$dir/required.json"
+          if [ "$(jq -r .required "$dir/required.json")" != true ]; then
+            echo "No receipt required: $(jq -r .reason "$dir/required.json")"
+            exit 0
+          fi
+          if ! git show "$tip:supervisor-keys.json" > "$dir/keys.json" 2>/dev/null; then
+            echo "::error::the default branch has no supervisor-keys.json, so no receipt signature can be trusted"
+            exit 1
+          fi
+          # Only bundles this pull request adds or changes count; the folder accumulates on main.
+          mapfile -t bundles < <(git diff --name-only --no-renames --diff-filter=AM "$fork" "$HEAD" -- supervisor-receipts/)
+          if [ "${#bundles[@]}" -eq 0 ]; then
+            echo "::error::this pull request adds no receipt bundle under supervisor-receipts/ and no exemption applies; run 'supervisor receipt export' on the completed task and commit the bundle, or ask the owner for the receipt-exempt label"
+            exit 1
+          fi
+          : > "$dir/commands.jsonl"
+          for bundle in "${bundles[@]}"; do
+            echo "verifying $bundle"
+            "$bin" receipt verify --bundle "$bundle" --keys "$dir/keys.json" --project . --base "$fork" | tee "$dir/verify.json"
+            jq -c '.acceptance[].command' "$dir/verify.json" >> "$dir/commands.jsonl"
+          done
+          echo "rerun=true" >> "$GITHUB_OUTPUT"
+
+      # No token or secret is in this step's environment: the step names none, and env -i drops
+      # the runner's own variables. Hosted runners allow sudo, so a command could still reach the
+      # job's token through the runner; that is why the job's permissions are read-only. Commands
+      # run unchanged with bash on Linux; one recorded with Windows-only syntax fails the job, it
+      # is never skipped.
+      - name: Re-run the bundled contracts' acceptance commands
+        if: steps.event.outputs.pr == 'true' && steps.verify.outputs.rerun == 'true'
+        run: |
+          set -euo pipefail
+          sort -u "$RUNNER_TEMP/receipts/commands.jsonl" > "$RUNNER_TEMP/receipts/unique.jsonl"
+          while IFS= read -r line; do
+            command=$(jq -r . <<< "$line")
+            echo "::group::$command"
+            env -i PATH="$PATH" HOME="$HOME" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+              RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_TERM_COLOR=always RUSTC_WRAPPER= \
+              timeout 1800 bash -c "$command" < /dev/null
+            echo "::endgroup::"
+          done < "$RUNNER_TEMP/receipts/unique.jsonl"
+
   # Formatting, lint and the dependency check are the same on both systems and run on Linux.
   windows-hosted:
     # GitHub-hosted (owner, 2026-11-09): the shared interim Windows runner was too loaded for the

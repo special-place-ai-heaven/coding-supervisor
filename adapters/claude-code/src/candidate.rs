@@ -105,6 +105,12 @@ impl GitCandidate {
         }
         let mut changed_paths: Vec<String> = paths
             .iter()
+            // Porcelain paths are repository-root relative: the bundle folder is matched there,
+            // before the subdirectory prefix comes off.
+            .filter(|p| {
+                !p.strip_prefix(crate::git::RECEIPTS_DIR)
+                    .is_some_and(|rest| rest.starts_with('/'))
+            })
             .map(|p| p.strip_prefix(prefix.as_str()).unwrap_or(p).to_owned())
             .filter(|p| !p.is_empty() && !p.starts_with(".supervisor/"))
             .collect();

@@ -119,6 +119,42 @@ fn commit_all_after_a_passing_run_keeps_the_evidence() {
     accepted(&f, &mut env);
 }
 
+/// WP7: a receipt bundle under `supervisor-receipts/`, written beside the work and not
+/// committed, is outside the candidate: no stale evidence and no out-of-scope path.
+#[test]
+fn an_uncommitted_receipt_bundle_keeps_the_evidence() {
+    let (f, mut env) = setup();
+    passing_run(&f, &mut env);
+    fs::create_dir_all(f.project.join("supervisor-receipts")).unwrap();
+    fs::write(f.project.join("supervisor-receipts/t.json"), "{}\n").unwrap();
+    accepted(&f, &mut env);
+}
+
+/// WP7: committing the work and then the bundle leaves the tree identity unchanged, in a project
+/// with no documentation list (no other exclusion is in play).
+#[test]
+fn committing_a_receipt_bundle_keeps_the_evidence() {
+    let (f, mut env) = setup();
+    passing_run(&f, &mut env);
+    git(&f.project, &["commit", "-q", "-a", "-m", "work"]);
+    fs::create_dir_all(f.project.join("supervisor-receipts")).unwrap();
+    fs::write(f.project.join("supervisor-receipts/t.json"), "{}\n").unwrap();
+    git(&f.project, &["add", "supervisor-receipts"]);
+    git(&f.project, &["commit", "-q", "-m", "receipt"]);
+    accepted(&f, &mut env);
+}
+
+/// WP7: the exclusion is the folder only; a file beside it still changes the candidate.
+#[test]
+fn a_file_named_like_the_receipts_folder_still_makes_the_evidence_stale() {
+    let (f, mut env) = setup();
+    passing_run(&f, &mut env);
+    fs::write(f.project.join("supervisor-receipts.json"), "{}\n").unwrap();
+    git(&f.project, &["add", "-A"]);
+    git(&f.project, &["commit", "-q", "-m", "work"]);
+    refused(&f, &mut env);
+}
+
 #[test]
 fn an_amend_that_only_changes_the_message_keeps_the_evidence() {
     let (f, mut env) = setup();

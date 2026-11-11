@@ -147,7 +147,7 @@ impl State {
 
 /// The provenance a mandatory criterion must reach to pass.
 #[derive(Clone, Copy)]
-enum Require {
+pub(crate) enum Require {
     /// Strict: only hook- or TC-observed receipts satisfy.
     Observed,
     /// Lenient (D2, before M6): an MCP-asserted receipt also satisfies, and is flagged.
@@ -462,10 +462,55 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         .map_err(|e| Failure::Error(format!("verdict: project state unusable: {e}")))?;
     let _lock = read_lock(&root)
         .map_err(|e| Failure::Error(format!("verdict: project state not readable: {e}")))?;
-    let stamp = level::in_effect(&root, level::config_dir(&env).as_deref());
+    let (value, exit_code, exhausted_note) =
+        evaluate(&project, &root, require, flags.value("--task"))?;
+    if flags.switch("--json") {
+        println!("{value}");
+    } else {
+        let mut text = human(&value);
+        if let Some((limit_caused, reached)) = exhausted_note {
+            let note = match reached {
+                Some(limit) if limit_caused => {
+                    format!("task state: budget_exhausted (task limit reached: {limit})")
+                }
+                Some(limit) => format!("task state: budget_exhausted\nlimit usage now: {limit}"),
+                None => "task state: budget_exhausted".to_owned(),
+            };
+            let at = text.rfind('\n').map_or(0, |i| i + 1);
+            text.insert_str(at, &format!("{note}\n"));
+        }
+        println!("{text}");
+    }
+    if exit_code == 0 {
+        Ok(())
+    } else {
+        Err(Failure::Unmet)
+    }
+}
+
+/// WP7: the receipt's provenance code as the verdict reports it (`hook`, `tc`, `mcp`,
+/// `unverified`); `observed` says a hook run record backs it.
+pub(crate) fn provenance_code(receipt: &VerificationReceipt, observed: bool) -> &'static str {
+    Provenance::of(receipt, observed).code()
+}
+
+/// The verdict JSON, its exit code, and for a budget_exhausted task whether a limit caused it
+/// and the limit reached now.
+pub(crate) type Evaluation = (Value, u8, Option<(bool, Option<String>)>);
+
+/// The verdict for `run` and for `receipt export`, which refuses unless this passes under
+/// `observed`. The caller holds the read lock.
+pub(crate) fn evaluate(
+    project: &Path,
+    root: &Path,
+    require: Require,
+    wanted_task: Option<&str>,
+) -> Result<Evaluation, Failure> {
+    let env = |key: &str| std::env::var(key).ok();
+    let stamp = level::in_effect(root, level::config_dir(&env).as_deref());
     // One HEAD snapshot, taken before any receipt is read, is what every receipt is judged by.
-    let (head, why) = observe_head(&project);
-    let task = lifecycle::active_task(&root)
+    let (head, why) = observe_head(project);
+    let task = lifecycle::active_task(root)
         .map_err(|e| Failure::Error(format!("verdict: active task pointer invalid: {e}")))?;
     // X3: with no active task that is the answer; the unknown head is only a side note.
     if let Some(why) = why {
@@ -476,7 +521,7 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         };
         let _ = writeln!(io::stderr(), "{lead}: {why}");
     }
-    if let Some(wanted) = flags.value("--task")
+    if let Some(wanted) = wanted_task
         && task.as_ref().is_none_or(|t| t.task_id != wanted)
     {
         return Err(Failure::Error(
@@ -552,26 +597,5 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
             )
         }
     };
-    if flags.switch("--json") {
-        println!("{value}");
-    } else {
-        let mut text = human(&value);
-        if let Some((limit_caused, reached)) = exhausted_note {
-            let note = match reached {
-                Some(limit) if limit_caused => {
-                    format!("task state: budget_exhausted (task limit reached: {limit})")
-                }
-                Some(limit) => format!("task state: budget_exhausted\nlimit usage now: {limit}"),
-                None => "task state: budget_exhausted".to_owned(),
-            };
-            let at = text.rfind('\n').map_or(0, |i| i + 1);
-            text.insert_str(at, &format!("{note}\n"));
-        }
-        println!("{text}");
-    }
-    if exit_code == 0 {
-        Ok(())
-    } else {
-        Err(Failure::Unmet)
-    }
+    Ok((value, exit_code, exhausted_note))
 }

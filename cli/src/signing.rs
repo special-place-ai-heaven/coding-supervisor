@@ -47,20 +47,64 @@ impl Statement {
     /// The signed bytes: the tag, then one `name:value` field per line, each ending in LF. A
     /// value holding a line break is refused, so no field can forge another.
     pub fn bytes(&self) -> Result<Vec<u8>, String> {
-        let mut text = format!("{STATEMENT_TAG}\n");
-        for (name, value) in [
-            ("task", &self.task),
-            ("contract_sha256", &self.contract_sha256),
-            ("checkpoint_hash", &self.checkpoint_hash),
-            ("candidate", &self.candidate),
-        ] {
-            if value.contains(['\n', '\r']) {
-                return Err(format!("the statement field {name} holds a line break"));
-            }
-            text.push_str(&format!("{name}:{value}\n"));
-        }
-        Ok(text.into_bytes())
+        lines(
+            STATEMENT_TAG,
+            &[
+                ("task", &self.task),
+                ("contract_sha256", &self.contract_sha256),
+                ("checkpoint_hash", &self.checkpoint_hash),
+                ("candidate", &self.candidate),
+            ],
+        )
     }
+}
+
+/// WP7: first line of a receipt bundle's signed statement.
+pub const BUNDLE_TAG: &str = "coding-supervisor receipt bundle v2";
+
+/// What a bundle signature covers. `body_sha256` is SHA-256 of the bundle's canonical body, so
+/// every other bundle field is covered too.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BundleStatement {
+    /// The root commits, comma-joined.
+    pub repository: String,
+    pub task: String,
+    pub exported_contract_sha256: String,
+    pub gate_state: String,
+    pub chain_head: String,
+    /// `<base_commit>:<dirty_digest>`.
+    pub candidate: String,
+    pub tree: String,
+    pub body_sha256: String,
+}
+
+impl BundleStatement {
+    pub fn bytes(&self) -> Result<Vec<u8>, String> {
+        lines(
+            BUNDLE_TAG,
+            &[
+                ("repository", &self.repository),
+                ("task", &self.task),
+                ("exported_contract_sha256", &self.exported_contract_sha256),
+                ("gate_state", &self.gate_state),
+                ("chain_head", &self.chain_head),
+                ("candidate", &self.candidate),
+                ("tree", &self.tree),
+                ("body_sha256", &self.body_sha256),
+            ],
+        )
+    }
+}
+
+fn lines(tag: &str, fields: &[(&str, &String)]) -> Result<Vec<u8>, String> {
+    let mut text = format!("{tag}\n");
+    for (name, value) in fields {
+        if value.contains(['\n', '\r']) {
+            return Err(format!("the statement field {name} holds a line break"));
+        }
+        text.push_str(&format!("{name}:{value}\n"));
+    }
+    Ok(text.into_bytes())
 }
 
 pub fn hex(bytes: &[u8]) -> String {
@@ -353,6 +397,26 @@ mod tests {
                 .unwrap()
                 .ends_with("\ncandidate:none\n")
         );
+    }
+
+    /// WP7: the bundle statement's exact bytes; a line break in a field is refused.
+    #[test]
+    fn bundle_statement_bytes_are_fixed() {
+        let s = |tree: &str| BundleStatement {
+            repository: "r1,r2".to_owned(),
+            task: "t".to_owned(),
+            exported_contract_sha256: "c".to_owned(),
+            gate_state: "completed".to_owned(),
+            chain_head: "h".to_owned(),
+            candidate: "b:d".to_owned(),
+            tree: tree.to_owned(),
+            body_sha256: "s".to_owned(),
+        };
+        assert_eq!(
+            String::from_utf8(s("x").bytes().unwrap()).unwrap(),
+            "coding-supervisor receipt bundle v2\nrepository:r1,r2\ntask:t\nexported_contract_sha256:c\ngate_state:completed\nchain_head:h\ncandidate:b:d\ntree:x\nbody_sha256:s\n"
+        );
+        assert!(s("x\nbody_sha256:forged").bytes().is_err());
     }
 
     /// A line break in any field is refused, so one field cannot forge the next.
