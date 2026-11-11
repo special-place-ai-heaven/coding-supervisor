@@ -8,24 +8,28 @@ as_of 2026-11-11. Requires a `supervisor` with `receipt export` and `receipt ver
 Every pull request, whatever its base, must add (or change) at least one file under
 `supervisor-receipts/` that `supervisor receipt verify --bundle` accepts, and CI re-runs the
 acceptance commands of each bundled contract. Exemptions are decided by
-`supervisor receipt required` from data CI reads itself: a documentation-only change (the base
-commit's `.github/docs-paths.txt`), release-please's version-only pull request (head branch
+`supervisor receipt required` from data CI reads itself: a documentation-only change (the default
+branch's `.github/docs-paths.txt`), release-please's version-only pull request (head branch
 exactly `release-please--branches--main--components--coding-supervisor`, or the name given with
-`--release-branch`, opened by the release author, touching only the files the base commit's
+`--release-branch`, opened by the release author, touching only the files the default branch's
 `.github/release-please-config.json` lists plus the manifest), or the label `receipt-exempt`
 whose last application in the pull request's timeline was by the owner or a listed maintainer
 and later than the pull request's last update. Branch names exempt nothing on their own. The
 base branch does not matter: changing a pull request's base to `main` starts no new run, so a
-pass given while it targeted another branch would stay on the head commit. Only a push to
-`main` and a tag (release.yml's call carries its tag push) need nothing; the job is then a
-no-op success. Any other event shape needs a receipt.
+pass given while it targeted another branch would stay on the head commit. The job never uses the event's base: it reads the key list, the
+documentation list and the release-please config from the default branch's tip (fetched at run
+time) and takes the changed paths from where the pull request leaves that branch, so a pull
+request to another branch is judged on everything it would bring to the default branch. A push
+to the default branch and a tag (release.yml's call carries its tag push) are a no-op success;
+the job fails on any other event. `supervisor receipt required` itself answers "nothing
+required" only for a push to `main` and a tag, and "required" for any other event shape.
 
 ## Steps
 
 1. **Key list.** On a machine that runs the supervised tasks, run `supervisor receipt export`
    (or `supervisor receipt sign`) once; it prints a `keys_entry`. Commit it to
    `supervisor-keys.json` at the repository root in its own pull request, merged before any
-   pull request that relies on it: CI reads the key list from the base commit only, never from
+   pull request that relies on it: CI reads the key list from the default branch's tip only, never from
    the pull request. To retire a key, set its `revoked_at`.
 2. **Job.** Copy the `receipts` job from this repository's `ci.yml` into the new repository's
    workflow (it needs no other job). Its toolchain, cache and build steps build `supervisor`
@@ -61,7 +65,12 @@ no-op success. Any other event shape needs a receipt.
   reviews.
 - On every pull request, a fork's included, the workflow file and the verifier binary both
   come from the pull request itself; the protection rests on review plus the key list from the
-  base commit. A re-run uses the key list of the base commit the run started with.
+  default branch. A re-run reads the default branch's tip again at its own run time.
+- The job fetches the default branch with no stored credentials; that works for a public
+  repository. A private one needs that fetch to authenticate.
+- The label is tied to a time, not to a head commit: a push in the seconds before the owner
+  applies it is covered. `pull_request.updated_at` on a real push payload has not been observed
+  yet (the job has never run).
 - A label applied through the owner's own token (for example by an agent using the owner's
   `gh` login) cannot be told apart from the owner applying it.
 - release-please's pull requests in this repository are opened with the owner's own token, so
@@ -76,8 +85,8 @@ no-op success. Any other event shape needs a receipt.
   (`storage`, any extra key) are not.
 - Anything under `supervisor-receipts/` is outside the local gate, and CI checks only the files a
   pull request adds or changes there.
-- `--base`, the contract's `base_sha` and the bundle's top-level `base_sha` are checked only to
-  be full commit ids.
+- `--base`, the contract's `base_sha` (also when `--base` is given) and the bundle's top-level
+  `base_sha` are checked only to be full commit ids.
 - Commands recorded on Windows are run unchanged with `bash` on Linux; one that needs Windows
   (PowerShell, `.exe` paths, backslash paths, `cmd` syntax) fails the job. Environment the
   command relied on locally (for example `CARGO_TARGET_DIR`) is not recorded and not set.

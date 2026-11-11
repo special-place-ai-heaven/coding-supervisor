@@ -286,7 +286,7 @@ no verdict.
 
 A signature says "this machine's supervisor signed this state", not proof: an agent running
 as the same OS user can read the key and can set the override variable. The key list means
-something only when CI reads it from the base commit. `valid` says nothing about the gate
+something only when CI reads it from the default branch rather than the pull request. `valid` says nothing about the gate
 state (a failed or unfinished task verifies too), is not compared with the current tree, and
 the statement names no project. Two signs at once can leave a signature file that does not
 parse (`invalid`) or, with the Windows Credential Manager, a signature from a key that the
