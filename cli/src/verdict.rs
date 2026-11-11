@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use coding_supervisor::{CandidateId, Criterion, Review, TaskState, VerificationReceipt};
 use serde_json::{Value, json};
-use supervisor_claude_code::adapter::{MCP_ASSERTED, now, receipts_observed};
+use supervisor_claude_code::adapter::{MCP_ASSERTED, latest_uncounted_run, now, receipts_observed};
 use supervisor_claude_code::candidate::{GitCandidate, Unobserved};
 use supervisor_claude_code::level::{self, Level};
 use supervisor_claude_code::lifecycle;
@@ -183,6 +183,8 @@ struct CriterionVerdict<'a> {
     state: State,
     /// The receipt that decided the state; `None` when missing.
     receipt: Option<(&'a VerificationReceipt, Provenance)>,
+    /// G51: the latest hook-journaled run on HEAD that no receipt counts yet (a Stop counts it).
+    latest_run: Option<Value>,
 }
 
 /// Judge one criterion. `receipts` are in recording order; later receipts win.
@@ -235,6 +237,7 @@ fn judge<'a>(
         criterion,
         state,
         receipt,
+        latest_run: None,
     }
 }
 
@@ -310,6 +313,7 @@ fn report(
                     "output_ref": r.output_ref,
                 })),
                 "satisfies": satisfies,
+                "latest_run": v.latest_run,
             })
         })
         .collect();
@@ -431,6 +435,22 @@ fn human(report: &Value) -> String {
             (Some("stale"), Some(reason)) => format!("stale ({})", reason.replace('_', " ")),
             (Some(state), _) => state.to_owned(),
             (None, _) => "unknown".to_owned(),
+        };
+        // G51: a run the hooks journaled is not a receipt until a stop is judged; say so.
+        let run = &c["latest_run"];
+        let phrase = match run["status"].as_str() {
+            Some("finished") => format!(
+                "{phrase} (latest run observed, exit {}; it counts when a stop is judged)",
+                run["exit_code"]
+            ),
+            Some("pending") => format!(
+                "{phrase} (latest run has no recorded exit: call command_status on job {})",
+                run["job_id"].as_str().unwrap_or("?")
+            ),
+            Some("unapproved") => format!(
+                "{phrase} (latest run has unapproved execution context and will not count; rerun it without extra environment or shell)"
+            ),
+            _ => phrase,
         };
         let optional = if c["mandatory"] == false {
             " [optional]"
@@ -563,11 +583,23 @@ pub(crate) fn evaluate(
                 .zip(observed)
                 .map(|(r, observed)| (r, Provenance::of(r, observed)))
                 .collect();
-            let verdicts: Vec<CriterionVerdict<'_>> = contract
+            let mut verdicts: Vec<CriterionVerdict<'_>> = contract
                 .criteria
                 .iter()
                 .map(|c| judge(c, &judged, &head))
                 .collect();
+            if let Head::Known(candidate) = &head {
+                for v in &mut verdicts {
+                    v.latest_run = latest_uncounted_run(
+                        &task.dir,
+                        &task.task_id,
+                        v.criterion,
+                        candidate,
+                        &receipts,
+                    )
+                    .map_err(|e| Failure::Error(format!("verdict: run journal unreadable: {e}")))?;
+                }
+            }
             // WP4: a budget_exhausted task never passes. The text output names a limit as the
             // cause only when the gate recorded it as one (`Task::exhaust_limit`); a limit that
             // is merely reached now is shown apart.
