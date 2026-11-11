@@ -28,7 +28,7 @@ Latest release: 0.20.0 (tag `v0.20.0`, 2026-11-11; `CHANGELOG.md`). Governance P
 | 5 | Reviewer record | #82 | `adapters/claude-code/tests/review_record.rs` |
 | 6 | Signed receipts | #87 (machine key: #93) | `cli/tests/receipt_sign.rs` |
 | 7 | Receipt bundles and the CI job `Verify supervisor receipts` | #96 (follow-ups: #99) | `cli/tests/receipt_verify.rs`, `cli/tests/receipt_in_tree.rs`, `cli/tests/receipt_exemption.rs` |
-| 8 | The 20-case results matrix, `RESULTS.md` | branch `test/barrier-matrix`, no PR yet | the tests named per case in `RESULTS.md` |
+| 8 | The 20-case results matrix, `RESULTS.md` | branch `test/barrier-matrix`, the change that brings this file | the tests named per case in `RESULTS.md` |
 
 Field fixes merged beside the plan: #73 (session takeover), #78, #79, #83, #91, #94, #103 (early
 gate feedback, limits and paths). `CHANGELOG.md` and `OPEN-ITEMS.md` describe them.
