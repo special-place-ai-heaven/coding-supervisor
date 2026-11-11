@@ -309,8 +309,9 @@ fn tree_noting(
     if receipts_here {
         includes.push(format!(":(top){RECEIPTS_DIR}/"));
     }
-    // -f: on a commit's tree an entry can differ from both HEAD and the worktree file, which
-    // git rm refuses otherwise; only the scratch index is touched.
+    // -f: an entry can differ from both HEAD and the worktree file (on a commit's tree, or a
+    // listed file staged and then edited again), which git rm refuses otherwise; only the
+    // scratch index is touched.
     let mut remove = vec!["rm", "--cached", "-f", "-r", "-q", "--ignore-unmatch", "--"];
     remove.extend(includes.iter().map(String::as_str));
     let tree = ok(&add, &env)
