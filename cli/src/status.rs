@@ -262,9 +262,29 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
                                 )
                         })
                         .count();
+                    // G51: finished runs on the candidate the hooks last saw that only a stop
+                    // turns into receipts; counted apart, never as receipts.
+                    let uncounted = gate.checkpoint.candidate.as_ref().map_or(0, |candidate| {
+                        contract
+                            .criteria
+                            .iter()
+                            .filter(|c| {
+                                supervisor_claude_code::adapter::latest_uncounted_run(
+                                    &task.dir,
+                                    &task.task_id,
+                                    c,
+                                    candidate,
+                                    &gate.receipts,
+                                )
+                                .ok()
+                                .flatten()
+                                .is_some_and(|run| run["status"] == "finished")
+                            })
+                            .count()
+                    });
                     (
                         json!({"state":"active","task_id":task.task_id,"contract_id":contract.id.0,"gate_state":state_name(gate.checkpoint.state)}),
-                        json!({"observed":observed,"reconstructed":reconstructed,"asserted":asserted,"unverified":gate.receipts.len()-asserted-observed-reconstructed,"unknown":false}),
+                        json!({"observed":observed,"reconstructed":reconstructed,"asserted":asserted,"unverified":gate.receipts.len()-asserted-observed-reconstructed,"uncounted":uncounted,"unknown":false}),
                     )
                 }
                 Ok(Stored::Absent) => (
@@ -360,11 +380,17 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
     // M2: only Claude Code with the refusing hooks configured can enforce a refusing mode.
     let effective = requested.effective(harness == "claude-code" && required_hooks);
     let level_note = (effective != requested).then(|| {
-        format!(
+        let mut note = format!(
             "{} requested, {} effective: this harness cannot refuse without the gate's PreToolUse, Stop and SubagentStop hooks",
             requested.name(),
             effective.name()
-        )
+        );
+        // G52: hooks loaded from outside the project settings are not seen above, yet they
+        // judge at the requested level; the task's own journal says what they ran at.
+        if let Some(ran) = last_judged_level(root) {
+            note.push_str(&format!("; this task's last judged hook call ran at {ran} (hooks registered outside the project settings, such as a --settings file, are not seen here)"));
+        }
+        note
     });
     json!({
         "schema_version":1,"harness":harness,"project":project,"project_state":root,"location_rule":rule,
@@ -376,6 +402,22 @@ pub(crate) fn inspect(project: &Path, root: &Path, rule: &str, harness: &str) ->
         "action_policy":supervisor_claude_code::policy::configuration_status(root),
         "task":active,"mode":mode,"effective_level":effective.name(),"requested_level":requested.name(),"failure_mode":if level::failure_open(root) {"open"} else {"closed"},"level_note":level_note,"level_source":level_source,"receipt_provenance":provenance,
         "coverage":{"completion":completion,"basis":"supported unrestricted project hook configuration; adapter fixtures and recorded Claude 2.1.312 trials; global settings and current model loading unproven","action_policy":"configured simple commands and exact tools only; see COVERAGE.md","same_user_security_boundary":false}
+    })
+}
+
+/// The level the active task's last PreToolUse, Stop or SubagentStop hook call ran at, from its
+/// events journal; `None` when there is none or it cannot be read.
+fn last_judged_level(root: &Path) -> Option<String> {
+    let task = lifecycle::active_task(root).ok()??;
+    let journal = fs::read_to_string(task.dir.join("events.jsonl")).ok()?;
+    journal.lines().rev().find_map(|line| {
+        let line: Value = serde_json::from_str(line).ok()?;
+        matches!(
+            line["event"].as_str(),
+            Some("PreToolUse" | "Stop" | "SubagentStop")
+        )
+        .then(|| line["effective_level"].as_str().map(str::to_owned))
+        .flatten()
     })
 }
 
@@ -424,8 +466,17 @@ fn human(report: &Value) -> String {
                 .join(", ")
         })
         .unwrap_or_else(|| "unknown".to_owned());
+    // G51: finished runs a stop has not turned into receipts yet.
+    let uncounted = match report
+        .pointer("/receipt_provenance/uncounted")
+        .and_then(Value::as_u64)
+    {
+        Some(1) => " (1 finished run not counted yet: a stop counts it)".to_owned(),
+        Some(n) if n > 1 => format!(" ({n} finished runs not counted yet: a stop counts them)"),
+        _ => String::new(),
+    };
     let mut text = format!(
-        "supervisor {} ({})\nharness: {}\nproject: {}\nregistration: {} (configured binary: {}; configured version: {})\nconnection: {}; model session loaded: {}\ntask: {} (gate: {}; id: {})\nmode: {}\nlevel: {} ({})\nfailure: {}\nreceipts: {} observed; {} reconstructed; {} asserted; {} unverified\ncompletion coverage: {}\nbasis: {}\naction policy: {}\ncoverage: {}; same-user security boundary: false",
+        "supervisor {} ({})\nharness: {}\nproject: {}\nregistration: {} (configured binary: {}; configured version: {})\nconnection: {}; model session loaded: {}\ntask: {} (gate: {}; id: {})\nmode: {}\nlevel: {} ({})\nfailure: {}\nreceipts: {} observed; {} reconstructed; {} asserted; {} unverified{uncounted}\ncompletion coverage: {}\nbasis: {}\naction policy: {}\ncoverage: {}; same-user security boundary: false",
         s("/reporting_binary/version"),
         s("/reporting_binary/path"),
         s("/harness"),
@@ -725,6 +776,88 @@ mod tests {
         assert!(text.contains("1 observed; 1 reconstructed; 1 asserted; 1 unverified"));
         assert!(text.contains("PreToolUse denial"));
         assert!(text.contains("Stop refusal"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// G51 (live sessions 3 and 4 of 2026-11-11): status said `0 observed` while the hooks had
+    /// journaled finished runs that only a stop turns into receipts. It now counts them apart.
+    #[test]
+    fn inspect_counts_finished_runs_a_stop_has_not_counted_yet() {
+        use coding_supervisor::{Checkpoint, TaskState};
+        use supervisor_claude_code::state::{Gate, save_gate};
+
+        let root = std::env::temp_dir().join(format!(
+            "supervisor-status-uncounted-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let contract = json!({"id":"status-uncounted","goal":"count uncounted runs",
+            "criteria":[{"id":"C2","check":"test","mandatory":true,"command":"cargo test"}],
+            "scope":[],"forbidden_effects":[],"max_repair_rounds":1});
+        lifecycle::start_as(
+            &root,
+            &supervisor_claude_code::state::Writer::task_start(None),
+            &contract,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        let task = lifecycle::active_task(&root).unwrap().unwrap();
+        let (_, digest) = read_contract(&task.dir).unwrap();
+        let candidate = coding_supervisor::CandidateId {
+            base_commit: "fixture".to_owned(),
+            dirty_digest: "candidate".to_owned(),
+        };
+        let gate = Gate::new(
+            "status-uncounted".to_owned(),
+            Checkpoint {
+                state: TaskState::Verifying,
+                candidate: Some(candidate),
+                open_findings: Vec::new(),
+                consumed_repair_rounds: 0,
+                next_action: "none".to_owned(),
+            },
+        );
+        save_gate(&task.dir, &gate, &digest).unwrap();
+        let cwd = canonical_project(&project);
+        let dispatch = json!({"kind":"dispatch","task_id":task.task_id,"agent_id":"main",
+            "session_id":"s","dispatch_id":"d1","tool":"mcp__terminal_commander__run_and_watch",
+            "identity_schema":3,"identity":{"argv":["cargo","test"]},"command":"cargo test",
+            "cwd":cwd,"execution_project":cwd,"execution_root":cwd,
+            "execution_profile":{"name":"local-default-v1","approved":true,"cargo_target_sha256":null},
+            "candidate":{"base_commit":"fixture","dirty_digest":"candidate"},"t":1});
+        let mut done = dispatch.clone();
+        done["kind"] = "completed".into();
+        done["completion_trust"] = "observed".into();
+        done["exit_code"] = 0.into();
+        done["finished"] = 2.into();
+        fs::write(task.dir.join("runs.jsonl"), format!("{dispatch}\n{done}\n")).unwrap();
+        let report = inspect(&project, &root, "fixture", "claude-code");
+        assert_eq!(report["receipt_provenance"]["observed"], 0);
+        assert_eq!(report["receipt_provenance"]["uncounted"], 1, "{report}");
+        let text = human(&report);
+        assert!(
+            text.contains("receipts: 0 observed; 0 reconstructed; 0 asserted; 0 unverified (1 finished run not counted yet: a stop counts it)"),
+            "{text}"
+        );
+        // G52 (live sessions 2026-11-11): hooks from a --settings file are not in the project
+        // settings, so status says audit while they refuse at enforce; the journal shows it.
+        assert_eq!(report["effective_level"], "audit");
+        fs::write(
+            task.dir.join("events.jsonl"),
+            "{\"event\":\"Stop\",\"effective_level\":\"enforce\"}\n{\"event\":\"PostToolUse\",\"effective_level\":\"audit\"}\n",
+        )
+        .unwrap();
+        let report = inspect(&project, &root, "fixture", "claude-code");
+        assert!(
+            report["level_note"].as_str().is_some_and(|note| note.contains(
+                "this task's last judged hook call ran at enforce (hooks registered outside the project settings, such as a --settings file, are not seen here)"
+            )),
+            "{report}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }
