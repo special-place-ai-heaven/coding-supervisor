@@ -874,7 +874,12 @@ fn cleanup_refuses_files_marked_assume_unchanged_or_skip_worktree() {
         assert!(!out.status.success(), "{flag}: {out:?}");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains("src/lib.rs") && stderr.contains("nothing was touched"),
+            stderr.contains("holds 1 files marked")
+                && stderr.contains("src/lib.rs")
+                && stderr.contains(
+                    "update-index --no-assume-unchanged --no-skip-worktree -- \"src/lib.rs\""
+                )
+                && stderr.contains("nothing was touched"),
             "{flag}: {stderr}"
         );
         assert_eq!(
@@ -883,6 +888,20 @@ fn cleanup_refuses_files_marked_assume_unchanged_or_skip_worktree() {
         );
         assert!(listed(&f), "{flag}");
     }
+}
+
+/// WP3 review r5: a marked file absent from the worktree, as in a sparse checkout, holds
+/// nothing to lose, so it does not keep cleanup from removing the worktree.
+#[test]
+fn cleanup_removes_a_worktree_whose_marked_file_is_absent() {
+    let f = Fixture::new("wt-clean-marked-absent");
+    let task = start(&f)["task_id"].as_str().unwrap().to_owned();
+    deactivate(&f, &task);
+    f.git_in(&wt(&f), &["update-index", "--skip-worktree", "src/lib.rs"]);
+    fs::remove_file(wt(&f).join("src").join("lib.rs")).unwrap();
+    let out = cleanup(&f, &task);
+    assert!(out.status.success(), "{out:?}");
+    assert!(!listed(&f));
 }
 
 #[test]

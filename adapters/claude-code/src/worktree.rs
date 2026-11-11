@@ -216,7 +216,8 @@ pub fn cleanup(root: &Path, project: &Path, task_id: &str) -> Result<Value, Stri
         ));
     }
     // `-v` tags each path; a lowercase tag (assume-unchanged) or `S` (skip-worktree) marks a file
-    // whose edits git status does not show and `git worktree remove` would delete.
+    // whose edits git status does not show and `git worktree remove` would delete. A marked file
+    // absent from the worktree (a sparse checkout) holds nothing to lose.
     let listing = git(&worktree, &["ls-files", "-v", "-z"])?;
     let entries: Vec<(char, &str)> = listing
         .split('\0')
@@ -226,12 +227,25 @@ pub fn cleanup(root: &Path, project: &Path, task_id: &str) -> Result<Value, Stri
             Some((tag, chars.as_str().strip_prefix(' ')?))
         })
         .collect();
-    if let Some((_, marked)) = entries
+    let marked: Vec<&str> = entries
         .iter()
-        .find(|(tag, _)| tag.is_ascii_lowercase() || *tag == 'S')
-    {
+        .filter(|(tag, file)| {
+            (tag.is_ascii_lowercase() || *tag == 'S')
+                && fs::symlink_metadata(worktree.join(file)).is_ok()
+        })
+        .map(|(_, file)| *file)
+        .collect();
+    if let Some(first) = marked.first() {
+        let shown = marked
+            .iter()
+            .take(3)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = if marked.len() > 3 { ", ..." } else { "" };
         return Err(format!(
-            "{path} holds {marked}, marked assume-unchanged or skip-worktree, so git status does not show edits to it and removing the worktree would delete them; clear the mark (`git update-index --no-assume-unchanged --no-skip-worktree {marked}`) and commit or discard the edits, then run cleanup again; nothing was touched"
+            "{path} holds {} files marked assume-unchanged or skip-worktree ({shown}{more}), so git status does not show edits to them and removing the worktree would delete them; clear each mark (`git -C \"{path}\" update-index --no-assume-unchanged --no-skip-worktree -- \"{first}\"`) and commit or discard the edits, then run cleanup again; nothing was touched",
+            marked.len()
         ));
     }
     let tracked: HashSet<String> = entries.iter().map(|(_, p)| (*p).to_owned()).collect();
