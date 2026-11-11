@@ -164,14 +164,19 @@ pub fn docs_list_at(cwd: &Path, base: &str) -> Vec<String> {
 /// WP7: the tree a receipt bundle names: of `commit`, or of the worktree with `None`, without
 /// the `docs` globs and without `supervisor-receipts/`, built in a scratch index under
 /// `scratch_dir`. Export and `receipt verify --bundle` both use it, with the documentation list
-/// of the same base commit.
+/// of the same base commit. `Err` says whether git timed out or failed.
 pub fn bundle_tree(
     cwd: &Path,
     scratch_dir: &Path,
     commit: Option<&str>,
     docs: &[String],
-) -> Option<String> {
-    tree(cwd, scratch_dir, commit, docs)
+) -> Result<String, &'static str> {
+    let timed_out = std::cell::Cell::new(false);
+    tree_noting(cwd, scratch_dir, commit, docs, &timed_out).ok_or(if timed_out.get() {
+        "git did not answer within its deadline (the machine may be busy; try again)"
+    } else {
+        "git failed"
+    })
 }
 
 /// WP7: the paths that differ between two trees, sorted, renames listed as both paths.
@@ -230,10 +235,23 @@ pub fn root_commits(cwd: &Path) -> Result<Vec<String>, &'static str> {
 
 /// The tree of `commit`, or of the worktree, without the `docs` globs.
 fn tree(cwd: &Path, state_dir: &Path, commit: Option<&str>, docs: &[String]) -> Option<String> {
-    let ok = |args: &[&str], env: &[(&str, &std::ffi::OsStr)]| {
-        run_with_env(cwd, args, env)
-            .ok()
-            .filter(|out| out.status.success())
+    tree_noting(cwd, state_dir, commit, docs, &std::cell::Cell::new(false))
+}
+
+/// [`tree`], setting `timed_out` when a git it ran passed the deadline.
+fn tree_noting(
+    cwd: &Path,
+    state_dir: &Path,
+    commit: Option<&str>,
+    docs: &[String],
+    timed_out: &std::cell::Cell<bool>,
+) -> Option<String> {
+    let ok = |args: &[&str], env: &[(&str, &std::ffi::OsStr)]| match run_with_env(cwd, args, env) {
+        Ok(out) => Some(out).filter(|out| out.status.success()),
+        Err(failure) => {
+            timed_out.set(timed_out.get() || matches!(failure, Failure::TimedOut(_)));
+            None
+        }
     };
     // Per process: parallel hook calls must not share one scratch index.
     let scratch = state_dir.join(format!("scratch-index-{}", std::process::id()));

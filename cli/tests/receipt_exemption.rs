@@ -340,6 +340,19 @@ fn the_exempt_label_must_postdate_the_last_push() {
     assert!(req, "{why}");
     let (req, why) = required(&c, &event, code, Some(&[labeled("labeled", OWNER)]), &[]);
     assert!(!req, "{why}");
+    // Applied in the same second as the last update: not later, so not exempt.
+    let same = labeled_at("labeled", OWNER, EVENT_AT, "receipt-exempt");
+    let (req, why) = required(&c, &event, code, Some(&[same]), &[]);
+    assert!(req, "{why}");
+    // A time not in GitHub's UTC form (here an offset instead of Z) never exempts.
+    let offset = labeled_at(
+        "labeled",
+        OWNER,
+        "2026-11-11T11:30:00+01:00",
+        "receipt-exempt",
+    );
+    let (req, why) = required(&c, &event, code, Some(&[offset]), &[]);
+    assert!(req, "{why}");
     let mut timeless = event.clone();
     timeless["pull_request"]
         .as_object_mut()
@@ -446,16 +459,16 @@ fn a_pull_request_to_another_base_needs_a_receipt_too() {
     assert!(!req, "{why}");
 }
 
-/// A pull request whose base cannot be read still needs one; an unreadable event is an error
-/// (exit 1), never a pass.
+/// An unreadable event file is an error (exit 1), never a pass.
 #[test]
-fn unreadable_pull_request_data_needs_a_receipt() {
+fn an_unreadable_event_is_an_error_and_a_bare_pull_request_needs_a_receipt() {
     let c = case("closed");
+    // A pull request with no base, author or update time: no exemption can be shown.
     let (req, _) = required(
         &c,
         &json!({"pull_request":{"head":{"ref":"x"}}}),
         Some(&["src/lib.rs"]),
-        None,
+        Some(&[labeled("labeled", OWNER)]),
         &[],
     );
     assert!(req);

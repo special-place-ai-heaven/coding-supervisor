@@ -160,9 +160,12 @@ fn build(project: &Path, root: &Path) -> Result<(Value, String), Failure> {
     let docs = git::docs_list_at(project, &base);
     let scratch = std::env::temp_dir();
     let tree = git::bundle_tree(project, &scratch, None, &docs)
-        .ok_or_else(|| refused("git could not compute the worktree tree"))?;
-    let base_tree = git::bundle_tree(project, &scratch, Some(&base), &docs)
-        .ok_or_else(|| refused("git could not read the contract's base commit"))?;
+        .map_err(|why| refused(&format!("git could not compute the worktree tree: {why}")))?;
+    let base_tree = git::bundle_tree(project, &scratch, Some(&base), &docs).map_err(|why| {
+        refused(&format!(
+            "git could not read the contract's base commit: {why}"
+        ))
+    })?;
     let changed = git::changed_between(project, &base_tree, &tree)
         .ok_or_else(|| refused("git could not list the changed paths"))?;
     // The tree must be the candidate's: nothing may have changed while it was computed.
@@ -469,19 +472,21 @@ fn check(project: &Path, path: &Path, keys: &Path, base: Option<&str>) -> Result
         .or_else(|| contract.base_sha.clone())
         .ok_or("the contract names no base commit and no --base was given")?;
     // Only a full commit id reaches git, never an option or a revision expression.
+    // The contract's own base_sha too, even when --base replaces it.
     let bundled_base = bundle["base_sha"].as_str().unwrap_or_default();
-    if !git::is_commit_id(&base) || !git::is_commit_id(bundled_base) {
+    let contract_base_ok = contract.base_sha.as_deref().is_none_or(git::is_commit_id);
+    if !git::is_commit_id(&base) || !git::is_commit_id(bundled_base) || !contract_base_ok {
         return Err("the base is not a commit id (40 or 64 hex characters)".into());
     }
     let docs = git::docs_list_at(project, &base);
     let scratch = std::env::temp_dir();
     let tree = git::bundle_tree(project, &scratch, Some("HEAD"), &docs)
-        .ok_or("git could not compute the tree of HEAD")?;
+        .map_err(|why| format!("git could not compute the tree of HEAD: {why}"))?;
     if bundle["tree"].as_str() != Some(tree.as_str()) {
         return Err("the bundle's tree is not the project's tree: the receipt is stale".into());
     }
     let base_tree = git::bundle_tree(project, &scratch, Some(&base), &docs)
-        .ok_or("git could not read the base commit")?;
+        .map_err(|why| format!("git could not read the base commit: {why}"))?;
     let changed = git::changed_between(project, &base_tree, &tree)
         .ok_or("git could not list the changed paths")?;
     let outside: Vec<&str> = changed

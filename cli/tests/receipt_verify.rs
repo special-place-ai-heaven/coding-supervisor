@@ -138,6 +138,11 @@ fn a_base_that_is_not_a_commit_id_is_invalid() {
         text.replace(&base, "--output=x")
     });
     invalid(f.verify(&bundle, &keys, &[]), "not a commit id");
+    // The contract's base_sha is checked even when --base replaces it.
+    invalid(
+        f.verify(&bundle, &keys, &["--base", &head]),
+        "not a commit id",
+    );
     fs::write(&bundle, &original).unwrap();
     f.edit_bundle(&bundle, |b| b["base_sha"] = "-x".into());
     invalid(f.verify(&bundle, &keys, &[]), "not a commit id");
@@ -355,6 +360,14 @@ fn a_failed_export_leaves_nothing_in_the_folder() {
     fs::create_dir_all(folder.join(format!("{task}.json"))).unwrap();
     let (code, value) = f.export();
     assert_eq!((code, &value["export"]), (3, &json!("refused")), "{value}");
+    // The write itself failed, not an earlier check.
+    assert!(
+        value["reason"]
+            .as_str()
+            .unwrap()
+            .contains("could not be written"),
+        "{value}"
+    );
     let left: Vec<String> = fs::read_dir(&folder)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
