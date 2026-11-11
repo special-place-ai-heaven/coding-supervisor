@@ -515,11 +515,10 @@ fn a_base_checkout_edit_is_refused_when_isolation_is_worktree() {
     assert!(audit.to_string().contains("base checkout"), "{audit}");
 }
 
-/// The base checkout comes from the gate's own state, not from the worktree's `.git` file, and
-/// an edit tool cannot rewrite that file.
+/// An edit tool cannot rewrite the worktree's `.git` file.
 #[test]
-fn the_worktree_git_file_neither_moves_nor_opens_the_base_checkout() {
-    let f = Fixture::new("wt-git-file");
+fn an_edit_of_the_worktree_git_file_is_refused() {
+    let f = Fixture::new("wt-git-edit");
     start(&f);
     let wt = wt(&f);
     let dot_git = wt.join(".git");
@@ -528,8 +527,15 @@ fn the_worktree_git_file_neither_moves_nor_opens_the_base_checkout() {
         assert!(denied(&decision), "{decision}");
         assert!(reason(&decision).contains(".git"), "{decision}");
     }
-    // Rewritten some other way (a shell write is a declared limit), the file still does not
-    // switch the refusal off.
+}
+
+/// The base checkout comes from the gate's own state: a `.git` file rewritten some other way
+/// (a shell write is a declared limit) does not switch the refusal off.
+#[test]
+fn a_rewritten_worktree_git_file_keeps_the_base_refusal() {
+    let f = Fixture::new("wt-git-file");
+    start(&f);
+    let dot_git = wt(&f).join(".git");
     let original = fs::read_to_string(&dot_git).unwrap();
     fs::write(&dot_git, "x\n").unwrap();
     let base = f.project.join("src").join("lib.rs");
@@ -537,6 +543,34 @@ fn the_worktree_git_file_neither_moves_nor_opens_the_base_checkout() {
     fs::write(&dot_git, original).unwrap();
     assert!(denied(&decision), "{decision}");
     assert!(reason(&decision).contains("base checkout"), "{decision}");
+}
+
+/// A task started from a linked worktree refuses edits there and in the primary checkout.
+#[test]
+fn a_start_from_a_linked_worktree_guards_it_and_the_primary_checkout() {
+    let f = Fixture::new("wt-from-linked");
+    let linked = f.root.join("linked");
+    f.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "fixture-linked",
+        linked.to_str().unwrap(),
+        "HEAD",
+    ]);
+    let out = start_in(&f, &linked, &wt(&f));
+    assert!(out.status.success(), "{out:?}");
+    for (file, id) in [
+        (linked.join("src").join("lib.rs"), "linked-1"),
+        (f.project.join("src").join("lib.rs"), "primary-1"),
+    ] {
+        let decision = write_at(&f, &linked, &file, id);
+        assert!(denied(&decision), "{decision}");
+        assert!(reason(&decision).contains("base checkout"), "{decision}");
+    }
+    let inside = write_at(&f, &linked, &wt(&f).join("src").join("lib.rs"), "wt-1");
+    assert!(!denied(&inside), "{inside}");
 }
 
 #[test]

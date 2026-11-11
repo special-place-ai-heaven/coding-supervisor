@@ -1826,7 +1826,8 @@ fn out_of_scope(payload: &Value, scope: &[String], task_dir: &Path) -> Option<De
 }
 
 /// WP3: a Write, Edit, MultiEdit or NotebookEdit into the checkout the task was started from
-/// (`base_checkout` in its task.json), outside the worktree the task is bound to, is refused,
+/// (`base_checkout` in its task.json, and its primary checkout when that is a linked worktree),
+/// outside the worktree the task is bound to, is refused,
 /// and so is one into that worktree's `.git`. A path that cannot be placed (a broken link)
 /// counts as inside; a binding or base that cannot be read refuses the write. File reads only,
 /// no git process.
@@ -1859,7 +1860,13 @@ fn base_checkout_write(payload: &Value, task_dir: &Path) -> Option<Decision> {
             "GATE: {tool} refused: {path} is the worktree's own .git; this task works in its worktree {bound} (isolation worktree), whose git link is not edited"
         )));
     }
-    let in_base = !matches!(project_relative(&base, &target), Ok(None));
+    // A start from a linked worktree guards the repository's primary checkout too; its `.git`
+    // lies inside the refused base, so an edit tool cannot rewrite it.
+    let primary =
+        location::linked_main_checkout(Path::new(&base)).map(|main| location::normalize(&main));
+    let in_base = std::iter::once(base.as_str())
+        .chain(primary.as_deref())
+        .any(|checkout| !matches!(project_relative(checkout, &target), Ok(None)));
     (in_base && !matches!(in_worktree, Ok(Some(_)))).then(|| {
         Decision::Deny(format!(
             "GATE: {tool} refused: {path} is in the base checkout {base}; this task works in its worktree {bound} (isolation worktree), so edit the file under that path"
