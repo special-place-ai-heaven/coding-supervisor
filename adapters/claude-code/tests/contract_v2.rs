@@ -430,7 +430,7 @@ fn deny_path_refuses_a_dotdot_through_a_missing_directory_at_strict() {
     assert!(!forbids(&ok) && !denied_for_scope(&ok), "{ok:?}");
 }
 
-/// A `..` after a link is not folded: the path is left to the OS, so a write through a link
+/// A `..` after a link is not folded: the path cannot be placed, so a write through a link
 /// pointing outside stays out of scope even though its text reads as inside.
 #[test]
 fn a_dotdot_after_a_link_is_not_folded() {
