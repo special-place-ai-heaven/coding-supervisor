@@ -73,15 +73,35 @@ switch (sub) {
     console.log("job passed on PR #" + pr.number + ": " + arg2);
     break;
   }
+  case "receipt-passed": {
+    // The job passed on the merged PR of <branch>, the PR adds a bundle under
+    // supervisor-receipts/, and it does not carry the receipt-exempt label.
+    if (!arg || !arg2) fail("usage: receipt-passed <branch> <job name>");
+    const pr = mergedPr(arg);
+    const view = JSON.parse(run("gh", ["pr", "view", String(pr.number), "-R", REPO, "--json", "files,labels"]));
+    if (view.labels.some((l) => l.name === "receipt-exempt")) fail("PR #" + pr.number + " carries the receipt-exempt label");
+    if (!view.files.some((f) => /^supervisor-receipts\/[^/]+\.json$/.test(f.path))) fail("PR #" + pr.number + " adds no receipt bundle");
+    const c = checks(pr.number).find((x) => x.name === arg2);
+    if (!c || c.bucket !== "pass") fail("job " + JSON.stringify(arg2) + " on PR #" + pr.number + " is " + (c ? c.bucket : "absent"));
+    console.log("job passed with a receipt bundle on PR #" + pr.number + ": " + arg2);
+    break;
+  }
   case "ci-failed": {
-    // A throwaway PR from <branch> (any state, closed unmerged is expected) had the job fail.
+    // A pull request run from <branch> had the job fail. Read from the branch's own workflow
+    // runs: `gh pr checks` shows the newest result per job name for the head commit, and that
+    // can be a later run of another pull request on the same commit.
     if (!arg || !arg2) fail("usage: ci-failed <branch> <job name>");
-    const prs = JSON.parse(run("gh", ["pr", "list", "-R", REPO, "--state", "all", "--head", arg,
-      "--json", "number,baseRefName"])).filter((p) => p.baseRefName === "main");
-    if (!prs.length) fail("no pull request from " + arg + " into main");
-    const c = checks(prs[0].number).find((x) => x.name === arg2);
-    if (!c || c.bucket !== "fail") fail("job " + JSON.stringify(arg2) + " on PR #" + prs[0].number + " is " + (c ? c.bucket : "absent"));
-    console.log("job failed on PR #" + prs[0].number + ": " + arg2);
+    const runs = JSON.parse(run("gh", ["api", "repos/" + REPO + "/actions/runs?event=pull_request&per_page=100&branch=" + encodeURIComponent(arg)])).workflow_runs;
+    if (!runs.length) fail("no pull request run from " + arg);
+    for (const r of runs) {
+      const jobs = JSON.parse(run("gh", ["api", "repos/" + REPO + "/actions/runs/" + r.id + "/jobs?filter=all&per_page=100"])).jobs;
+      const job = jobs.find((x) => x.name === arg2 && x.conclusion === "failure");
+      if (job) {
+        console.log("job failed on PR run " + r.id + " from " + arg + ": " + arg2);
+        process.exit(0);
+      }
+    }
+    fail("job " + JSON.stringify(arg2) + " did not fail on any pull request run from " + arg);
     break;
   }
   case "core-no-deps": {
