@@ -67,9 +67,11 @@ Five sessions, 16.87 USD in total.
    2-thread `receipt-git` group of `.config/nextest.toml`, as `receipt_verify` and
    `receipt_in_tree` already did; the git deadline is unchanged. The 28 s limit was **not**
    raised: it is the plugin's registered hook timeout (30 s, every entry of `hooks/hooks.json`)
-   less 2 s, and the 29.8 s measured leaves no margin under 30 s, so on that machine the hook
-   itself answered too late for Claude Code. That is a production question (the hook's own 20 s
-   limit in `hooks/supervisor-hook.js`, or the registered timeout), still open.
+   less 2 s. The test kills a hook still running at the bound, so 28.07 s and 29.8 s are the times
+   the killed process exited: what was measured is no answer within 28 s, and whether the hook
+   would have answered inside 30 s is not known. No bound under 30 s can be shown to fit, so
+   the bound stays; the hook's own 20 s limit in `hooks/supervisor-hook.js` against the
+   registered timeout under load is still open.
 2. The CI job re-runs every command in the bundled contract, floor included, which repeats most
    of the Linux test job. Decide whether the receipt job may skip commands the same CI run
    already ran on the same commit.
