@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use coding_supervisor::{Candidate, CandidateId};
 
@@ -55,6 +55,27 @@ impl GitCandidate {
     }
 
     fn observe_worktree(&self) -> Result<Candidate, Unobserved> {
+        let (base_commit, files) = self.dirty()?;
+        let mut listing = String::new();
+        for (path, hash) in &files {
+            listing.push_str(path);
+            listing.push('\n');
+            listing.push_str(hash);
+            listing.push('\n');
+        }
+        Ok(Candidate {
+            id: CandidateId {
+                base_commit,
+                dirty_digest: sha256::hex(listing.as_bytes()),
+            },
+            provenance: "git".to_owned(),
+            changed_paths: files.into_iter().map(|(path, _)| path).collect(),
+        })
+    }
+
+    /// HEAD, and every path that differs from it (or is untracked) with the hash of its content
+    /// (`deleted` for a removed one), sorted by path.
+    fn dirty(&self) -> Result<(String, Vec<(String, String)>), Unobserved> {
         // One git for both: HEAD on the first line, the subdirectory prefix (empty at the root) on
         // the second. Scope and exclusions are worktree-relative, even from a subdirectory.
         let answer = self.git(&["rev-parse", "HEAD", "--show-prefix"])?;
@@ -89,31 +110,79 @@ impl GitCandidate {
             .collect();
         changed_paths.sort();
         changed_paths.dedup();
-        let mut listing = String::new();
-        for path in &changed_paths {
-            let hash = match std::fs::read(self.cwd.join(path)) {
-                Ok(bytes) => sha256::hex(&bytes),
-                Err(e) if e.kind() == ErrorKind::NotFound => "deleted".to_owned(),
-                Err(e) => {
-                    return Err(Unobserved::WorktreeUnreadable(format!(
-                        "cannot read {path}: {e}"
-                    )));
-                }
-            };
-            listing.push_str(path);
-            listing.push('\n');
-            listing.push_str(&hash);
-            listing.push('\n');
+        let mut files = Vec::new();
+        for path in changed_paths {
+            let hash = content_hash(&self.cwd.join(&path))
+                .map_err(|e| Unobserved::WorktreeUnreadable(format!("cannot read {path}: {e}")))?;
+            files.push((path, hash));
         }
-        Ok(Candidate {
-            id: CandidateId {
-                base_commit,
-                dirty_digest: sha256::hex(listing.as_bytes()),
-            },
-            provenance: "git".to_owned(),
-            changed_paths,
-        })
+        Ok((base_commit, files))
     }
+}
+
+/// The hash a candidate lists for a file: of its bytes, or `deleted` when it is gone.
+fn content_hash(file: &Path) -> std::io::Result<String> {
+    match std::fs::read(file) {
+        Ok(bytes) => Ok(sha256::hex(&bytes)),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok("deleted".to_owned()),
+        Err(e) => Err(e),
+    }
+}
+
+/// G48: the file a task start writes into the task's folder.
+pub(crate) const BASELINE: &str = "baseline.json";
+
+/// G48: what was already changed in `project` when a task starts there: its root and each such
+/// file with its content hash. `None` outside a repository or when git does not answer; the
+/// task then has no baseline and every changed file counts as its own, as before.
+pub(crate) fn baseline(project: &Path) -> Option<String> {
+    let root = crate::location::checked_project(project).ok()?;
+    let (_, files) = GitCandidate {
+        cwd: PathBuf::from(&root),
+    }
+    .dirty()
+    .ok()?;
+    let files: serde_json::Map<String, serde_json::Value> = files
+        .into_iter()
+        .map(|(path, hash)| (path, hash.into()))
+        .collect();
+    Some(format!(
+        "{}\n",
+        serde_json::json!({"schema":1, "root":root, "files":files})
+    ))
+}
+
+/// G48: `candidate` without the changed paths the task inherited: those its baseline lists whose
+/// content is still what it was at the start. A file the task changed further, deleted or first
+/// touched stays. Only the path list is trimmed (it feeds the scope check); the candidate's
+/// identity still covers every changed file. With no baseline, one that does not parse, or one
+/// taken for another root than `root`, nothing is removed.
+pub(crate) fn without_inherited(
+    task_dir: &Path,
+    root: &str,
+    mut candidate: Candidate,
+) -> Candidate {
+    let Some(baseline) = std::fs::read_to_string(task_dir.join(BASELINE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    else {
+        return candidate;
+    };
+    let Some(files) = baseline["files"]
+        .as_object()
+        .filter(|_| baseline["root"].as_str() == Some(root))
+    else {
+        return candidate;
+    };
+    candidate.changed_paths.retain(|path| {
+        files
+            .get(path)
+            .and_then(|was| was.as_str())
+            .is_none_or(|was| {
+                content_hash(&Path::new(root).join(path)).map_or(true, |now| now != was)
+            })
+    });
+    candidate
 }
 
 impl GitCandidate {
