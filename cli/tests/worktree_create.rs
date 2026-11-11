@@ -282,6 +282,8 @@ fn a_replayed_start_with_another_worktree_setting_is_refused() {
     assert_eq!(v["replayed"], true, "{v}");
     let other = start_file(&g, &file, Some(&g.root.join("wt2")));
     assert!(!other.status.success(), "{other:?}");
+    let stderr = String::from_utf8_lossy(&other.stderr);
+    assert!(stderr.contains("different worktree setting"), "{stderr}");
     assert!(!g.root.join("wt2").exists());
 }
 
