@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.2](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.18.1...v0.18.2) (2026-11-11)
+
+
+### Bug Fixes
+
+* **gate:** a task is not charged for files already changed at its start (G48) ([b1f861b](https://github.com/special-place-ai-heaven/coding-supervisor/commit/b1f861b7de2a7e62bfbbe9f350fa47a6d09299a2))
+* **gate:** a task is not charged for files already changed at its start (G48) ([6f834a0](https://github.com/special-place-ai-heaven/coding-supervisor/commit/6f834a0b5b3c5cbcd4846a79c1b501994038d02c))
+
 ## [0.18.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.18.0...v0.18.1) (2026-11-10)
 
 
