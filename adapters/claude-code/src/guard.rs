@@ -70,7 +70,8 @@ fn deny(payload: &Value, matched: String) -> Option<Decision> {
 /// `cancel`, `start`, `next`, `cleanup`, `deactivate`, `rebind` or `migrate` (every `task`
 /// command but the read-only `resume`), or the hook command itself (`supervisor hook`,
 /// `supervisor-claude-code hook`), in a Bash, PowerShell or Terminal Commander command,
-/// whatever the binary's path, extension or quoting; returns the matched words.
+/// whatever the binary's path, extension (npm's launchers included) or quoting; returns the
+/// matched words.
 fn level_command(payload: &Value) -> Option<String> {
     let tool = payload.get("tool_name").and_then(Value::as_str)?;
     let text = command_text(tool, payload.get("tool_input")?)?.to_lowercase();
@@ -78,9 +79,15 @@ fn level_command(payload: &Value) -> Option<String> {
         .split(|c: char| c.is_whitespace() || "\"'`;&|()".contains(c))
         .filter(|w| !w.is_empty())
         .collect();
+    // The file stem for the binary and npm's launchers (`.cmd`, `.bat`, `.ps1`, and the
+    // `supervisor.js` bin target, so `node <path>/supervisor.js task …` matches too).
     let program = |word: &str| {
         let name = word.rsplit(['/', '\\']).next().unwrap_or_default();
-        name.strip_suffix(".exe").unwrap_or(name).to_owned()
+        [".exe", ".cmd", ".bat", ".ps1", ".js"]
+            .into_iter()
+            .find_map(|ext| name.strip_suffix(ext))
+            .unwrap_or(name)
+            .to_owned()
     };
     // G43: the harness runs the hook command itself, never through a tool call. From an agent
     // it could only feed the gate a made-up event, such as another session's SessionEnd.
