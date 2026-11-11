@@ -47,6 +47,19 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        let mut f = Self::repository();
+        let event = f.prompt("owner", "first");
+        f.task = f
+            .propose(&event, "start", json!({"contract": contract()}))
+            .unwrap()["task_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        f
+    }
+
+    /// The committed project with no task yet.
+    fn repository() -> Self {
         let project = std::env::temp_dir().join(format!(
             "supervisor-takeover-{}-{}",
             std::process::id(),
@@ -74,19 +87,11 @@ impl Fixture {
                 "fixture",
             ],
         );
-        let mut f = Self {
+        Self {
             root: project.join("state"),
             project,
             task: String::new(),
-        };
-        let event = f.prompt("owner", "first");
-        f.task = f
-            .propose(&event, "start", json!({"contract": contract()}))
-            .unwrap()["task_id"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        f
+        }
     }
 
     fn prompt(&self, session: &str, id: &str) -> Value {
@@ -167,6 +172,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.project);
+        let _ = fs::remove_dir_all(worktree_of(&self.project));
     }
 }
 
@@ -230,6 +236,47 @@ fn an_ended_owners_task_with_uncommitted_work_needs_an_explicit_choice() {
     let archive = f.archive();
     assert_eq!(archive["disposition"], "abandoned", "{archive}");
     assert_eq!(archive["uncommitted_work"], true, "{archive}");
+}
+
+/// The worktree a person's `task start --worktree` creates for the fixture: beside the project.
+fn worktree_of(project: &Path) -> PathBuf {
+    PathBuf::from(format!("{}-wt", project.display()))
+}
+
+/// WP3 review r3: a person's worktree task (binding in task.json) that a prompt made
+/// prompt-managed keeps its worktree's uncommitted work out of a takeover; the main checkout is
+/// clean because edits there were refused.
+#[test]
+fn an_ended_owners_worktree_task_with_uncommitted_work_in_its_worktree_needs_a_choice() {
+    let mut f = Fixture::repository();
+    let worktree = worktree_of(&f.project);
+    f.task = lifecycle::start_in_worktree(
+        &f.root,
+        &supervisor_claude_code::state::Writer::task_start(Some(&f.project)),
+        &contract(),
+        false,
+        None,
+        None,
+        &worktree,
+    )
+    .unwrap()["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let event = f.prompt("owner", "first");
+    f.propose(&event, "continue", json!({"task_id": f.task}))
+        .unwrap();
+    fs::write(worktree.join("unfinished.rs"), "// work in progress\n").unwrap();
+    f.end_session("owner");
+    let event = f.prompt("replacement", "new");
+    let error = f
+        .propose(&event, "start", json!({"contract": contract()}))
+        .unwrap_err();
+    assert!(
+        error.contains("uncommitted") && error.contains("abandon_previous"),
+        "{error}"
+    );
+    assert_eq!(f.active(), f.task);
 }
 
 /// The protection that must hold: a session that has not reported ending keeps its task,

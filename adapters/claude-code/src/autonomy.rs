@@ -1516,18 +1516,18 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
     let worktree = requested_worktree(project, proposal);
     // A takeover `start` asks git once whether the ended owner left uncommitted work; outside
     // the lock, like the calls above (G26).
-    // The tree is the task's own: its bound worktree, else the project it was started in. The
-    // answer is kept with the task it was asked about.
+    // The tree is the task's own: its bound worktree (autonomy.json, else a person's task.json
+    // binding), else the project it was started in. The answer is kept with the task it was
+    // asked about.
     let uncommitted = match lifecycle::active_task(root)? {
         Some(active) if proposal.get("action").and_then(Value::as_str) == Some("start") => {
             read(&active.dir.join("autonomy.json"))?
                 .filter(|metadata| metadata.get("session_ended").is_some())
                 .map(|metadata| {
-                    let tree = metadata["worktree"]
-                        .as_str()
-                        .or(metadata["project"].as_str())
-                        .map_or(project, Path::new);
-                    (active.task_id, uncommitted_work(tree))
+                    let tree = crate::binding::bound_root(&active.dir)
+                        .or_else(|| metadata["project"].as_str().map(str::to_owned))
+                        .map_or(project.to_path_buf(), PathBuf::from);
+                    (active.task_id, uncommitted_work(&tree))
                 })
         }
         _ => None,
