@@ -273,6 +273,8 @@ fn free_text_that_is_not_exported_never_reaches_the_bundle() {
     let (_, text, _) = f.exported();
     let project = f.project.to_string_lossy().into_owned();
     for marker in [
+        // The fixture's own folder name, whatever the path spelling.
+        "sup-wp7-markers",
         "receipt-output-marker-91c2",
         "finding-text-marker-5d0e",
         USER_MARKER,

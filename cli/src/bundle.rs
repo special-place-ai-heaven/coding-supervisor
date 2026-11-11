@@ -136,9 +136,13 @@ fn build(project: &Path, root: &Path) -> Result<(Value, String), Failure> {
             .unwrap_or_default()
             .to_owned(),
     };
+    // The completion is bound to its candidate. A plain commit afterwards moves the receipts
+    // (same tree) but not the completed checkpoint, so export comes before that commit.
+    // shortcut: no export after a commit of the completed work; compare the checkpoint
+    // candidate's content tree instead if that flow is needed.
     if live != candidate {
         return Err(refused(
-            "the worktree is not the candidate the task completed on; run a hook-observed check and stop again",
+            "the worktree is not the candidate the task completed on; export right after completion, before committing the work",
         ));
     }
     let base = contract

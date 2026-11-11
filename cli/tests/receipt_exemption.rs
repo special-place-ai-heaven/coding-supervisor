@@ -55,8 +55,10 @@ fn required(
         path
     };
     let mut cmd = Command::new(BIN);
+    // `extra` first: the first occurrence of a flag wins, so a test can replace a default.
     cmd.args(["receipt", "required", "--event"])
         .arg(write("event.json", event.to_string()))
+        .args(extra)
         .arg("--docs-paths")
         .arg(write("docs-paths.txt", "# docs\r\ndocs/**\r\nREADME.md\r\n".into()))
         .arg("--release-config")
@@ -76,7 +78,7 @@ fn required(
         cmd.arg("--labels")
             .arg(write("timeline.jsonl", text.join("\n")));
     }
-    let out = cmd.args(extra).output().unwrap();
+    let out = cmd.output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
     for word in BANNED {
         assert!(!stdout.contains(word), "banned word {word:?}: {stdout}");
@@ -158,6 +160,42 @@ fn release_please_is_exempt_only_with_its_author_and_release_files() {
         &["--release-author", "release-bot"],
     );
     assert!(!req);
+}
+
+/// The repository's own release-please config and the ten files release PR #92 changed
+/// (`gh pr view 92 --json files`, 2026-11-11): one file short and every release PR would stall.
+#[test]
+fn this_repositorys_release_pull_request_is_exempt_under_its_own_config() {
+    let c = case("release-real");
+    let config = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../.github/release-please-config.json"
+    );
+    let files = [
+        ".github/.release-please-manifest.json",
+        "CHANGELOG.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "adapters/claude-code/Cargo.toml",
+        "adapters/mcp/Cargo.toml",
+        "cli/Cargo.toml",
+        "npm/package.json",
+        "npm/platforms/linux-x64/package.json",
+        "npm/platforms/windows-x64/package.json",
+    ];
+    let event = pr(
+        "main",
+        "release-please--branches--main--components--coding-supervisor",
+        OWNER,
+    );
+    let (req, why) = required(
+        &c,
+        &event,
+        Some(&files),
+        None,
+        &["--release-config", config],
+    );
+    assert!(!req, "{why}");
 }
 
 #[test]

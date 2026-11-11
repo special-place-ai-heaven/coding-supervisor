@@ -24,7 +24,13 @@ another base need nothing; the job is then a no-op success.
    pull request that relies on it: CI reads the key list from the base commit only, never from
    the pull request. To retire a key, set its `revoked_at`.
 2. **Job.** Copy the `receipts` job from this repository's `ci.yml` into the new repository's
-   workflow (it needs no other job). Set `OWNER_LOGIN` to the person who may apply the label;
+   workflow (it needs no other job). Its toolchain, cache and build steps build `supervisor`
+   from this repository's own sources, which another repository does not have: replace them
+   with an install of a pinned released `supervisor` (for example `npm install -g
+   coding-supervisor@<version>`), checked by version. As of this writing no release carries
+   `receipt export`, `receipt verify --bundle` or `receipt required` yet. If the workflow is
+   called from another workflow (as `release.yml` calls `ci.yml` here), the calling job must
+   grant `pull-requests: read` and `issues: read` too. Set `OWNER_LOGIN` to the person who may apply the label;
    for an organisation-owned repository this must be a person's login, because the default
    (the repository owner) is the organisation, which never applies labels. Add
    `--maintainers a,b` to the `receipt required` line for more people, and
@@ -34,8 +40,9 @@ another base need nothing; the job is then a no-op success.
    exactly `Verify supervisor receipts`.
 4. **Label.** Create the label `receipt-exempt`. After applying it, re-run the job: label events
    do not start CI, and the re-run reads the timeline again.
-5. **Per pull request.** Finish the task under the hooks, run `supervisor receipt export`, and
-   commit the bundle with the work. Start the task from the commit the branch leaves `main`
+5. **Per pull request.** Finish the task under the hooks, run `supervisor receipt export` right
+   away, and commit the bundle with the work. Export refuses once the completed work has been
+   committed on its own: the completion stays bound to the candidate it was accepted on. Start the task from the commit the branch leaves `main`
    at: CI recomputes the changed paths from the merge base, and a bundle from a later start
    lists fewer paths and is refused. After a rebase or a merge of `main`, export again.
 

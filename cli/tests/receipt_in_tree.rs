@@ -70,6 +70,29 @@ fn writing_and_committing_a_bundle_leave_the_candidate_identity_unchanged() {
     assert_ne!(stop["decision"], "block", "{stop}");
 }
 
+/// The work committed after completion: the receipts follow the identical tree, but the
+/// completed checkpoint stays on its candidate, so export refuses and says to export first.
+#[test]
+fn export_after_committing_the_completed_work_is_refused_with_the_way_out() {
+    let f = Fixture::new("commit-first");
+    f.start(json!({}));
+    fs::write(f.project.join("src").join("lib.rs"), "// two\n").unwrap();
+    f.complete("ok");
+    f.commit("work");
+    let stop = f.stop("Done.");
+    assert_ne!(stop["decision"], "block", "{stop}");
+    let (code, value) = f.export();
+    assert_eq!((code, &value["export"]), (3, &json!("refused")), "{value}");
+    assert!(
+        value["reason"]
+            .as_str()
+            .unwrap()
+            .contains("before committing"),
+        "{value}"
+    );
+    assert!(!f.project.join("supervisor-receipts").exists());
+}
+
 #[test]
 fn a_real_change_beside_the_bundle_makes_it_stale() {
     let f = Fixture::new("beside");
