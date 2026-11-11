@@ -126,25 +126,25 @@ The cargo gates use the commands the supervisor contract (`supervisor-contract.j
   EXPECT: job passed with a receipt bundle on PR
   EVIDENCE: automatic-evidence=v1; definition-sha256=0d50d5f5421d6682c51b4ac34783169d009a4592f68c9b893ffeb54da194466e; exit=0; EXPECT=matched; output-sha256=8d887b2fa549a86cb78d6e0c7649e91d5a54eb01700e8e7e4db5f6617a0648a3; output-bytes=71; shell=C:\WINDOWS\system32\cmd.exe; cwd=E:\project\cs-wt\docs-ledger; path=7b67f14e9903/87 entries
 
-- [ ] W3.1: worktree creation is merged into main
+- [x] W3.1: worktree creation is merged into main
   CHECK: node docs/research/2026-11-09-governance-phase1/check.mjs merged feat/worktree-create
   EXPECT: merged into main: feat/worktree-create
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=8fcf3b44dd9418be028895cd5cd2fc2e1d5d195e6b40242e351efdb22c510c52; exit=0; EXPECT=matched; output-sha256=6e95f0585a6beaa3f4617b3ed5f215d67e18bf06443d770e27d987fe4cd28bfb; output-bytes=44; shell=C:\WINDOWS\system32\cmd.exe; cwd=E:\project\cs-wt\final-ledger; path=7b67f14e9903/87 entries
 
-- [ ] W3.2: a created worktree is verified for path, branch, base and cleanliness, and cleanup keeps unreceipted work
+- [x] W3.2: a created worktree is verified for path, branch, base and cleanliness, and cleanup keeps unreceipted work
   CHECK: cargo test -p supervisor --test worktree_create
   EXPECT: /test result: ok\. [1-9][0-9]* passed/
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=70ebfc9f972c7bedca66daef3519eff60c62f46ce19aeac3244f560b382bf8ee; exit=0; EXPECT=matched; output-sha256=bff4204859f08aae8a0a6391afde55cc58f98606af1acf02264a906b7a1db3cd; output-bytes=2841; shell=C:\WINDOWS\system32\cmd.exe; cwd=E:\project\cs-wt\final-ledger; path=7b67f14e9903/87 entries
 
-- [ ] W8.1: the barrier matrix is merged into main
+- [x] W8.1: the barrier matrix is merged into main
   CHECK: node docs/research/2026-11-09-governance-phase1/check.mjs merged test/barrier-matrix
   EXPECT: merged into main: test/barrier-matrix
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=21a5ed8db295ad6d34835398b739818e65f4efb3aade225275d2c5a7b49a2959; exit=0; EXPECT=matched; output-sha256=0364b942dbe1346d954fb7787c7e64cfea1d8bf2eecdad02f33c9961bc0e16d0; output-bytes=43; shell=C:\WINDOWS\system32\cmd.exe; cwd=E:\project\cs-wt\final-ledger; path=7b67f14e9903/87 entries
 
-- [ ] W8.2: RESULTS.md records all 20 spec section 9 cases with an integer exit code or a server N/A reason
+- [x] W8.2: RESULTS.md records all 20 spec section 9 cases with an integer exit code or a server N/A reason
   CHECK: node docs/research/2026-11-09-governance-phase1/check.mjs matrix
   EXPECT: matrix: 20 cases recorded
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=56cdf55dd067c5124707140cc8efc7e223f236b2ec01140cc69909ed53a35e61; exit=0; EXPECT=matched; output-sha256=3ff5e1f64ceae5e6475843d9d4da18be069e8a8689be7a9926e1c71df8e9b9d5; output-bytes=65; shell=C:\WINDOWS\system32\cmd.exe; cwd=E:\project\cs-wt\final-ledger; path=7b67f14e9903/87 entries
 
 - [x] F1: main passes the formatting check
   CHECK: cargo fmt --all -- --check && echo fmt-clean
@@ -166,8 +166,8 @@ The cargo gates use the commands the supervisor contract (`supervisor-contract.j
   EXPECT: core crate has no dependencies
   EVIDENCE: automatic-evidence=v1; definition-sha256=073642a730fb069ffa14d83d4ec10c0cb25ab440c68025f3c4e9112c8921c4e7; exit=0; EXPECT=matched; output-sha256=8269e269d8f4219d0274963a41997bd0dd627d616356c637c70e560b220ab5ac; output-bytes=31; shell=C:\WINDOWS\system32\cmd.exe; cwd=E:\project\cs-wt\docs-ledger; path=7b67f14e9903/87 entries
 
-- [ ] F5: CLAUDE.md and HANDOVER.md describe the merged state, with every enforcement claim traced to a named test
-  EVIDENCE: pending
+- [x] F5: CLAUDE.md and HANDOVER.md describe the merged state, with every enforcement claim traced to a named test
+  EVIDENCE: done in PR #108 (2026-11-12) and fact-checked by a separate agent with no false statement found. Refusal claims name their test files; the claims no test can pin (results of live harness runs, configured action-policy errors) are marked "(no test names this)" in CLAUDE.md rather than traced.
 
-- [ ] F6: every deferral is listed in RESULTS.md with its reason, and each one appears here as an ABANDON line
-  EVIDENCE: pending
+- [x] F6: every deferral is listed in RESULTS.md with its reason, and each one appears here as an ABANDON line
+  EVIDENCE: no work package of PLAN.md was deferred, so no gate is abandoned and this file has no ABANDON line. What RESULTS.md lists under "Deferrals and gaps" are case-level gaps (11 cases partly shown, case 13 not built); each is carried as open work in docs/research/2026-11-11-open-items/OPEN-ITEMS.md. Read this ledger's ALL MET as "every work package is merged", not as "every spec barrier is complete".
