@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.19.2](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.19.1...v0.19.2) (2026-11-11)
+
+
+### Bug Fixes
+
+* **claude-code:** judge a dotdot through a missing directory where it lands ([17eedb2](https://github.com/special-place-ai-heaven/coding-supervisor/commit/17eedb2f10495f472eb5c83775fc4d740033cd9a))
+* **claude-code:** refuse a dotdot the path check cannot fold ([0264fb6](https://github.com/special-place-ai-heaven/coding-supervisor/commit/0264fb6d71c11469903429a59d15f4decec65e65))
+* decide the stop wait on every gap before the refusal list is shortened ([306f838](https://github.com/special-place-ai-heaven/coding-supervisor/commit/306f838d2b755053f610856268c0322148b38e41))
+* earlier and fuller gate refusals, MCP refusal at a task limit, dot-dot paths judged where they land ([feb0ce0](https://github.com/special-place-ai-heaven/coding-supervisor/commit/feb0ce0aaf34e5d05bd529c85fac6dfeff9e6c15))
+* **mcp:** refuse accept_try and task_complete at a reached task limit ([1851196](https://github.com/special-place-ai-heaven/coding-supervisor/commit/185119630c0b5c624d24c08a5d7fb01f22df641a))
+* name an unapproved run environment before the run and every unmet check at Stop ([b56c8e3](https://github.com/special-place-ai-heaven/coding-supervisor/commit/b56c8e3f11965c1d4e5f618cabf8ff282c307a20))
+* name every check never run after a missing or stale receipt refusal ([557021d](https://github.com/special-place-ai-heaven/coding-supervisor/commit/557021d062d65a02a15efbc2c59c51db125cd4c2))
+* refuse an unapproved environment early only for a journaled root run ([ef61a42](https://github.com/special-place-ai-heaven/coding-supervisor/commit/ef61a42486e424ea4bb8b0cd4c1f2fd13764a64d))
+* verdict and status report runs a stop has not counted yet ([84e573a](https://github.com/special-place-ai-heaven/coding-supervisor/commit/84e573a8766538a9f65297e88d879ef48f9f776a))
+
 ## [0.19.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.19.0...v0.19.1) (2026-11-11)
 
 
