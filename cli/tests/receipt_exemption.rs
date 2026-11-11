@@ -114,6 +114,30 @@ fn a_code_change_to_main_needs_a_receipt() {
     assert!(req, "{why}");
 }
 
+/// A pull request whose head commit is already on the default branch brings nothing to it (CI
+/// ran after the merge, as on release PR #98): CI passes `--head-on-default-branch` only when
+/// `git merge-base --is-ancestor <head> <tip>` exits 0, and it is decided before the other rules.
+#[test]
+fn a_head_already_on_the_default_branch_needs_no_receipt() {
+    let c = case("merged");
+    let event = pr("main", "feat/x", "someone");
+    let merged = ["--head-on-default-branch"];
+    let (req, why) = required(&c, &event, Some(&[]), Some(&[]), &merged);
+    assert!(!req, "{why}");
+    assert!(why.contains("already on the default branch"), "{why}");
+    let (req, why) = required(&c, &event, None, None, &merged);
+    assert!(!req, "{why}");
+    // An empty change list without the flag still needs a receipt.
+    let (req, why) = required(&c, &event, Some(&[]), Some(&[]), &[]);
+    assert!(req, "{why}");
+    // The flag with changed paths is a workflow mistake (a head on the tip changes nothing).
+    let (req, why) = required(&c, &event, Some(&["src/lib.rs"]), Some(&[]), &merged);
+    assert!(req, "{why}");
+    // The flag exempts pull requests only; an event this rule does not know still needs one.
+    let (req, why) = required(&c, &json!({"inputs":{}}), Some(&[]), None, &merged);
+    assert!(req, "{why}");
+}
+
 /// (a): documentation only, read from the base commit's list; one code path breaks it.
 #[test]
 fn a_docs_only_change_is_exempt_and_a_code_path_beside_it_is_not() {

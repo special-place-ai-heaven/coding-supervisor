@@ -41,6 +41,11 @@ fn git(project: &Path, args: &[&str]) {
 /// A repository whose tree already holds another task's uncommitted work outside `src/` (a
 /// modified tracked file and a new one), and a task with scope `src/` started on top of it.
 fn started_on_a_dirty_tree() -> Fixture {
+    started_on_a_dirty_tree_with(|_| {})
+}
+
+/// [`started_on_a_dirty_tree`] with `prepare` run on the project just before the task starts.
+fn started_on_a_dirty_tree_with(prepare: impl FnOnce(&Path)) -> Fixture {
     let root = std::env::temp_dir().join(format!(
         "supervisor-baseline-{}-{}",
         std::process::id(),
@@ -63,6 +68,7 @@ fn started_on_a_dirty_tree() -> Fixture {
     git(&project, &["commit", "-q", "-m", "one"]);
     fs::write(project.join("other/notes.txt"), "earlier task\n").unwrap();
     fs::write(project.join("other/new.txt"), "earlier task\n").unwrap();
+    prepare(&project);
     let env = Env {
         state_dir: state,
         state_location: "test",
@@ -135,6 +141,55 @@ impl Fixture {
         self.hook(json!({"hook_event_name":"Stop","stop_hook_active":false,
             "last_assistant_message":"Done."}))
     }
+
+    fn gate_state(&self) -> String {
+        let dir = self.env.state_dir.join("tasks").join(&self.task);
+        let gate: Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("gate.json")).unwrap()).unwrap();
+        gate["state"].as_str().unwrap().to_owned()
+    }
+}
+
+fn candidate_id(project: &Path) -> coding_supervisor::CandidateId {
+    GitCandidate {
+        cwd: project.to_path_buf(),
+    }
+    .observe_git()
+    .ok()
+    .expect("git observes the candidate")
+    .id
+}
+
+const BUNDLE: &str = "supervisor-receipts/earlier.json";
+
+/// WP7 with G48: a receipt bundle already uncommitted when the task starts, then rewritten
+/// during it, is neither the task's out-of-scope edit nor part of the candidate identity.
+#[test]
+fn a_bundle_present_at_the_start_and_rewritten_is_neither_an_edit_nor_the_candidate() {
+    let mut f = started_on_a_dirty_tree_with(|project| {
+        fs::create_dir_all(project.join("supervisor-receipts")).unwrap();
+        fs::write(project.join(BUNDLE), "{}\n").unwrap();
+    });
+    f.work_and_checks();
+    let before = candidate_id(&f.project);
+    fs::write(f.project.join(BUNDLE), "{\"rewritten\":true}\n").unwrap();
+    assert_eq!(candidate_id(&f.project), before);
+    assert_eq!(f.stop(), Decision::None);
+    assert_eq!(f.gate_state(), "completed");
+}
+
+/// WP7 with G48: committing the work and a new bundle, with the inherited files left
+/// uncommitted, keeps the receipts and charges the task nothing.
+#[test]
+fn inherited_files_beside_a_newly_committed_bundle_keep_the_receipts() {
+    let mut f = started_on_a_dirty_tree();
+    f.work_and_checks();
+    fs::create_dir_all(f.project.join("supervisor-receipts")).unwrap();
+    fs::write(f.project.join(BUNDLE), "{}\n").unwrap();
+    git(&f.project, &["add", "src", "supervisor-receipts"]);
+    git(&f.project, &["commit", "-q", "-m", "work and its receipt"]);
+    assert_eq!(f.stop(), Decision::None);
+    assert_eq!(f.gate_state(), "completed");
 }
 
 /// SymForge report 2026-11-10, item 3: the stop gate listed an earlier task's uncommitted files

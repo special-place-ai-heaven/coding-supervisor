@@ -8,7 +8,9 @@ as_of 2026-11-11. Requires a `supervisor` with `receipt export` and `receipt ver
 Every pull request, whatever its base, must add (or change) at least one file under
 `supervisor-receipts/` that `supervisor receipt verify --bundle` accepts, and CI re-runs the
 acceptance commands of each bundled contract. Exemptions are decided by
-`supervisor receipt required` from data CI reads itself: a documentation-only change (the default
+`supervisor receipt required` from data CI reads itself: a head commit already on the default
+branch's tip (CI ran after the merge; the job passes `--head-on-default-branch` only when
+`git merge-base --is-ancestor <head> <tip>` exits 0), a documentation-only change (the default
 branch's `.github/docs-paths.txt`), release-please's version-only pull request (head branch
 exactly `release-please--branches--main--components--coding-supervisor`, or the name given with
 `--release-branch`, opened by the release author, touching only the files the default branch's
@@ -52,7 +54,10 @@ required" only for a push to `main` and a tag, and "required" for any other even
    after the pull request's last update in the event that started the run, so after any later
    push: remove the label, apply it again, and re-run the job.
 5. **Per pull request.** Finish the task under the hooks, run `supervisor receipt export` right
-   away, and commit the bundle with the work. Export refuses once the completed work has been
+   away, and commit the bundle with the work. Export runs verify's scope check on the contract's `base_sha`
+   and refuses, naming the paths, when a changed path is outside the contract's scope (for
+   example a file already changed before the task started, which the local gate does not charge
+   to the task). Export refuses once the completed work has been
    committed on its own: the completion stays bound to the candidate it was accepted on. Start the task from the commit the branch leaves `main`
    at: CI recomputes the changed paths from the merge base, and a bundle from a later start
    lists fewer paths and is refused. After a rebase or a merge of `main`, export again.
@@ -96,5 +101,8 @@ required" only for a push to `main` and a tag, and "required" for any other even
   one task per pull request.
 - A mandatory criterion of kind `baseline_reproduces_reported_failure` binds to the task's
   starting candidate, so `supervisor verdict`, and therefore export, refuse such a task.
+- A head merged by squash or rebase is not an ancestor of the default branch's tip, so a run
+  after such a merge still needs a receipt. A pull request to another branch whose head commit
+  is already on the default branch needs none.
 - The job builds `supervisor` on every pull request, documentation-only ones included, and the
   re-run repeats part of the test job.

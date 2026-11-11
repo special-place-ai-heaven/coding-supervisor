@@ -183,8 +183,9 @@ jobs:
   # WP7: every pull request, whatever its base, must add a receipt bundle under
   # supervisor-receipts/ that `supervisor receipt verify --bundle` accepts, and the bundled
   # contracts' acceptance commands are run again here, unless `supervisor receipt required` finds
-  # an exemption (documentation only, release-please's version-only pull request, or the
-  # receipt-exempt label applied by the owner after the last push). The event's base is never
+  # an exemption (a head commit already on the default branch's tip, documentation only,
+  # release-please's version-only pull request, or the receipt-exempt label applied by the owner
+  # after the last push). The event's base is never
   # used: changing a pull request's base starts no new run, so a pull request is judged on
   # everything it would bring to the default branch. The key list, the docs list, the
   # release-please config and the diff base all come from the default branch's tip at run time
@@ -293,13 +294,20 @@ jobs:
           fi
           fork=$(git merge-base "$tip" "$HEAD") || { echo "::error::this pull request shares no history with $DEFAULT, so there is no point to compare from"; exit 1; }
           echo "default branch $DEFAULT at $tip; this pull request leaves it at $fork"
+          # A head already on the tip (CI ran after the merge) brings nothing. Only exit 0 counts;
+          # exit 1 or any error leaves the flag out.
+          merged=()
+          if git merge-base --is-ancestor "$HEAD" "$tip"; then
+            merged=(--head-on-default-branch)
+          fi
           # Lists from the default branch, so a pull request cannot widen them for itself.
           git show "$tip:.github/docs-paths.txt" > "$dir/docs-paths.txt" 2>/dev/null || : > "$dir/docs-paths.txt"
           git show "$tip:.github/release-please-config.json" > "$dir/release-please-config.json" 2>/dev/null || echo '{}' > "$dir/release-please-config.json"
           git diff --name-only --no-renames "$fork" "$HEAD" > "$dir/changed.txt"
           "$bin" receipt required --event "$GITHUB_EVENT_PATH" --labels "$dir/timeline.jsonl" \
             --changed "$dir/changed.txt" --docs-paths "$dir/docs-paths.txt" \
-            --release-config "$dir/release-please-config.json" --owner "$OWNER_LOGIN" > "$dir/required.json"
+            --release-config "$dir/release-please-config.json" --owner "$OWNER_LOGIN" \
+            "${merged[@]}" > "$dir/required.json"
           cat "$dir/required.json"
           if [ "$(jq -r .required "$dir/required.json")" != true ]; then
             echo "No receipt required: $(jq -r .reason "$dir/required.json")"
@@ -322,6 +330,14 @@ jobs:
             jq -c '.acceptance[].command' "$dir/verify.json" >> "$dir/commands.jsonl"
           done
           echo "rerun=true" >> "$GITHUB_OUTPUT"
+
+      # A bundled contract can name `cargo nextest run`. Downloaded only when commands are re-run,
+      # so a pull request that needs no receipt does not depend on the download; only the one
+      # binary is taken from the archive.
+      - name: Install cargo-nextest if missing
+        if: steps.event.outputs.pr == 'true' && steps.verify.outputs.rerun == 'true'
+        run: |
+          command -v cargo-nextest > /dev/null || curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin" cargo-nextest
 
       # No token or secret is in this step's environment: the step names none, and env -i drops
       # the runner's own variables. Hosted runners allow sudo, so a command could still reach the

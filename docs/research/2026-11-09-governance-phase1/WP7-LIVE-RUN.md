@@ -60,16 +60,31 @@ Five sessions, 16.87 USD in total.
 
 ## Follow-ups
 
-1. The repository's own floor requires the full test suite locally, and on a loaded developer
-   machine two fixed time limits make it fail: the 28 s limit in `hooks/supervisor-hook.test.js`
-   and the gate's 5 s git deadline as seen by tests that start many git processes. Ease these
-   in a small PR; its own PR should carry the first complete live receipt.
+1. Done in part (branch `fix/receipt-followups`). The repository's own floor requires the full
+   test suite locally, and on a loaded developer machine two fixed time limits make it fail: the
+   28 s limit in `hooks/supervisor-hook.test.js` and the gate's 5 s git deadline as seen by tests
+   that start many git processes. The `verdict` and `receipt_sign` test files now run in the
+   2-thread `receipt-git` group of `.config/nextest.toml`, as `receipt_verify` and
+   `receipt_in_tree` already did; the git deadline is unchanged. The 28 s limit was **not**
+   raised: it is the plugin's registered hook timeout (30 s, every entry of `hooks/hooks.json`)
+   less 2 s. The test kills a hook still running at the bound, so 28.07 s and 29.8 s are the times
+   the killed process exited: what was measured is no answer within 28 s, and whether the hook
+   would have answered inside 30 s is not known. No bound under 30 s can be shown to fit, so
+   the bound stays; the hook's own 20 s limit in `hooks/supervisor-hook.js` against the
+   registered timeout under load is still open.
 2. The CI job re-runs every command in the bundled contract, floor included, which repeats most
    of the Linux test job. Decide whether the receipt job may skip commands the same CI run
    already ran on the same commit.
-3. `supervisor receipt export` should run verify's scope check and refuse with the paths named,
-   so a file changed before the task started and outside its scope fails at export, not in CI.
-4. Two tests for the combination of the dirty-tree baseline (G48) and the receipts folder
-   exclusion.
+3. Done (branch `fix/receipt-followups`): `supervisor receipt export` runs verify's scope check
+   (one shared function) on the contract's `base_sha` and refuses with the paths named, so a file changed
+   before the task started and outside its scope fails at export, not in CI
+   (`cli/tests/receipt_verify.rs`).
+4. Done (branch `fix/receipt-followups`): two tests for the combination of the dirty-tree
+   baseline (G48) and the receipts folder exclusion, in
+   `adapters/claude-code/tests/dirty_baseline.rs`; both passed against the code as it was.
 5. From the last review of the CI job: a pass reflects the default branch as it was when the
    job ran; "require branches to be up to date" in branch protection narrows that.
+6. Done (branch `fix/receipt-followups`): the receipts CI job installs cargo-nextest before the
+   re-run step, which a bundled floor's `cargo nextest run --workspace` needs, and a pull
+   request whose head commit is already on the default branch's tip (the job ran after the
+   merge, as on release PR #98) needs no receipt (`--head-on-default-branch`).

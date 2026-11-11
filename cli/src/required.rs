@@ -3,6 +3,9 @@
 //! the changed paths, and lists read from the base commit). Branch names opt nothing in or out.
 //!
 //! Every pull request needs a receipt, whatever its base, unless one exemption holds:
+//! (0) CI found its head commit already on the default branch (`--head-on-default-branch`,
+//! passed only when `git merge-base --is-ancestor <head> <tip>` exits 0) and no path changed, so
+//! it brings nothing;
 //! (a) every changed path is on the documentation list; (b) it is release-please's version-only
 //! pull request: head branch exactly the release branch, opened by the release author, and every
 //! changed path one of the files release-please writes; (c) its last `receipt-exempt`
@@ -68,6 +71,7 @@ pub fn run(flags: &Flags) -> Result<(), Failure> {
         deciders,
         release_author: flags.value("--release-author").map(str::to_owned).or(owner),
         release_branch: flags.value("--release-branch").unwrap_or(RELEASE_BRANCH),
+        head_on_default: flags.switch("--head-on-default-branch"),
     };
     let (required, reason) = decide(&input);
     println!("{}", json!({"required":required,"reason":reason}));
@@ -86,6 +90,8 @@ struct Input<'a> {
     deciders: Vec<String>,
     release_author: Option<String>,
     release_branch: &'a str,
+    /// CI saw the head commit already on the default branch's tip.
+    head_on_default: bool,
 }
 
 fn decide(input: &Input) -> (bool, String) {
@@ -107,6 +113,13 @@ fn decide(input: &Input) -> (bool, String) {
         };
     };
     let changed = input.changed.as_deref().filter(|c| !c.is_empty());
+    // A head on the tip changes nothing, so the flag beside changed paths is a workflow mistake.
+    if input.head_on_default && changed.is_none() {
+        return (
+            false,
+            "the head commit is already on the default branch: nothing to receipt".into(),
+        );
+    }
     if let Some(changed) = changed
         && !input.docs.is_empty()
         && changed

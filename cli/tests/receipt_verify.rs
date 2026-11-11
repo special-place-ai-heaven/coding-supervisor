@@ -47,6 +47,22 @@ fn an_exported_bundle_verifies_and_names_the_acceptance_commands() {
     assert_eq!((code, &value["bundle"]), (0, &json!("valid")), "{value}");
 }
 
+/// A documentation file changed beside the code (as almost every pull request does) leaves the
+/// bundle valid: the base commit's documentation is dropped from the scratch index even though
+/// it differs from both HEAD and the worktree.
+#[test]
+fn a_bundle_verifies_when_documentation_changed_beside_the_code() {
+    let f = Fixture::new("docs-beside");
+    f.start(json!({"scope":["src/", "README.md"]}));
+    fs::write(f.project.join("src").join("lib.rs"), "// two\n").unwrap();
+    fs::write(f.project.join("README.md"), "two\n").unwrap();
+    f.complete("ok");
+    let (bundle, _, keys) = f.exported();
+    f.commit("work, its documentation and its receipt");
+    let (code, value) = f.verify(&bundle, &keys, &[]);
+    assert_eq!((code, &value["bundle"]), (0, &json!("valid")), "{value}");
+}
+
 #[test]
 fn a_changed_signature_is_invalid() {
     let f = Fixture::new("signature");
@@ -86,21 +102,51 @@ fn a_wrong_contract_hash_is_invalid() {
     invalid(f.verify(&bundle, &keys, &[]), "does not match its SHA-256");
 }
 
-/// An out-of-scope file committed during the task is outside the candidate's dirty paths, so
-/// the task completes; the manifest from the base commit still shows it.
+/// Export runs verify's scope check on the contract's `base_sha` and refuses, naming the paths, writing
+/// nothing. Two ways the local gate lets such a path through: a file already changed when the
+/// task started (G48 does not charge it to the task), and one committed during the task (outside
+/// the candidate's dirty paths).
 #[test]
-fn an_out_of_scope_path_in_the_recomputed_manifest_is_invalid() {
-    let f = Fixture::new("scope");
-    f.start(json!({}));
+fn export_refuses_a_changed_path_outside_the_scope() {
+    let refused_for = |f: &Fixture, path: &str| {
+        let (code, value) = f.export();
+        assert_eq!((code, &value["export"]), (3, &json!("refused")), "{value}");
+        let reason = value["reason"].as_str().unwrap();
+        assert!(
+            reason.contains(&format!("outside the contract's scope: {path}")),
+            "{value}"
+        );
+        assert!(!f.project.join("supervisor-receipts").exists());
+    };
+    let f = Fixture::new("scope-dirty");
     fs::create_dir_all(f.project.join("other")).unwrap();
     fs::write(f.project.join("other").join("x.txt"), "x\n").unwrap();
+    f.start(json!({}));
+    fs::write(f.project.join("src").join("lib.rs"), "// two\n").unwrap();
+    f.complete("ok");
+    refused_for(&f, "other/x.txt");
+    let f = Fixture::new("scope-committed");
+    f.start(json!({}));
+    fs::create_dir_all(f.project.join("other")).unwrap();
+    fs::write(f.project.join("other").join("y.txt"), "y\n").unwrap();
     f.commit("outside the scope");
     fs::write(f.project.join("src").join("lib.rs"), "// two\n").unwrap();
     f.complete("ok");
-    let (bundle, _, keys) = f.exported();
-    f.commit("work");
+    refused_for(&f, "other/y.txt");
+}
+
+/// Verify's own scope check: CI's base (the merge base) can be older than the contract's, and a
+/// path changed between the two is outside the scope.
+#[test]
+fn an_out_of_scope_path_in_the_recomputed_manifest_is_invalid() {
+    let f = Fixture::new("scope");
+    let first = f.head();
+    fs::create_dir_all(f.project.join("other")).unwrap();
+    fs::write(f.project.join("other").join("x.txt"), "x\n").unwrap();
+    f.commit("outside the scope, before the task");
+    let (bundle, keys) = f.ready();
     invalid(
-        f.verify(&bundle, &keys, &[]),
+        f.verify(&bundle, &keys, &["--base", &first]),
         "outside the contract's scope: other/x.txt",
     );
     // A bundle claiming a manifest git does not list: refused too.

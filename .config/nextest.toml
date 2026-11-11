@@ -3,7 +3,8 @@
 serial-hang = { max-threads = 1 }
 # WP7: each receipt test drives many real git processes under the gate's 5 s git deadline; four
 # at once on a loaded Windows host failed to compute a tree, most likely that deadline. The
-# deadline stays.
+# verdict and sign tests drive the same git calls through the binary (verdict.rs gave up on git
+# at 20 parallel tests in the WP7 live run). The deadline stays.
 receipt-git = { max-threads = 2 }
 
 [[profile.default.overrides]]
@@ -11,7 +12,7 @@ filter = 'binary(hang)'
 test-group = 'serial-hang'
 
 [[profile.default.overrides]]
-filter = 'binary(receipt_verify) | binary(receipt_in_tree)'
+filter = 'binary(receipt_verify) | binary(receipt_in_tree) | binary(verdict) | binary(receipt_sign)'
 test-group = 'receipt-git'
 
 # The node hook suite asserts 20-25 s answer bounds on spawned processes; it runs with nothing
