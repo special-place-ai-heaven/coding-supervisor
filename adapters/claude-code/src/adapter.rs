@@ -3379,8 +3379,14 @@ impl Session {
         // G49: a required check whose run environment is not approved never counts; say so
         // before the run, in the Stop refusal's words. `audit` reports it and lets it run.
         if !self.task.state().is_terminal()
-            && let Some((criterion, record)) =
-                observation::unapproved_dispatch(payload, &self.criteria)
+            && let Some(dir) = &self.evidence_dir
+            && let Some((criterion, record)) = observation::unapproved_dispatch(
+                dir,
+                payload,
+                &self.task_id,
+                text(payload, "agent_id").unwrap_or("main"),
+                &self.criteria,
+            )
         {
             return Ok(Decision::Deny(format!(
                 "GATE: {} would not count: this run has unapproved or legacy execution context{}: {}",

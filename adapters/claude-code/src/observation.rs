@@ -187,22 +187,32 @@ pub(crate) fn context_remedy() -> String {
     )
 }
 
-/// G49: the criterion a dispatch's command satisfies when the dispatch's execution profile is not
-/// approved, and a record carrying that profile for [`context_set`], so a PreToolUse can say so
-/// before the run. Remote runs never count, so they are left alone here.
+/// G49: the criterion this PreToolUse's dispatch would satisfy at the project root but for its
+/// unapproved execution profile, with the dispatch row `observe` just journaled for it, so the
+/// agent can be told before the run. A call `observe` did not journal (remote, another checkout,
+/// no cwd, another session's task) or that runs in a nested folder is left alone.
 pub(crate) fn unapproved_dispatch<'a>(
+    dir: &Path,
     payload: &Value,
+    task: &str,
+    agent: &str,
     criteria: &'a [Criterion],
 ) -> Option<(&'a Criterion, Value)> {
-    let tool = text(payload, "tool_name")?;
-    let input = payload.get("tool_input").unwrap_or(&Value::Null);
-    if tool.starts_with(TC) && text(input, "target_id").is_some() {
+    let id = text(payload, "tool_use_id")?;
+    let row = records(dir).ok()?.into_iter().rev().find(|row| {
+        text(row, "kind") == Some("dispatch")
+            && text(row, "dispatch_id") == Some(id)
+            && same_scope(row, payload, task, agent)
+    })?;
+    let root = crate::binding::execution_root(dir, Path::new(text(payload, "cwd")?));
+    if text(&row, "cwd") != Some(root.as_str())
+        || row.pointer("/execution_profile/approved") != Some(&Value::Bool(false))
+    {
         return None;
     }
-    let (_, command) = identity(input, tool)?;
-    let criterion = criteria.iter().find(|c| c.accepts(&command))?;
-    let profile = execution_profile(input);
-    (profile["approved"] == false).then(|| (criterion, json!({"execution_profile": profile})))
+    let command = text(&row, "command")?;
+    let criterion = criteria.iter().find(|c| c.accepts(command))?;
+    Some((criterion, row))
 }
 
 /// Validate stored approval without reapproving old records from today's environment.

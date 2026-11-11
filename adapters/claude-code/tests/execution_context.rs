@@ -406,6 +406,20 @@ fn an_unapproved_environment_is_refused_before_the_run() {
     );
     let other = with_node_options(start(&env, "other", json!(["cargo", "build"])));
     assert_eq!(handle(&other, &mut env), Decision::None);
+    // A run the gate never journals (another checkout, no cwd, a nested folder) is untouched.
+    let elsewhere = std::env::temp_dir().join("supervisor-execution-context-elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let nested = env.state_dir.parent().unwrap().join("nested");
+    fs::create_dir_all(&nested).unwrap();
+    for (id, cwd) in [
+        ("away", json!(elsewhere)),
+        ("no-cwd", Value::Null),
+        ("nested", json!(nested)),
+    ] {
+        let mut event = with_node_options(payload(&env, "command_start_combed", id));
+        event["tool_input"]["cwd"] = cwd;
+        assert_eq!(handle(&event, &mut env), Decision::None, "{id}");
+    }
     let rerun = payload(&env, "command_start_combed", "rerun");
     finish(&mut env, rerun, "exited", Some(0));
     assert_eq!(stop(&mut env), Decision::None);
@@ -510,5 +524,63 @@ fn every_pending_job_is_named_and_the_next_stop_waits() {
         matches!(&second, Decision::System(note) if note.starts_with("GATE: waiting")
             && note.contains("job-fmt") && note.contains("job-test")),
         "{second:?}"
+    );
+}
+
+/// G51 against rows the hooks wrote: after an approved run and before any Stop, the gate's
+/// checkpoint names the candidate and the run is reported as finished but not counted; the Stop
+/// counts it, and then it is no longer reported.
+#[test]
+fn a_finished_run_is_reported_until_a_stop_counts_it() {
+    use supervisor_claude_code::state::{Stored, load_gate, read_contract};
+    let (_fixture, mut env) = setup("cargo test");
+    let event = payload(&env, "run_and_watch", "counted");
+    finish(&mut env, event, "exited", Some(0));
+    let dir = env.state_dir.clone();
+    let uncounted = || {
+        let (contract, digest) = read_contract(&dir).unwrap();
+        let contract = contract.unwrap();
+        let Stored::Valid(gate) = load_gate(&dir, &digest).unwrap() else {
+            panic!("no stored gate");
+        };
+        let candidate = gate
+            .checkpoint
+            .candidate
+            .clone()
+            .expect("checkpoint candidate");
+        let task = supervisor_claude_code::lifecycle::task_identity(&dir, &contract.id.0).unwrap();
+        supervisor_claude_code::adapter::latest_uncounted_run(
+            &dir,
+            &task,
+            &contract.criteria[0],
+            &candidate,
+            &gate.receipts,
+        )
+        .unwrap()
+    };
+    let before = uncounted().expect("a finished run before the Stop");
+    assert_eq!(before["status"], "finished", "{before}");
+    assert_eq!(before["exit_code"], 0);
+    assert_eq!(stop(&mut env), Decision::None);
+    assert_eq!(uncounted(), None);
+}
+
+/// G50: the list is bounded; past eight entries the refusal counts the rest.
+#[test]
+fn a_long_refusal_list_is_bounded() {
+    let criteria: Vec<Value> = (0..10)
+        .map(|i| json!({"id":format!("K{i}"),"check":"test","mandatory":true,"command":format!("check-{i}")}))
+        .collect();
+    let (_fixture, mut env) = setup_with(json!(criteria));
+    for i in 0..10 {
+        let check = format!("check-{i}");
+        let event = with_node_options(start(&env, &format!("k{i}"), json!([check])));
+        finish(&mut env, event, "exited", Some(0));
+    }
+    let refusal = stop(&mut env);
+    assert!(
+        matches!(&refusal, Decision::Block(why) if why.contains("K7 latest execution")
+            && !why.contains("K8 latest execution") && why.contains("and 2 more unmet")),
+        "{refusal:?}"
     );
 }
