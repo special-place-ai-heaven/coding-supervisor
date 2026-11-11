@@ -168,6 +168,9 @@ fn build(project: &Path, root: &Path) -> Result<(Value, String), Failure> {
     })?;
     let changed = git::changed_between(project, &base_tree, &tree)
         .ok_or_else(|| refused("git could not list the changed paths"))?;
+    // As verify in CI: a file changed before the task started is not charged by the local gate
+    // (G48) but is still in this list.
+    within_scope(&changed, &contract.scope).map_err(|why| refused(&why))?;
     // The tree must be the candidate's: nothing may have changed while it was computed.
     let again = (GitCandidate {
         cwd: project.to_path_buf(),
@@ -489,22 +492,7 @@ fn check(project: &Path, path: &Path, keys: &Path, base: Option<&str>) -> Result
         .map_err(|why| format!("git could not read the base commit: {why}"))?;
     let changed = git::changed_between(project, &base_tree, &tree)
         .ok_or("git could not list the changed paths")?;
-    let outside: Vec<&str> = changed
-        .iter()
-        .filter(|p| {
-            !contract
-                .scope
-                .iter()
-                .any(|s| coding_supervisor::scope_contains(s, p))
-        })
-        .map(String::as_str)
-        .collect();
-    if !outside.is_empty() {
-        return Err(format!(
-            "changed paths outside the contract's scope: {}",
-            outside.join(", ")
-        ));
-    }
+    within_scope(&changed, &contract.scope)?;
     if bundle["changed_paths"] != json!(changed) {
         return Err("the bundle's changed paths differ from what git lists".into());
     }
@@ -512,6 +500,28 @@ fn check(project: &Path, path: &Path, keys: &Path, base: Option<&str>) -> Result
         json!({"bundle":"valid","task_id":bundle["task_id"],"key_id":key_id,"tree":tree,
         "base":base,"acceptance":acceptance}),
     )
+}
+
+/// The scope check export and verify share: every changed path inside the contract's scope,
+/// else the paths outside it, named.
+fn within_scope(changed: &[String], scope: &[String]) -> Result<(), String> {
+    let outside: Vec<&str> = changed
+        .iter()
+        .filter(|p| {
+            !scope
+                .iter()
+                .any(|s| coding_supervisor::scope_contains(s, p))
+        })
+        .map(String::as_str)
+        .collect();
+    if outside.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "changed paths outside the contract's scope: {}",
+            outside.join(", ")
+        ))
+    }
 }
 
 fn bundled_reviews(bundle: &Value) -> Result<Vec<ReviewRecord>, String> {
