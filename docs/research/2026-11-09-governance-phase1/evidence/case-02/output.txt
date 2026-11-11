@@ -1,0 +1,26 @@
+$ cargo test -p supervisor-claude-code --test fail_closed --test replay --test contract_v2 -- a_contract_error_naming_a_missing_field_is_denied_in_blocking_words contract_without_a_command_fails_closed_naming_the_criterion a_newer_schema_is_refused_naming_this_binary v2_field_shapes_are_validated v1_loads_through_the_migration_with_fixed_defaults --exact --nocapture
+   Compiling supervisor-claude-code v0.20.0 (<worktree>\adapters\claude-code)
+    Finished `test` profile [unoptimized] target(s) in 2.00s
+     Running tests\contract_v2.rs (<target>\debug\deps\contract_v2-976112a434ea474c.exe)
+
+running 3 tests
+test a_newer_schema_is_refused_naming_this_binary ... ok
+test v1_loads_through_the_migration_with_fixed_defaults ... ok
+test v2_field_shapes_are_validated ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+     Running tests\fail_closed.rs (<target>\debug\deps\fail_closed-8bd2bc831666c8d1.exe)
+
+running 1 test
+test a_contract_error_naming_a_missing_field_is_denied_in_blocking_words ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.05s
+
+     Running tests\replay.rs (<target>\debug\deps\replay-7b6e4835345a58d8.exe)
+
+running 1 test
+test contract_without_a_command_fails_closed_naming_the_criterion ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.06s
+[exit 0]

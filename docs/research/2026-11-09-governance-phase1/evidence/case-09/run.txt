@@ -1,0 +1,2 @@
+command: cargo test -p supervisor-claude-code --test replay --test autonomous_completion --test execution_context -- replay_r26_failing_mandatory_check_refuses_completion later_failure_cannot_be_masked_by_earlier_success failed_and_unknown_results_never_authorize_completion --exact --nocapture
+exit: 0

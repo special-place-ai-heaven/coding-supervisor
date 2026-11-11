@@ -1,0 +1,2 @@
+command: cargo test -p supervisor --test worktree_create -- a_base_checkout_edit_is_refused_when_isolation_is_worktree a_person_task_is_judged_on_its_worktree_from_the_main_checkout a_bash_check_in_the_worktree_counts --exact --nocapture
+exit: 0

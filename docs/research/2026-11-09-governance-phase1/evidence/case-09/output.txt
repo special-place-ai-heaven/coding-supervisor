@@ -1,0 +1,25 @@
+$ cargo test -p supervisor-claude-code --test replay --test autonomous_completion --test execution_context -- replay_r26_failing_mandatory_check_refuses_completion later_failure_cannot_be_masked_by_earlier_success failed_and_unknown_results_never_authorize_completion --exact --nocapture
+   Compiling coding-supervisor v0.20.0 (<worktree>)
+   Compiling supervisor-claude-code v0.20.0 (<worktree>\adapters\claude-code)
+    Finished `test` profile [unoptimized] target(s) in 8.84s
+     Running tests\autonomous_completion.rs (<target>\debug\deps\autonomous_completion-3e5875d7415978a5.exe)
+
+running 1 test
+test later_failure_cannot_be_masked_by_earlier_success ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.74s
+
+     Running tests\execution_context.rs (<target>\debug\deps\execution_context-26fc5053b5d0c95d.exe)
+
+running 1 test
+test failed_and_unknown_results_never_authorize_completion ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 2.75s
+
+     Running tests\replay.rs (<target>\debug\deps\replay-7b6e4835345a58d8.exe)
+
+running 1 test
+test replay_r26_failing_mandatory_check_refuses_completion ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.65s
+[exit 0]

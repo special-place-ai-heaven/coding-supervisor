@@ -1,0 +1,17 @@
+$ cargo test -p supervisor --test receipt_exemption -- a_code_change_to_main_needs_a_receipt branch_names_alone_never_exempt the_exempt_label_counts_only_from_the_owner_or_a_maintainer the_exempt_label_must_postdate_the_last_push a_pull_request_to_another_base_needs_a_receipt_too --exact --nocapture
+    Finished `test` profile [unoptimized] target(s) in 0.48s
+     Running tests\receipt_exemption.rs (<target>\debug\deps\receipt_exemption-b0e865e9f23fc9c0.exe)
+
+running 5 tests
+test a_code_change_to_main_needs_a_receipt ... ok
+test a_pull_request_to_another_base_needs_a_receipt_too ... ok
+test branch_names_alone_never_exempt ... ok
+test the_exempt_label_counts_only_from_the_owner_or_a_maintainer ... ok
+test the_exempt_label_must_postdate_the_last_push ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 1.04s
+[exit 0]
+
+$ node docs/research/2026-11-09-governance-phase1/check.mjs ci-failed test/receipt-required "Verify supervisor receipts"
+job failed on PR run 42997559888 from test/receipt-required: Verify supervisor receipts
+[exit 0]

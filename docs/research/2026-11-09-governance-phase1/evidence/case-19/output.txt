@@ -1,0 +1,30 @@
+$ cargo test -p supervisor-claude-code --test autonomy --test lifecycle -- concurrent_duplicate_delivery_creates_one_task_and_restart_replays_it rollover_freezes_evidence_separates_ids_and_deactivates duplicate_events_are_idempotent_and_stale_sessions_cannot_write --exact --nocapture
+   Compiling supervisor-claude-code v0.20.0 (<worktree>\adapters\claude-code)
+    Finished `test` profile [unoptimized] target(s) in 2.38s
+     Running tests\autonomy.rs (<target>\debug\deps\autonomy-930666b6528739b0.exe)
+
+running 1 test
+test concurrent_duplicate_delivery_creates_one_task_and_restart_replays_it ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.44s
+
+     Running tests\lifecycle.rs (<target>\debug\deps\lifecycle-bb687a84e2b60e5f.exe)
+
+running 2 tests
+test duplicate_events_are_idempotent_and_stale_sessions_cannot_write ... ok
+test rollover_freezes_evidence_separates_ids_and_deactivates ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.27s
+[exit 0]
+
+$ cargo test -p supervisor --test worktree_create -- one_task_per_worktree_and_the_path_is_free_again_after_cleanup an_existing_path_is_refused_and_nothing_starts a_replayed_start_with_another_worktree_setting_is_refused --exact --nocapture
+    Finished `test` profile [unoptimized] target(s) in 0.36s
+     Running tests\worktree_create.rs (<target>\debug\deps\worktree_create-db13fff7c4e7ebf3.exe)
+
+running 3 tests
+test a_replayed_start_with_another_worktree_setting_is_refused ... ok
+test an_existing_path_is_refused_and_nothing_starts ... ok
+test one_task_per_worktree_and_the_path_is_free_again_after_cleanup ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 31 filtered out; finished in 10.35s
+[exit 0]

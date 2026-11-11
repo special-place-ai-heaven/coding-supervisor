@@ -1,0 +1,5 @@
+command: cargo test -p supervisor-claude-code --test fail_closed --test policy -- governed_mutation_with_an_adapter_error_is_denied a_truncated_pre_tool_use_payload_is_denied a_governed_stop_with_an_adapter_error_fails_closed a_truncated_stop_payload_is_refused_unless_a_stop_hook_is_already_active timed_out_hook_process_produces_no_enforcement_decision --exact --nocapture
+exit: 0
+command: cargo test -p supervisor --test hang -- hanging_git_denies_and_blocks_within_the_bound --exact --nocapture
+exit: 0
+overall exit: 0

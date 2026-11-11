@@ -1,0 +1,2 @@
+command: cargo test -p supervisor --test worktree_create -- creates_the_worktree_on_its_own_branch_at_the_base_and_clean a_worktree_left_dirty_at_checkout_is_refused_and_no_task_starts an_existing_path_is_refused_and_nothing_starts a_path_inside_the_main_checkout_is_refused a_repository_without_a_commit_is_refused --exact --nocapture
+exit: 0

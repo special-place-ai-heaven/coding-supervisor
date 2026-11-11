@@ -1,0 +1,5 @@
+command: cargo test -p supervisor --test receipt_verify --test receipt_sign -- a_changed_bundle_byte_is_invalid a_wrong_contract_hash_is_invalid a_stale_tree_is_invalid an_out_of_scope_path_in_the_recomputed_manifest_is_invalid a_state_change_after_signing_is_invalid_and_stale --exact --nocapture
+exit: 0
+command: cargo test -p supervisor-claude-code --test replay -- tampered_receipt_refuses_and_leaves_gate_untouched contract_edit_after_first_call_trips_the_chain --exact --nocapture
+exit: 0
+overall exit: 0

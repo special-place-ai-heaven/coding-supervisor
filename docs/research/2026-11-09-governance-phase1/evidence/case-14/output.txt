@@ -1,0 +1,31 @@
+$ cargo test -p supervisor --test receipt_verify --test receipt_sign -- a_changed_bundle_byte_is_invalid a_wrong_contract_hash_is_invalid a_stale_tree_is_invalid an_out_of_scope_path_in_the_recomputed_manifest_is_invalid a_state_change_after_signing_is_invalid_and_stale --exact --nocapture
+   Compiling supervisor v0.20.0 (<worktree>\cli)
+    Finished `test` profile [unoptimized] target(s) in 2.22s
+     Running tests\receipt_sign.rs (<target>\debug\deps\receipt_sign-42aab2f08c0ccb38.exe)
+
+running 1 test
+test a_state_change_after_signing_is_invalid_and_stale ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.73s
+
+     Running tests\receipt_verify.rs (<target>\debug\deps\receipt_verify-0e64f271ef6a52d8.exe)
+
+running 4 tests
+test a_changed_bundle_byte_is_invalid ... ok
+test a_stale_tree_is_invalid ... ok
+test a_wrong_contract_hash_is_invalid ... ok
+test an_out_of_scope_path_in_the_recomputed_manifest_is_invalid ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 32.70s
+[exit 0]
+
+$ cargo test -p supervisor-claude-code --test replay -- tampered_receipt_refuses_and_leaves_gate_untouched contract_edit_after_first_call_trips_the_chain --exact --nocapture
+    Finished `test` profile [unoptimized] target(s) in 0.25s
+     Running tests\replay.rs (<target>\debug\deps\replay-7b6e4835345a58d8.exe)
+
+running 2 tests
+test contract_edit_after_first_call_trips_the_chain ... ok
+test tampered_receipt_refuses_and_leaves_gate_untouched ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 2.05s
+[exit 0]

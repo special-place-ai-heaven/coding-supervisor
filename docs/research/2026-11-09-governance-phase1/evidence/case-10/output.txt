@@ -1,0 +1,18 @@
+$ cargo test -p supervisor-claude-code --test replay --test autonomous_completion -- replay_a18_self_reported_checks_cannot_mark_ready replay_r35_would_run_is_not_run mcp_asserted_receipt_does_not_let_the_chair_stop a_claim_without_observed_execution_cannot_complete --exact --nocapture
+    Finished `test` profile [unoptimized] target(s) in 0.42s
+     Running tests\autonomous_completion.rs (<target>\debug\deps\autonomous_completion-3e5875d7415978a5.exe)
+
+running 1 test
+test a_claim_without_observed_execution_cannot_complete ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.28s
+
+     Running tests\replay.rs (<target>\debug\deps\replay-7b6e4835345a58d8.exe)
+
+running 3 tests
+test mcp_asserted_receipt_does_not_let_the_chair_stop ... ok
+test replay_a18_self_reported_checks_cannot_mark_ready ... ok
+test replay_r35_would_run_is_not_run ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 1.32s
+[exit 0]

@@ -1,0 +1,14 @@
+$ cargo test -p supervisor-claude-code --test contract_v2 -- paths_leaving_the_repository_are_refused_in_scope_and_artifacts a_link_inside_the_repository_pointing_outside_is_out_of_scope a_dangling_link_inside_the_scope_is_out_of_scope a_dotdot_through_a_missing_directory_is_judged_where_it_lands a_dotdot_after_a_link_is_not_folded deny_path_refuses_a_dotdot_through_a_missing_directory_at_strict --exact --nocapture
+    Finished `test` profile [unoptimized] target(s) in 0.47s
+     Running tests\contract_v2.rs (<target>\debug\deps\contract_v2-976112a434ea474c.exe)
+
+running 6 tests
+test a_dangling_link_inside_the_scope_is_out_of_scope ... ok
+test a_dotdot_after_a_link_is_not_folded ... ok
+test a_dotdot_through_a_missing_directory_is_judged_where_it_lands ... ok
+test a_link_inside_the_repository_pointing_outside_is_out_of_scope ... ok
+test deny_path_refuses_a_dotdot_through_a_missing_directory_at_strict ... ok
+test paths_leaving_the_repository_are_refused_in_scope_and_artifacts ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 1.86s
+[exit 0]

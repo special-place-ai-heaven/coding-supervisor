@@ -1,0 +1,5 @@
+command: cargo test -p supervisor-claude-code --test replay -- replay_r28_out_of_scope_path_refuses --exact --nocapture
+exit: 0
+command: cargo test -p supervisor --test level -- hook_at_ultra_denies_writes_outside_the_contract_scope ultra_file_scope_is_exact_not_a_prefix --exact --nocapture
+exit: 0
+overall exit: 0

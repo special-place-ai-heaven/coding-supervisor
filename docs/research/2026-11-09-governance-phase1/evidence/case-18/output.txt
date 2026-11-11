@@ -1,0 +1,30 @@
+$ cargo test -p supervisor-claude-code --test fail_closed --test policy -- governed_mutation_with_an_adapter_error_is_denied a_truncated_pre_tool_use_payload_is_denied a_governed_stop_with_an_adapter_error_fails_closed a_truncated_stop_payload_is_refused_unless_a_stop_hook_is_already_active timed_out_hook_process_produces_no_enforcement_decision --exact --nocapture
+    Finished `test` profile [unoptimized] target(s) in 0.30s
+     Running tests\fail_closed.rs (<target>\debug\deps\fail_closed-8bd2bc831666c8d1.exe)
+
+running 4 tests
+test a_governed_stop_with_an_adapter_error_fails_closed ... ok
+test a_truncated_pre_tool_use_payload_is_denied ... ok
+test a_truncated_stop_payload_is_refused_unless_a_stop_hook_is_already_active ... ok
+test governed_mutation_with_an_adapter_error_is_denied ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.48s
+
+     Running tests\policy.rs (<target>\debug\deps\policy-4af094c350d3516e.exe)
+
+running 1 test
+test timed_out_hook_process_produces_no_enforcement_decision ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.12s
+[exit 0]
+
+$ cargo test -p supervisor --test hang -- hanging_git_denies_and_blocks_within_the_bound --exact --nocapture
+   Compiling supervisor v0.20.0 (<worktree>\cli)
+    Finished `test` profile [unoptimized] target(s) in 1.99s
+     Running tests\hang.rs (<target>\debug\deps\hang-959895ee56a54eb2.exe)
+
+running 1 test
+test hanging_git_denies_and_blocks_within_the_bound ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 20.89s
+[exit 0]

@@ -1,0 +1,2 @@
+command: cargo test -p supervisor --test receipt_verify --test receipt_in_tree --test receipt_exemption --test worktree_create -- export_refuses_an_unfinished_task export_after_committing_the_completed_work_is_refused_with_the_way_out a_code_change_to_main_needs_a_receipt cleanup_refuses_committed_work_without_a_receipt --exact --nocapture
+exit: 0

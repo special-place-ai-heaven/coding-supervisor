@@ -1,0 +1,5 @@
+command: cargo test -p supervisor-claude-code --test protection --test policy --test contract_v2 -- write_into_a_supervisor_directory_is_denied edit_inside_the_state_dir_is_denied configured_path_deletion_covers_simple_shell_argv_shell_line_and_file_route policy_configuration_itself_is_protected_on_supported_routes deny_path_refuses_a_dotdot_through_a_missing_directory_at_strict --exact --nocapture
+exit: 0
+command: cargo test -p supervisor --test level -- strict_refuses_typed_forbidden_effects default_forbidden_effects_are_refused_from_enforce_up --exact --nocapture
+exit: 0
+overall exit: 0

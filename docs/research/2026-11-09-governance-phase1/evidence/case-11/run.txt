@@ -1,0 +1,2 @@
+command: cargo test -p supervisor-claude-code --test review_record -- a_rejection_by_a_reader_refuses_until_the_content_changes a_rejection_spends_a_repair_round_and_an_absent_review_does_not a_loose_rejection_counts_and_a_loose_approval_does_not --exact --nocapture
+exit: 0
