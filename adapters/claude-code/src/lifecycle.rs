@@ -577,10 +577,17 @@ pub fn with_task(
         if let Some(session) = session {
             let bindings = sessions.as_object_mut().ok_or("invalid session bindings")?;
             match bindings.get(session).and_then(Value::as_str) {
-                Some(bound) if bound != active.task_id => return Err(
-                    "session belongs to an earlier task; a person runs `supervisor task rebind` from their own terminal before this session continues"
-                        .to_owned(),
-                ),
+                Some(bound) if bound != active.task_id => {
+                    let project = read_json(&root.join("project.json"))
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v["canonical_worktree"].as_str().map(str::to_owned))
+                        .unwrap_or_else(|| "<project>".to_owned());
+                    return Err(format!(
+                        "session belongs to an earlier task; a person runs `supervisor task rebind --project \"{project}\" --task {} --session {session}` from their own terminal before this session continues",
+                        active.task_id
+                    ));
+                }
                 Some(_) => {}
                 None => {
                     bindings.insert(session.to_owned(), active.task_id.clone().into());
