@@ -537,7 +537,12 @@ fn a_rewritten_worktree_git_file_keeps_the_base_refusal() {
     start(&f);
     let dot_git = wt(&f).join(".git");
     let original = fs::read_to_string(&dot_git).unwrap();
-    fs::write(&dot_git, "x\n").unwrap();
+    // Still the same repository, so the candidate stays observable; only the link shape changes.
+    fs::write(
+        &dot_git,
+        format!("gitdir: {}\n", f.project.join(".git").display()),
+    )
+    .unwrap();
     let base = f.project.join("src").join("lib.rs");
     let decision = write_at(&f, &f.project, &base, "base-1");
     fs::write(&dot_git, original).unwrap();
