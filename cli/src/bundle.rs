@@ -12,7 +12,7 @@
 //! contract with `approval.by` (an OS user name) replaced by a label and that name's SHA-256.
 //! The contract's goal, criterion checks and commands are exported: CI runs those commands and
 //! checks that scope. The bundled contract is canonical JSON of the stored one after that one
-//! replacement, so `contract_sha256` is the SHA-256 of the exported text; the stored file's own
+//! replacement, so `exported_contract_sha256` is the SHA-256 of the exported text; the stored file's own
 //! digest (`stored_contract_sha256`) and the gate's chain head are signed but cannot be
 //! rechecked without the local state, whose chain also covers receipt `cwd` values and review
 //! finding text that the bundle leaves out.
@@ -74,8 +74,12 @@ pub fn export(flags: &Flags) -> Result<(), Failure> {
     let relative = format!("{RECEIPTS_DIR}/{task_id}.json");
     let text = serde_json::to_string_pretty(&bundle)
         .map_err(|_| Failure::Error("receipt export: the bundle could not be rendered".into()))?;
-    atomic_write(&project.join(&relative), format!("{text}\n").as_bytes())
-        .map_err(|_| refused("the bundle could not be written into the project"))?;
+    let path = project.join(&relative);
+    if atomic_write(&path, format!("{text}\n").as_bytes()).is_err() {
+        // atomic_write's temporary file; left behind it would fail CI's folder check.
+        let _ = fs::remove_file(path.with_extension("supervisor-tmp"));
+        return Err(refused("the bundle could not be written into the project"));
+    }
     let public = signing::hex(public.as_bytes());
     println!(
         "{}",
@@ -149,6 +153,9 @@ fn build(project: &Path, root: &Path) -> Result<(Value, String), Failure> {
         .base_sha
         .clone()
         .ok_or_else(|| refused("the contract names no base commit (base_sha)"))?;
+    if !git::is_commit_id(&base) {
+        return Err(refused("the contract's base_sha is not a commit id"));
+    }
     let roots = git::root_commits(project).map_err(refused)?;
     let docs = git::docs_list_at(project, &base);
     let scratch = std::env::temp_dir();
@@ -182,7 +189,10 @@ fn build(project: &Path, root: &Path) -> Result<(Value, String), Failure> {
         .receipts
         .iter()
         .zip(observed)
-        .filter(|(r, _)| r.candidate == candidate)
+        // Hook-observed only: a caller-asserted receipt's `output_ref` is the caller's own text.
+        .filter(|(r, observed)| {
+            r.candidate == candidate && label(verdict::provenance_code(r, *observed)) == "observed"
+        })
         .map(|(r, observed)| {
             json!({
                 "criterion":r.criterion.0,"command":r.command,
@@ -210,7 +220,7 @@ fn build(project: &Path, root: &Path) -> Result<(Value, String), Failure> {
     let bundle = json!({
         "bundle_version":BUNDLE_VERSION,"repository":{"root_commits":roots},
         "task_id":task.task_id,"contract":contract_text,
-        "contract_sha256":sha256::hex(contract_text.as_bytes()),
+        "exported_contract_sha256":sha256::hex(contract_text.as_bytes()),
         "stored_contract_sha256":stored_digest,"gate_state":"completed","chain_head":chain_head,
         "candidate":state::candidate_json(&candidate),"tree":tree,"base_sha":base,
         "changed_paths":changed,"receipts":receipts,"reviews":reviews,
@@ -290,7 +300,7 @@ fn statement_of(bundle: &Value, body_sha256: &str) -> Result<BundleStatement, &'
             .ok_or("the bundle names no repository")?
             .join(","),
         task: text("task_id")?,
-        contract_sha256: text("contract_sha256")?,
+        exported_contract_sha256: text("exported_contract_sha256")?,
         gate_state: text("gate_state")?,
         chain_head: text("chain_head")?,
         candidate: match (
@@ -341,14 +351,8 @@ pub fn verify(flags: &Flags) -> Result<(), Failure> {
     let keys = flags
         .value("--keys")
         .map_or_else(|| project.join(KEYS_FILE), PathBuf::from);
-    let answer = check(
-        &project,
-        &bundle,
-        &keys,
-        flags.value("--tree"),
-        flags.value("--base"),
-    )
-    .unwrap_or_else(|reason| json!({"bundle":"invalid","reason":reason}));
+    let answer = check(&project, &bundle, &keys, flags.value("--base"))
+        .unwrap_or_else(|reason| json!({"bundle":"invalid","reason":reason}));
     println!("{answer}");
     if answer["bundle"] == "valid" {
         Ok(())
@@ -375,13 +379,7 @@ fn candidate_of(v: &Value) -> Option<CandidateId> {
 }
 
 /// Every check of `receipt verify --bundle`, in order; `Err` is the `invalid` reason.
-fn check(
-    project: &Path,
-    path: &Path,
-    keys: &Path,
-    tree: Option<&str>,
-    base: Option<&str>,
-) -> Result<Value, String> {
+fn check(project: &Path, path: &Path, keys: &Path, base: Option<&str>) -> Result<Value, String> {
     let bundle = read_bundle(path)?;
     folder_holds_only_bundles(project)?;
     let signature = &bundle["signature"];
@@ -400,13 +398,20 @@ fn check(
         &statement,
         signature["signature"].as_str().unwrap_or_default(),
     )?;
+    // A bundle is named after its task, so a copy cannot pose as another task's receipt.
+    let task_file = format!("{}.json", bundle["task_id"].as_str().unwrap_or_default());
+    if path.file_name().and_then(|n| n.to_str()) != Some(task_file.as_str()) {
+        return Err("the bundle's file name is not its task id followed by .json".into());
+    }
     if bundle["gate_state"] != "completed" {
         return Err("the bundled task is not completed".into());
     }
     let contract_text = bundle["contract"]
         .as_str()
         .ok_or("the bundle holds no contract")?;
-    if bundle["contract_sha256"].as_str() != Some(sha256::hex(contract_text.as_bytes()).as_str()) {
+    if bundle["exported_contract_sha256"].as_str()
+        != Some(sha256::hex(contract_text.as_bytes()).as_str())
+    {
         return Err("the bundled contract does not match its SHA-256".into());
     }
     // The loader's own error text is not shown: it is not written for this output.
@@ -414,6 +419,9 @@ fn check(
         .ok()
         .and_then(|v| state::contract_from(&v).ok())
         .ok_or("the bundled contract does not load")?;
+    if !contract.criteria.iter().any(|c| c.mandatory) {
+        return Err("the contract has no mandatory criteria (no_mandatory_criteria)".into());
+    }
     let candidate = candidate_of(&bundle["candidate"]).ok_or("the bundle names no candidate")?;
     let receipts: Vec<Bundled> = bundle["receipts"]
         .as_array()
@@ -460,13 +468,15 @@ fn check(
         .map(str::to_owned)
         .or_else(|| contract.base_sha.clone())
         .ok_or("the contract names no base commit and no --base was given")?;
+    // Only a full commit id reaches git, never an option or a revision expression.
+    let bundled_base = bundle["base_sha"].as_str().unwrap_or_default();
+    if !git::is_commit_id(&base) || !git::is_commit_id(bundled_base) {
+        return Err("the base is not a commit id (40 or 64 hex characters)".into());
+    }
     let docs = git::docs_list_at(project, &base);
     let scratch = std::env::temp_dir();
-    let tree = match tree {
-        Some(tree) => tree.to_owned(),
-        None => git::bundle_tree(project, &scratch, Some("HEAD"), &docs)
-            .ok_or("git could not compute the tree of HEAD")?,
-    };
+    let tree = git::bundle_tree(project, &scratch, Some("HEAD"), &docs)
+        .ok_or("git could not compute the tree of HEAD")?;
     if bundle["tree"].as_str() != Some(tree.as_str()) {
         return Err("the bundle's tree is not the project's tree: the receipt is stale".into());
     }

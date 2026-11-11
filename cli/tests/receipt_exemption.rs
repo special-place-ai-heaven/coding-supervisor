@@ -137,7 +137,11 @@ fn release_please_is_exempt_only_with_its_author_and_release_files() {
     // A branch that only starts with the release prefix does not count.
     let (req, why) = required(
         &c,
-        &pr("main", "release-please--branches--main--components--x", OWNER),
+        &pr(
+            "main",
+            "release-please--branches--main--components--x",
+            OWNER,
+        ),
         Some(&RELEASE_FILES),
         None,
         &[],
@@ -145,10 +149,17 @@ fn release_please_is_exempt_only_with_its_author_and_release_files() {
     assert!(req, "{why}");
     let (req, why) = required(
         &c,
-        &pr("main", "release-please--branches--main--components--x", OWNER),
+        &pr(
+            "main",
+            "release-please--branches--main--components--x",
+            OWNER,
+        ),
         Some(&RELEASE_FILES),
         None,
-        &["--release-branch", "release-please--branches--main--components--x"],
+        &[
+            "--release-branch",
+            "release-please--branches--main--components--x",
+        ],
     );
     assert!(!req, "{why}");
     let (req, why) = required(
@@ -372,7 +383,13 @@ fn a_changed_path_with_a_trailing_space_is_not_documentation() {
     assert!(req, "{why}");
     let crlf = c.dir.join("changed-crlf.txt");
     fs::write(&crlf, "README.md\r\ndocs/a.md\r\n").unwrap();
-    let (req, why) = required(&c, &event, None, None, &["--changed", crlf.to_str().unwrap()]);
+    let (req, why) = required(
+        &c,
+        &event,
+        None,
+        None,
+        &["--changed", crlf.to_str().unwrap()],
+    );
     assert!(!req, "{why}");
 }
 
@@ -386,7 +403,10 @@ fn a_push_to_main_and_a_tag_need_nothing_and_other_shapes_need_a_receipt() {
             json!({"ref":"refs/heads/main","before":"a","after":"b"}),
             "push to main",
         ),
-        (json!({"ref":"refs/tags/v1.2.3","before":"a","after":"b"}), "tag"),
+        (
+            json!({"ref":"refs/tags/v1.2.3","before":"a","after":"b"}),
+            "tag",
+        ),
     ] {
         let (req, why) = required(&c, &event, Some(&["src/lib.rs"]), None, &[]);
         assert!(!req, "{event}: {why}");

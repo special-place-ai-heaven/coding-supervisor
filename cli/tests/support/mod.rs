@@ -32,6 +32,12 @@ impl Drop for Fixture {
 impl Fixture {
     /// A repository with `src/lib.rs`, `README.md` and a docs-paths list naming `README.md`.
     pub fn new(name: &str) -> Self {
+        Self::new_with(name, "one\n")
+    }
+
+    /// [`Fixture::new`] with `readme` as the first commit's README, so two fixtures made in the
+    /// same second still get different root commits.
+    pub fn new_with(name: &str, readme: &str) -> Self {
         let root = std::env::temp_dir().join(format!("sup-wp7-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("project").join("src")).unwrap();
@@ -45,7 +51,7 @@ impl Fixture {
             next_tool: std::cell::Cell::new(0),
         };
         fs::write(f.project.join("src").join("lib.rs"), "// one\n").unwrap();
-        fs::write(f.project.join("README.md"), "one\n").unwrap();
+        fs::write(f.project.join("README.md"), readme).unwrap();
         fs::write(
             f.project.join(".github").join("docs-paths.txt"),
             "README.md\ndocs/**\n",
@@ -246,10 +252,10 @@ impl Fixture {
             .collect();
         let s = |k: &str| bundle[k].as_str().unwrap().to_owned();
         let statement = format!(
-            "coding-supervisor receipt bundle v2\nrepository:{}\ntask:{}\ncontract_sha256:{}\ngate_state:{}\nchain_head:{}\ncandidate:{}:{}\ntree:{}\nbody_sha256:{}\n",
+            "coding-supervisor receipt bundle v2\nrepository:{}\ntask:{}\nexported_contract_sha256:{}\ngate_state:{}\nchain_head:{}\ncandidate:{}:{}\ntree:{}\nbody_sha256:{}\n",
             roots.join(","),
             s("task_id"),
-            s("contract_sha256"),
+            s("exported_contract_sha256"),
             s("gate_state"),
             s("chain_head"),
             bundle["candidate"]["base_commit"].as_str().unwrap(),
@@ -270,6 +276,41 @@ impl Fixture {
             .collect();
         bundle["signature"]["body_sha256"] = body_sha.into();
         bundle["signature"]["signature"] = hex.into();
+    }
+
+    /// Replace the bundled contract text through `edit` and update its hash.
+    pub fn edit_contract(&self, path: &Path, edit: impl FnOnce(&str) -> String) {
+        self.edit_bundle(path, |b| {
+            let text = edit(b["contract"].as_str().unwrap());
+            b["exported_contract_sha256"] =
+                supervisor_claude_code::sha256::hex(text.as_bytes()).into();
+            b["contract"] = text.into();
+        });
+    }
+
+    /// One MCP tool call through the real binary; the tool's answer.
+    pub fn mcp(&self, tool: &str, arguments: Value) -> Value {
+        let mut child = self
+            .command(BIN)
+            .arg("mcp")
+            .arg("--project")
+            .arg(&self.project)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writeln!(
+            child.stdin.take().unwrap(),
+            "{}",
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":tool,"arguments":arguments}})
+        )
+        .unwrap();
+        let out = child.wait_with_output().unwrap();
+        let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
     }
 
     /// Read, edit, re-sign and write back a bundle.

@@ -69,7 +69,7 @@ pub struct BundleStatement {
     /// The root commits, comma-joined.
     pub repository: String,
     pub task: String,
-    pub contract_sha256: String,
+    pub exported_contract_sha256: String,
     pub gate_state: String,
     pub chain_head: String,
     /// `<base_commit>:<dirty_digest>`.
@@ -85,7 +85,7 @@ impl BundleStatement {
             &[
                 ("repository", &self.repository),
                 ("task", &self.task),
-                ("contract_sha256", &self.contract_sha256),
+                ("exported_contract_sha256", &self.exported_contract_sha256),
                 ("gate_state", &self.gate_state),
                 ("chain_head", &self.chain_head),
                 ("candidate", &self.candidate),
@@ -405,7 +405,7 @@ mod tests {
         let s = |tree: &str| BundleStatement {
             repository: "r1,r2".to_owned(),
             task: "t".to_owned(),
-            contract_sha256: "c".to_owned(),
+            exported_contract_sha256: "c".to_owned(),
             gate_state: "completed".to_owned(),
             chain_head: "h".to_owned(),
             candidate: "b:d".to_owned(),
@@ -414,7 +414,7 @@ mod tests {
         };
         assert_eq!(
             String::from_utf8(s("x").bytes().unwrap()).unwrap(),
-            "coding-supervisor receipt bundle v2\nrepository:r1,r2\ntask:t\ncontract_sha256:c\ngate_state:completed\nchain_head:h\ncandidate:b:d\ntree:x\nbody_sha256:s\n"
+            "coding-supervisor receipt bundle v2\nrepository:r1,r2\ntask:t\nexported_contract_sha256:c\ngate_state:completed\nchain_head:h\ncandidate:b:d\ntree:x\nbody_sha256:s\n"
         );
         assert!(s("x\nbody_sha256:forged").bytes().is_err());
     }

@@ -161,7 +161,14 @@ fn exempt_label_actor(timeline: &[Value], updated_at: &str) -> Option<String> {
 fn utc_time(text: &str) -> Option<&str> {
     let b = text.as_bytes();
     let digits = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
-    let marks = [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':'), (19, b'Z')];
+    let marks = [
+        (4, b'-'),
+        (7, b'-'),
+        (10, b'T'),
+        (13, b':'),
+        (16, b':'),
+        (19, b'Z'),
+    ];
     let shaped = b.len() == 20
         && digits.iter().all(|&i| b[i].is_ascii_digit())
         && marks.iter().all(|&(i, c)| b[i] == c);

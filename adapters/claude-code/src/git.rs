@@ -145,6 +145,12 @@ pub fn only_docs_changed_since(cwd: &Path, state_dir: &Path, base: &str) -> bool
             .is_some_and(|was| tree(cwd, state_dir, None, &docs) == Some(was))
 }
 
+/// WP7: a full object id (40 hex for SHA-1, 64 for SHA-256), safe to hand to git as a commit:
+/// never an option, a ref name or a revision expression.
+pub fn is_commit_id(text: &str) -> bool {
+    matches!(text.len(), 40 | 64) && text.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// The documentation list as commit `base` holds it (see [`ci_docs_only`]).
 pub fn docs_list_at(cwd: &Path, base: &str) -> Vec<String> {
     ci_docs_only(|file| {

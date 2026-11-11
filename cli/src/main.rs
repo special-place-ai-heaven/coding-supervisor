@@ -94,22 +94,21 @@ fn main() -> ExitCode {
             Some((action, rest)) if action == "sign" => {
                 parse_flags(rest, &["--project"], &[]).and_then(|f| receipt::run(action, &f))
             }
-            Some((action, rest)) if action == "verify" => parse_flags(
-                rest,
-                &["--project", "--keys", "--bundle", "--base"],
-                &[],
-            )
-            .and_then(|f| {
-                if f.value("--bundle").is_some() {
-                    bundle::verify(&f)
-                } else if f.value("--base").is_some() {
-                    Err(Failure::Usage(
-                        "receipt verify takes --base only with --bundle".to_owned(),
-                    ))
-                } else {
-                    receipt::run(action, &f)
-                }
-            }),
+            Some((action, rest)) if action == "verify" => {
+                parse_flags(rest, &["--project", "--keys", "--bundle", "--base"], &[]).and_then(
+                    |f| {
+                        if f.value("--bundle").is_some() {
+                            bundle::verify(&f)
+                        } else if f.value("--base").is_some() {
+                            Err(Failure::Usage(
+                                "receipt verify takes --base only with --bundle".to_owned(),
+                            ))
+                        } else {
+                            receipt::run(action, &f)
+                        }
+                    },
+                )
+            }
             Some((action, rest)) if action == "export" => {
                 parse_flags(rest, &["--project"], &[]).and_then(|f| bundle::export(&f))
             }
