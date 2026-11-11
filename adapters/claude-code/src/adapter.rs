@@ -2063,6 +2063,8 @@ fn fold_dotdots(path: &Path) -> PathBuf {
         {
             folded.pop();
         } else {
+            // shortcut: folds made before this `..` are dropped too, so `nope/../link/../x`
+            // still reads as unresolved and deny_path misses it; keep the folded prefix if needed.
             return path.to_path_buf();
         }
     }
