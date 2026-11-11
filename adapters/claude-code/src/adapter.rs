@@ -1630,6 +1630,22 @@ fn process(
             skipped.join(", ")
         ));
     }
+    // G48: at a stop, a file that was already changed when the task started, and still has that
+    // content, is not this task's out-of-scope edit. Not for a task bound to a linked worktree:
+    // its baseline was taken in the checkout it was started from.
+    let observed = match (observed, text(payload, "cwd")) {
+        (Ok(candidate), Some(cwd))
+            if matches!(event, "Stop" | "SubagentStop")
+                && crate::binding::bound_root(&env.state_dir).is_none() =>
+        {
+            Ok(crate::candidate::without_inherited(
+                &env.state_dir,
+                &location::canonical_project(Path::new(cwd)),
+                candidate,
+            ))
+        }
+        (observed, _) => observed,
+    };
     let mut session = Session::open_with_observed(
         contract,
         stored,

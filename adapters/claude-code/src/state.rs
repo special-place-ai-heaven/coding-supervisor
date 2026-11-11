@@ -571,6 +571,10 @@ pub struct Writer<'a> {
     by: Option<String>,
 }
 impl<'a> Writer<'a> {
+    /// The project the task starts in, when the writer knows one.
+    pub(crate) fn project(&self) -> Option<&'a Path> {
+        self.project
+    }
     /// `supervisor task start` or `task next`, run by a person.
     pub fn task_start(project: Option<&'a Path>) -> Self {
         let by = std::env::var("USERNAME")

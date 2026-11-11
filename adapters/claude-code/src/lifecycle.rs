@@ -235,6 +235,10 @@ pub(crate) fn plan_start(
     }
     let prefix = PathBuf::from("tasks").join(&id);
     writes.push((prefix.join("contract.json"), format!("{stored}\n")));
+    // G48: what is already changed in the project is not this task's edit.
+    if let Some(baseline) = writer.project().and_then(crate::candidate::baseline) {
+        writes.push((prefix.join(crate::candidate::BASELINE), baseline));
+    }
     writes.push((prefix.join("task.json"), format!("{}\n", json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"recovery_of":recovery_of,"start_event_id":contract.get("event_id"),"start_request_digest":crate::sha256::hex(contract.to_string().as_bytes())}))));
     writes.push((
         PathBuf::from("active.json"),
