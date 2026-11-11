@@ -79,21 +79,29 @@ fn level_command(payload: &Value) -> Option<String> {
         .split(|c: char| c.is_whitespace() || "\"'`;&|()".contains(c))
         .filter(|w| !w.is_empty())
         .collect();
-    // The file stem for the binary and npm's launchers (`.cmd`, `.bat`, `.ps1`, and the
-    // `supervisor.js` bin target, so `node <path>/supervisor.js task …` matches too). The bin
-    // target's `launcher.js` runs the same main when node runs it directly. shortcut: matched
-    // only when its path names the package, so `node bin/launcher.js` run inside the package
-    // folder is not; match every `launcher.js` if that ever matters.
+    // The file name without `.exe`, as before. npm's launchers (`.cmd`, `.bat`, `.ps1`, and the
+    // `supervisor.js` bin target, so `node <path>/supervisor.js task …` matches too) count only
+    // when named exactly after the package's bin, so `job-supervisor.js` is another program.
+    // The bin target's `launcher.js` runs the same main when node runs it directly. shortcut:
+    // matched only at `coding-supervisor/bin/launcher.js`, so `node bin/launcher.js` run inside
+    // the package folder is not; match every `launcher.js` if that ever matters.
     let program = |word: &str| {
-        let name = word.rsplit(['/', '\\']).next().unwrap_or_default();
-        if name == "launcher.js" && word.contains("supervisor") {
+        if word
+            .replace('\\', "/")
+            .ends_with("coding-supervisor/bin/launcher.js")
+        {
             return "supervisor".to_owned();
         }
-        [".exe", ".cmd", ".bat", ".ps1", ".js"]
+        let name = word.rsplit(['/', '\\']).next().unwrap_or_default();
+        match [".cmd", ".bat", ".ps1", ".js"]
             .into_iter()
             .find_map(|ext| name.strip_suffix(ext))
-            .unwrap_or(name)
-            .to_owned()
+        {
+            Some(stem @ ("supervisor" | "coding-supervisor")) => stem.to_owned(),
+            // Any other launcher keeps its extension, so no rule below matches it.
+            Some(_) => name.to_owned(),
+            None => name.strip_suffix(".exe").unwrap_or(name).to_owned(),
+        }
     };
     // G43: the harness runs the hook command itself, never through a tool call. From an agent
     // it could only feed the gate a made-up event, such as another session's SessionEnd.
