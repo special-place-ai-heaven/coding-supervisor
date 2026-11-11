@@ -1,0 +1,147 @@
+{
+  "base_sha": "3729cbd02e76870001a70315a1072f660b165125",
+  "bundle_version": 1,
+  "candidate": {
+    "base_commit": "3729cbd02e76870001a70315a1072f660b165125",
+    "dirty_digest": "50eeb97fcdf9b431657e4d492d92e0f73629703f505335a7a07e3a5f87513267"
+  },
+  "chain_head": "be09264afa7a263ae6b870c505aaf951e0f23b84ce137373480004b3c3b0ec74",
+  "changed_paths": [
+    ".config/nextest.toml",
+    ".github/workflows/ci.yml",
+    "adapters/claude-code/src/git.rs",
+    "adapters/claude-code/tests/dirty_baseline.rs",
+    "cli/src/bundle.rs",
+    "cli/src/main.rs",
+    "cli/src/required.rs",
+    "cli/tests/receipt_exemption.rs",
+    "cli/tests/receipt_verify.rs"
+  ],
+  "contract": "{\"approval\":{\"at\":1794403895,\"by\":null,\"via\":\"agent-proposal\"},\"base_sha\":\"3729cbd02e76870001a70315a1072f660b165125\",\"criteria\":[{\"check\":\"receipt exemption tests\",\"command\":\"cargo test -p supervisor --test receipt_exemption\",\"id\":\"C1\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"cargo fmt --all -- --check\",\"id\":\"AUTO_FMT\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"cargo clippy --workspace --all-targets -- -D warnings\",\"id\":\"AUTO_LINT\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":[\"cargo test --workspace\",\"cargo nextest run --workspace\"],\"id\":\"AUTO_TEST\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"npm --prefix npm run test\",\"id\":\"AUTO_NPM_TEST_NPM\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"git diff --check\",\"id\":\"AUTO_DIFF\",\"mandatory\":true}],\"event_id\":\"autonomy-5fa70afa2f217fc3dab2df1b5d27d095a1ba7aaea3c4a311e8346c61ca121b71\",\"forbidden_effects\":[],\"goal\":\"Verify the receipt follow-up change: merged-head exemption, export scope check, test grouping\",\"id\":\"receipt-followups-2\",\"isolation\":\"none\",\"max_repair_rounds\":3,\"schema_version\":2,\"scope\":[\".config/\",\".github/\",\"adapters/\",\"cli/\",\"docs/\",\"CLAUDE.md\"]}",
+  "exported_at": "2026-11-11T13:58:24.000Z",
+  "exported_contract_sha256": "76f2a821cc21e86902dd63f9ab7309ac90083d018cb237f9103e10d647211f4b",
+  "gate_state": "completed",
+  "receipts": [
+    {
+      "candidate": {
+        "base_commit": "3729cbd02e76870001a70315a1072f660b165125",
+        "dirty_digest": "50eeb97fcdf9b431657e4d492d92e0f73629703f505335a7a07e3a5f87513267"
+      },
+      "claim_supported": true,
+      "command": "cargo test -p supervisor --test receipt_exemption",
+      "criterion": "C1",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794403915,
+      "output_ref": "observed:task-18e700d6154d5df0-3f0c-0:toolu_01RbNCKR3DD5xDPGhM6YuGoP",
+      "provenance": "observed",
+      "started_at": 1794403901
+    },
+    {
+      "candidate": {
+        "base_commit": "3729cbd02e76870001a70315a1072f660b165125",
+        "dirty_digest": "50eeb97fcdf9b431657e4d492d92e0f73629703f505335a7a07e3a5f87513267"
+      },
+      "claim_supported": true,
+      "command": "cargo fmt --all -- --check",
+      "criterion": "AUTO_FMT",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794403930,
+      "output_ref": "observed:task-18e700d6154d5df0-3f0c-0:toolu_01FZ6gwHeV987Ho7MBoUeFN3",
+      "provenance": "observed",
+      "started_at": 1794403923
+    },
+    {
+      "candidate": {
+        "base_commit": "3729cbd02e76870001a70315a1072f660b165125",
+        "dirty_digest": "50eeb97fcdf9b431657e4d492d92e0f73629703f505335a7a07e3a5f87513267"
+      },
+      "claim_supported": true,
+      "command": "cargo clippy --workspace --all-targets -- -D warnings",
+      "criterion": "AUTO_LINT",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794403949,
+      "output_ref": "observed:task-18e700d6154d5df0-3f0c-0:toolu_01PTsQTW8dFkReWLbZZ4gHwz",
+      "provenance": "observed",
+      "started_at": 1794403934
+    },
+    {
+      "candidate": {
+        "base_commit": "3729cbd02e76870001a70315a1072f660b165125",
+        "dirty_digest": "50eeb97fcdf9b431657e4d492d92e0f73629703f505335a7a07e3a5f87513267"
+      },
+      "claim_supported": true,
+      "command": "cargo test --workspace",
+      "criterion": "AUTO_TEST",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794405422,
+      "output_ref": "observed:task-18e700d6154d5df0-3f0c-0:toolu_01MP7NWNvyQhPGoKnbDdSrjy",
+      "provenance": "observed",
+      "started_at": 1794403956
+    },
+    {
+      "candidate": {
+        "base_commit": "3729cbd02e76870001a70315a1072f660b165125",
+        "dirty_digest": "50eeb97fcdf9b431657e4d492d92e0f73629703f505335a7a07e3a5f87513267"
+      },
+      "claim_supported": true,
+      "command": "npm --prefix npm run test",
+      "criterion": "AUTO_NPM_TEST_NPM",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794405434,
+      "output_ref": "observed:task-18e700d6154d5df0-3f0c-0:toolu_019AHVxHeEPE8jnUMd4dgAdA",
+      "provenance": "observed",
+      "started_at": 1794405426
+    },
+    {
+      "candidate": {
+        "base_commit": "3729cbd02e76870001a70315a1072f660b165125",
+        "dirty_digest": "50eeb97fcdf9b431657e4d492d92e0f73629703f505335a7a07e3a5f87513267"
+      },
+      "claim_supported": true,
+      "command": "git diff --check",
+      "criterion": "AUTO_DIFF",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794405444,
+      "output_ref": "observed:task-18e700d6154d5df0-3f0c-0:toolu_01NXkJiGS5aDfGMLeEDWoUYT",
+      "provenance": "observed",
+      "started_at": 1794405437
+    },
+    {
+      "candidate": {
+        "base_commit": "3729cbd02e76870001a70315a1072f660b165125",
+        "dirty_digest": "50eeb97fcdf9b431657e4d492d92e0f73629703f505335a7a07e3a5f87513267"
+      },
+      "claim_supported": true,
+      "command": "cargo test -p supervisor --test receipt_exemption",
+      "criterion": "C1",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794405472,
+      "output_ref": "observed:task-18e700d6154d5df0-3f0c-0:toolu_011WeBEigmTWbKRHxorr4tya",
+      "provenance": "observed",
+      "started_at": 1794405461
+    }
+  ],
+  "repository": {
+    "root_commits": [
+      "a447f728ba58c655393a75fe16af4a1456cb5a04"
+    ]
+  },
+  "reviews": [],
+  "signature": {
+    "body_sha256": "38be027ecff03b9ed2983b37139206892868d726e3f38b1f10fa708c7e4731c4",
+    "key_id": "56fefcdc588ccb5b",
+    "signature": "ba04d3f4985eb7486ce61b3153de0751e2d88c7d860b6228b440ee7e09d61b0a3b6b1d0a644382fdc86da115af8a0e848f162ab925722f92d2de40957ec9c60d",
+    "statement": "coding-supervisor receipt bundle v2",
+    "storage": "windows-credential-manager"
+  },
+  "stored_contract_sha256": "5c771570985a69eb938bfd8ae027029f1e5264a3a34bc560259a4bce92767482",
+  "task_id": "task-18e700d6154d5df0-3f0c-0",
+  "tree": "6be2d05e96a12f85e9c18bb98270c1328b492e7c"
+}
