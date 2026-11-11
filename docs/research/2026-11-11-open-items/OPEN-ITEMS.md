@@ -119,3 +119,24 @@ Supervisor items it raised; none re-checked against `main` yet:
 - A1.7 "advisory" label beside "required before mutations" (same as SymForge item 13).
 - A1.8 lower-cased project path; A1.9 worktree binding untested there.
 - A3 a read of the gate's state folder is refused with a message that says "not writable".
+
+## Decisions of 2026-11-11 (owner: "proceed at your discretion. Pick a superior choice for the product")
+
+- Second-session lockout (follow-up item 1): option (b), one task per git worktree. It fits the
+  worktree creation of WP3, needs no scope-overlap rule, and a second session never touches the
+  first one's tree.
+- Harmless environment variables: one built-in list, no per-project file, because a per-project
+  list is something an agent could edit to make its own run count. Thread-count and colour
+  variables belong on it.
+- Empty scope: allowed only for a task that changes nothing (every write refused), so a read-only
+  or merge-only prompt need not invent a scope.
+- `revise`: not loosened. A revision keeps clearing receipts and cannot rewrite the goal; only the
+  messages are to be made clearer.
+- Branch protection: none (owner: "no need for branch protection since any commiter needs to be
+  vetted by me"). The remote-evidence decision above therefore rests on the CI receipt job plus
+  the owner's vetting of committers. Owner's rule: no agent merges while a check is red; a red
+  result is fixed until the merge is clean.
+- Runners: every `fresh` runner shares one resource pool and the heavy/light labels are names
+  only (owner), so CI's picker is to take any idle `fresh` runner.
+- The release workflow leaving a draft release after a failed release run is intended
+  (release.yml says so); not changed.
