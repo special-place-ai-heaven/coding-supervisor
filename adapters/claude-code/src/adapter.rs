@@ -565,6 +565,18 @@ const PENDING_JOB: &str = " after it ends to record its exit";
 /// Ends a refusal entry for a mandatory criterion with no run on the candidate (G50).
 const NOT_RUN: &str = " has no observed run on this candidate";
 
+/// G50: the unmet criteria as a refusal lists them, past eight entries counting the rest.
+// shortcut: a fixed cap keeps the refusal readable; contracts hold a handful of criteria.
+fn listed(mut problems: Vec<String>) -> Vec<String> {
+    const LISTED: usize = 8;
+    if problems.len() > LISTED {
+        let more = problems.len() - LISTED;
+        problems.truncate(LISTED);
+        problems.push(format!("and {more} more unmet"));
+    }
+    problems
+}
+
 /// What the pre-intent gate lets through while the current prompt is unclassified.
 fn inspection(payload: &Value) -> bool {
     read_only_tool(payload)
@@ -2507,7 +2519,8 @@ impl Session {
     /// The latest dispatch wins even when it has no valid completion. An older success
     /// must not hide a newer failed, interrupted, pending, or invalidated execution.
     /// G50: every unmet mandatory criterion gets its own entry; a criterion never run is named
-    /// only when there is already something to refuse, so it adds words, never a refusal.
+    /// only when there is already something to refuse, so it adds words, never a refusal. The
+    /// list is whole; callers shorten it with [`listed`] after deciding on it.
     fn latest_attempts(&self, dir: &Path, project: &Path) -> Vec<String> {
         if let Err(why) = crate::autonomy::validate_entrypoints(dir, project) {
             return vec![why];
@@ -2635,13 +2648,6 @@ impl Session {
         }
         if !problems.is_empty() {
             problems.extend(never_run);
-        }
-        // shortcut: a fixed cap keeps the refusal readable; contracts hold a handful of criteria.
-        const LISTED: usize = 8;
-        if problems.len() > LISTED {
-            let more = problems.len() - LISTED;
-            problems.truncate(LISTED);
-            problems.push(format!("and {more} more unmet"));
         }
         problems
     }
@@ -2837,7 +2843,9 @@ impl Session {
             return Ok(Decision::None);
         }
         self.note_asserted(reasons);
-        problems.extend(self.latest_attempts(dir, Path::new(text(payload, "cwd").unwrap_or("."))));
+        problems.extend(listed(
+            self.latest_attempts(dir, Path::new(text(payload, "cwd").unwrap_or("."))),
+        ));
         let completed = self.task.state() == TaskState::Completed;
         let accepted = if completed || self.task.state() == TaskState::ReadyForReview {
             self.observed_evidence()
@@ -3046,17 +3054,21 @@ impl Session {
         // A repair round is spent only on a candidate judged wrong, never on absent evidence.
         // A redefined check entrypoint is a defect in the candidate.
         let mut judged_wrong = crate::autonomy::validate_entrypoints(dir, project).is_err();
-        problems.extend(self.latest_attempts(dir, project));
+        let attempts = self.latest_attempts(dir, project);
         // M6 rides on strict, which is when reproduction is required.
-        if self.task.requires_reproduction() {
-            problems.extend(self.too_few_tests(dir)?);
-        }
+        let few_tests = if self.task.requires_reproduction() {
+            self.too_few_tests(dir)?
+        } else {
+            Vec::new()
+        };
         // G27: the only gaps are jobs still running; refuse once per turn, then wait. A check
-        // never run did not stop that wait before G50 listed it, and does not now.
-        let only_pending_job = problems.iter().any(|p| p.ends_with(PENDING_JOB))
-            && problems
-                .iter()
-                .all(|p| p.ends_with(PENDING_JOB) || p.ends_with(NOT_RUN));
+        // never run did not stop that wait before G50 listed it, and does not now. Decided on
+        // every gap, before the list is shortened, so the cap does not decide the wait.
+        let gaps = || problems.iter().chain(&attempts).chain(&few_tests);
+        let only_pending_job = gaps().any(|p| p.ends_with(PENDING_JOB))
+            && gaps().all(|p| p.ends_with(PENDING_JOB) || p.ends_with(NOT_RUN));
+        problems.extend(listed(attempts));
+        problems.extend(few_tests);
         // WP5: `Some(rejected)` when the review rule refused; the refusal then teaches it.
         let mut review_gap = None;
         let result = if problems.is_empty() {

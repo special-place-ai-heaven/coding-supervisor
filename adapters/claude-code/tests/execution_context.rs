@@ -584,3 +584,30 @@ fn a_long_refusal_list_is_bounded() {
         "{refusal:?}"
     );
 }
+
+/// G50 with G27: a list past the cap still waits when one job is running and every other
+/// check has no run; the cap shortens the text, it does not decide the wait.
+#[test]
+fn a_bounded_list_of_one_pending_job_and_unrun_checks_still_waits() {
+    let criteria: Vec<Value> = (0..9)
+        .map(|i| json!({"id":format!("K{i}"),"check":"test","mandatory":true,"command":format!("check-{i}")}))
+        .collect();
+    let (_fixture, mut env) = setup_with(json!(criteria));
+    let mut event = start(&env, "k0", json!(["check-0"]));
+    handle(&event, &mut env);
+    event["hook_event_name"] = "PostToolUse".into();
+    event["tool_response"] = json!({"job_id":"job-k0", "bucket_id":"bucket-k0"});
+    handle(&event, &mut env);
+    let first = stop(&mut env);
+    assert!(
+        matches!(&first, Decision::Block(why) if why.contains("job job-k0")
+            && why.contains("and 1 more unmet")),
+        "{first:?}"
+    );
+    let second = stop(&mut env);
+    assert!(
+        matches!(&second, Decision::System(note) if note.starts_with("GATE: waiting")
+            && note.contains("job-k0") && note.contains("and 1 more unmet")),
+        "{second:?}"
+    );
+}
