@@ -229,15 +229,18 @@ fn receipt_in_head(worktree: &Path, task_id: &str) -> bool {
 }
 
 /// Unlink every link and junction under `worktree` that git does not track, without entering
-/// any; each target that existed must still exist afterwards. The number unlinked.
+/// any; each target that existed must still exist afterwards. The number unlinked. Only the
+/// worktree's own `.git` file is skipped: a `.git` deeper down, link or folder, is looked at
+/// like any other entry.
 fn unlink_links(worktree: &Path, tracked: &HashSet<String>) -> Result<usize, String> {
     let mut unlinked = 0;
+    let own_git = worktree.join(".git");
     let mut dirs = vec![worktree.to_path_buf()];
     while let Some(dir) = dirs.pop() {
         let entries = fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         for entry in entries {
             let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
-            if path.file_name().is_some_and(|n| n == ".git") {
+            if path == own_git {
                 continue;
             }
             let kind = fs::symlink_metadata(&path)

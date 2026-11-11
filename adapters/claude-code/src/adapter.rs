@@ -1825,9 +1825,11 @@ fn out_of_scope(payload: &Value, scope: &[String], task_dir: &Path) -> Option<De
     })
 }
 
-/// WP3: a Write, Edit, MultiEdit or NotebookEdit into the main checkout of the worktree the task
-/// is bound to, outside that worktree, is refused. A path that cannot be placed (a broken link)
-/// counts as inside. File reads only, no git process.
+/// WP3: a Write, Edit, MultiEdit or NotebookEdit into the checkout the task was started from
+/// (`base_checkout` in its task.json), outside the worktree the task is bound to, is refused,
+/// and so is one into that worktree's `.git`. A path that cannot be placed (a broken link)
+/// counts as inside; a binding or base that cannot be read refuses the write. File reads only,
+/// no git process.
 fn base_checkout_write(payload: &Value, task_dir: &Path) -> Option<Decision> {
     let tool = text(payload, "tool_name")?;
     if !matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit") {
@@ -1835,18 +1837,32 @@ fn base_checkout_write(payload: &Value, task_dir: &Path) -> Option<Decision> {
     }
     let input = payload.get("tool_input")?;
     let path = text(input, "file_path").or_else(|| text(input, "notebook_path"))?;
-    let bound = crate::binding::bound_root(task_dir)?;
-    let main = location::linked_main_checkout(Path::new(&bound))?;
+    let base = std::fs::read_to_string(task_dir.join("task.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["base_checkout"].as_str().map(str::to_owned));
+    let (Some(bound), Some(base)) = (crate::binding::bound_root(task_dir), base) else {
+        return Some(Decision::Deny(format!(
+            "GATE: {tool} refused: this task works in a worktree (isolation worktree), but the gate cannot read which worktree or which base checkout; a person can lower the level with `supervisor level audit`"
+        )));
+    };
     let target = Path::new(text(payload, "cwd").unwrap_or(".")).join(path);
-    let in_base = !matches!(
-        project_relative(&location::normalize(&main), &target),
-        Ok(None)
-    );
-    let in_worktree = matches!(project_relative(&bound, &target), Ok(Some(_)));
-    (in_base && !in_worktree).then(|| {
+    let in_worktree = project_relative(&bound, &target);
+    // The worktree's `.git` file names its repository; rewriting it would hide the worktree.
+    if let Ok(Some(relative)) = &in_worktree
+        && relative
+            .split('/')
+            .next()
+            .is_some_and(|first| first.eq_ignore_ascii_case(".git"))
+    {
+        return Some(Decision::Deny(format!(
+            "GATE: {tool} refused: {path} is the worktree's own .git; this task works in its worktree {bound} (isolation worktree), whose git link is not edited"
+        )));
+    }
+    let in_base = !matches!(project_relative(&base, &target), Ok(None));
+    (in_base && !matches!(in_worktree, Ok(Some(_)))).then(|| {
         Decision::Deny(format!(
-            "GATE: {tool} refused: {path} is in the base checkout {}; this task works in its worktree {bound} (isolation worktree), so edit the file under that path",
-            main.display()
+            "GATE: {tool} refused: {path} is in the base checkout {base}; this task works in its worktree {bound} (isolation worktree), so edit the file under that path"
         ))
     })
 }

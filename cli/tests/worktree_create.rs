@@ -438,6 +438,53 @@ fn task_next_creates_a_new_worktree_and_archives_the_previous_task() {
     assert!(wt(&f).exists());
 }
 
+/// A start whose journal is written but whose install fails keeps its new worktree: the journal
+/// finishes the start at the next lock, so removing the worktree would bind the task to nothing.
+#[test]
+fn a_start_left_in_its_journal_keeps_the_new_worktree() {
+    let f = Fixture::new("wt-journal");
+    let first = start(&f)["task_id"].as_str().unwrap().to_owned();
+    let archive = state_root(&f)
+        .unwrap()
+        .join("archives")
+        .join(format!("{first}.json"));
+    fs::create_dir_all(archive.parent().unwrap()).unwrap();
+    fs::write(&archive, "{\"other\":true}\n").unwrap();
+    let second_path = f.root.join("wt2");
+    let file = contract_file(&f, json!({}));
+    let out = f.run(&[
+        "task",
+        "next",
+        "--task",
+        &first,
+        "--disposition",
+        "cancelled",
+        "--contract",
+        file.to_str().unwrap(),
+        "--worktree",
+        second_path.to_str().unwrap(),
+    ]);
+    assert!(!out.status.success(), "{out:?}");
+    let why = String::from_utf8_lossy(&out.stderr);
+    assert!(!why.contains("was not started"), "{why}");
+    assert!(second_path.exists(), "{why}");
+    assert!(branches(&f).lines().count() == 2, "{}", branches(&f));
+    // Once the cause is gone, the next command finishes the start, bound to the kept worktree.
+    fs::remove_file(&archive).unwrap();
+    let status = f.run(&["status", "--json"]);
+    assert!(status.status.success(), "{status:?}");
+    let second = active_task(&f).unwrap();
+    assert_ne!(second, first);
+    assert_eq!(
+        task_file(&f, &second, "task.json")["worktree"],
+        normalized(&second_path).as_str()
+    );
+    assert_eq!(
+        f.git_in(&second_path, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        format!("supervisor/{second}")
+    );
+}
+
 #[test]
 fn a_bash_check_from_the_main_checkout_does_not_count_for_a_worktree_task() {
     let f = Fixture::new("wt-bash-main");
@@ -466,6 +513,30 @@ fn a_base_checkout_edit_is_refused_when_isolation_is_worktree() {
     let audit = write_at(&f, &f.project, &base, "base-2");
     assert!(!denied(&audit), "{audit}");
     assert!(audit.to_string().contains("base checkout"), "{audit}");
+}
+
+/// The base checkout comes from the gate's own state, not from the worktree's `.git` file, and
+/// an edit tool cannot rewrite that file.
+#[test]
+fn the_worktree_git_file_neither_moves_nor_opens_the_base_checkout() {
+    let f = Fixture::new("wt-git-file");
+    start(&f);
+    let wt = wt(&f);
+    let dot_git = wt.join(".git");
+    for (cwd, id) in [(&f.project, "git-1"), (&wt, "git-2")] {
+        let decision = write_at(&f, cwd, &dot_git, id);
+        assert!(denied(&decision), "{decision}");
+        assert!(reason(&decision).contains(".git"), "{decision}");
+    }
+    // Rewritten some other way (a shell write is a declared limit), the file still does not
+    // switch the refusal off.
+    let original = fs::read_to_string(&dot_git).unwrap();
+    fs::write(&dot_git, "x\n").unwrap();
+    let base = f.project.join("src").join("lib.rs");
+    let decision = write_at(&f, &f.project, &base, "base-1");
+    fs::write(&dot_git, original).unwrap();
+    assert!(denied(&decision), "{decision}");
+    assert!(reason(&decision).contains("base checkout"), "{decision}");
 }
 
 #[test]
@@ -652,6 +723,43 @@ fn cleanup_unlinks_a_junction_and_keeps_its_target() {
         fs::read_to_string(shared.join("keep.txt")).unwrap(),
         "shared\n"
     );
+}
+
+/// A link named `.git` below the worktree's root is unlinked like any other.
+#[test]
+fn cleanup_unlinks_a_nested_link_named_dot_git() {
+    let f = Fixture::new("wt-clean-dotgit");
+    fs::write(f.project.join(".gitignore"), "tmp\n").unwrap();
+    f.commit("ignore tmp");
+    let shared = f.root.join("shared");
+    fs::create_dir_all(&shared).unwrap();
+    fs::write(shared.join("keep.txt"), "shared\n").unwrap();
+    let task = start(&f)["task_id"].as_str().unwrap().to_owned();
+    fs::create_dir_all(wt(&f).join("tmp")).unwrap();
+    let link = wt(&f).join("tmp").join(".git");
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&shared)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&shared, &link).unwrap();
+    deactivate(&f, &task);
+    let out = cleanup(&f, &task);
+    assert_eq!(
+        fs::read_to_string(shared.join("keep.txt")).ok().as_deref(),
+        Some("shared\n"),
+        "{out:?}"
+    );
+    assert!(out.status.success(), "{out:?}");
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["links_unlinked"], 1, "{v}");
+    assert!(!wt(&f).exists());
 }
 
 #[test]

@@ -183,6 +183,13 @@ fn start_with(
         crate::worktree::create(project, path, stored, branch, base)?;
         return match tx.commit(writes) {
             Ok(()) => Ok(response),
+            // A journal on disk finishes the start at the next lock, so its worktree must stay.
+            Err(why) if !matches!(tx.root().join("transaction.json").try_exists(), Ok(false)) => {
+                Err(format!(
+                    "{why}; the start is recorded but not finished: the next supervisor command (for example `supervisor status`) finishes it, or reports why it cannot, so the new worktree {} on branch {branch} is kept for it",
+                    path.display()
+                ))
+            }
             Err(why) => Err(crate::worktree::rollback(project, path, branch, &why)),
         };
     }
@@ -310,9 +317,11 @@ pub(crate) fn plan_start(
         writes.push((prefix.join(crate::candidate::BASELINE), baseline));
     }
     let mut metadata = json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"recovery_of":recovery_of,"start_event_id":contract.get("event_id"),"start_request_digest":crate::sha256::hex(contract.to_string().as_bytes())});
-    // WP3: the binding `binding::bound_root` reads after autonomy.json.
-    if let Some((path, _)) = &bound {
+    // WP3: the binding `binding::bound_root` reads after autonomy.json, and the checkout whose
+    // edits are refused while it holds (never read back from the worktree's own `.git`).
+    if let (Some((path, _)), Some(project)) = (&bound, writer.project()) {
         metadata["worktree"] = path.as_str().into();
+        metadata["base_checkout"] = crate::location::canonical_project(project).into();
     }
     writes.push((prefix.join("task.json"), format!("{metadata}\n")));
     writes.push((
