@@ -7,7 +7,9 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use coding_supervisor::{CandidateId, Criterion, Review, TaskState, VerificationReceipt};
+use coding_supervisor::{
+    CandidateId, Criterion, Isolation, Review, TaskState, VerificationReceipt,
+};
 use serde_json::{Value, json};
 use supervisor_claude_code::adapter::{MCP_ASSERTED, latest_uncounted_run, now, receipts_observed};
 use supervisor_claude_code::candidate::{GitCandidate, Unobserved};
@@ -383,6 +385,18 @@ fn is_lower_hex(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// WP3: where a task's git is read: the worktree it was created with when its contract says
+/// `isolation: worktree`, else `project`. A G5 binding (isolation none) keeps `project`.
+pub(crate) fn git_root(project: &Path, task_dir: &Path) -> PathBuf {
+    match read_contract(task_dir) {
+        Ok((Some(contract), _)) if contract.isolation == Isolation::Worktree => {
+            supervisor_claude_code::binding::bound_root(task_dir).map(PathBuf::from)
+        }
+        _ => None,
+    }
+    .unwrap_or_else(|| project.to_path_buf())
+}
+
 /// The live candidate, or why it is unknown with the free-text cause for stderr.
 fn observe_head(project: &Path) -> (Head, Option<String>) {
     let (reason, why) = match (GitCandidate {
@@ -528,10 +542,13 @@ pub(crate) fn evaluate(
 ) -> Result<Evaluation, Failure> {
     let env = |key: &str| std::env::var(key).ok();
     let stamp = level::in_effect(root, level::config_dir(&env).as_deref());
-    // One HEAD snapshot, taken before any receipt is read, is what every receipt is judged by.
-    let (head, why) = observe_head(project);
     let task = lifecycle::active_task(root)
         .map_err(|e| Failure::Error(format!("verdict: active task pointer invalid: {e}")))?;
+    // One HEAD snapshot, taken before any receipt is read, is what every receipt is judged by.
+    let git_root = task
+        .as_ref()
+        .map_or_else(|| project.to_path_buf(), |t| git_root(project, &t.dir));
+    let (head, why) = observe_head(&git_root);
     // X3: with no active task that is the answer; the unknown head is only a side note.
     if let Some(why) = why {
         let lead = if task.is_some() {

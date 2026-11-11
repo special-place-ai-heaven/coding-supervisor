@@ -1573,6 +1573,14 @@ fn process(
         reasons.push("level strict: write outside the contract scope".to_owned());
         return Ok(denial);
     }
+    // WP3: at audit this refusal is reported instead (`handle`); `off` never judges.
+    if event == "PreToolUse"
+        && contract.isolation == coding_supervisor::Isolation::Worktree
+        && let Some(denial) = base_checkout_write(payload, &env.state_dir)
+    {
+        reasons.push("isolation worktree: write in the base checkout".to_owned());
+        return Ok(denial);
+    }
     if event == "PreToolUse" {
         let tool = text(payload, "tool_name").unwrap_or_default();
         if let Some(effect) = forbidden_effect(payload, &default_forbidden_effects(payload)) {
@@ -1813,6 +1821,32 @@ fn out_of_scope(payload: &Value, scope: &[String], task_dir: &Path) -> Option<De
     (!inside).then(|| {
         Decision::Deny(format!(
             "GATE: {tool} refused: {path} is outside the task's contract scope (level strict)"
+        ))
+    })
+}
+
+/// WP3: a Write, Edit, MultiEdit or NotebookEdit into the main checkout of the worktree the task
+/// is bound to, outside that worktree, is refused. A path that cannot be placed (a broken link)
+/// counts as inside. File reads only, no git process.
+fn base_checkout_write(payload: &Value, task_dir: &Path) -> Option<Decision> {
+    let tool = text(payload, "tool_name")?;
+    if !matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit") {
+        return None;
+    }
+    let input = payload.get("tool_input")?;
+    let path = text(input, "file_path").or_else(|| text(input, "notebook_path"))?;
+    let bound = crate::binding::bound_root(task_dir)?;
+    let main = location::linked_main_checkout(Path::new(&bound))?;
+    let target = Path::new(text(payload, "cwd").unwrap_or(".")).join(path);
+    let in_base = !matches!(
+        project_relative(&location::normalize(&main), &target),
+        Ok(None)
+    );
+    let in_worktree = matches!(project_relative(&bound, &target), Ok(Some(_)));
+    (in_base && !in_worktree).then(|| {
+        Decision::Deny(format!(
+            "GATE: {tool} refused: {path} is in the base checkout {}; this task works in its worktree {bound} (isolation worktree), so edit the file under that path",
+            main.display()
         ))
     })
 }

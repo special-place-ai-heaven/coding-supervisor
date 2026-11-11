@@ -182,7 +182,8 @@ pub fn review_met(
         Ok(())
     }
 }
-/// Stored, not yet enforced.
+/// Where the task works. The core stores it; the Claude Code adapter refuses edits in the main
+/// checkout of a `Worktree` task's bound worktree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Isolation {
     /// `"none"` in contract.json: the task works in the shared checkout.

@@ -1669,6 +1669,7 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
             active.is_some(),
             abandoned.as_ref().map(|_| "cancelled"),
             current_id,
+            None,
         )?;
         writes.extend(task_writes);
         let correction = match (unverified, abandoned) {

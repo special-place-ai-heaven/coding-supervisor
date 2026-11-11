@@ -1,5 +1,6 @@
 //! G5: a task bound to a linked worktree of the session's repository. The binding is the
-//! `worktree` field of the task's `autonomy.json`; a task without it keeps the hook's own cwd.
+//! `worktree` field of the task's `autonomy.json` (an agent's start), else of its `task.json`
+//! (WP3: a person's `task start --worktree`); a task without either keeps the hook's own cwd.
 
 use std::path::{Path, PathBuf};
 
@@ -10,9 +11,11 @@ use crate::location::{canonical_project, common_git_dir, linked_main_checkout, n
 
 /// The worktree root `task_dir`'s task is bound to, in the form `canonical_project` yields.
 pub fn bound_root(task_dir: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(task_dir.join("autonomy.json")).ok()?;
-    let metadata: Value = serde_json::from_str(&text).ok()?;
-    metadata.get("worktree")?.as_str().map(str::to_owned)
+    ["autonomy.json", "task.json"].into_iter().find_map(|file| {
+        let text = std::fs::read_to_string(task_dir.join(file)).ok()?;
+        let metadata: Value = serde_json::from_str(&text).ok()?;
+        metadata.get("worktree")?.as_str().map(str::to_owned)
+    })
 }
 
 /// The root a run or edit of the task counts in: its bound worktree, else `project`'s root.

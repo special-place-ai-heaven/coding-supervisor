@@ -27,7 +27,7 @@ fn read_json(path: &Path) -> Result<Option<Value>, String> {
     }
 }
 
-fn safe_id(id: &str) -> Result<(), String> {
+pub(crate) fn safe_id(id: &str) -> Result<(), String> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return Err("invalid task ID".to_owned());
     }
@@ -123,6 +123,41 @@ pub fn start_as(
     requested: Option<&str>,
     expected: Option<&str>,
 ) -> Result<Value, String> {
+    start_with(root, writer, contract, next, requested, expected, None)
+}
+
+/// WP3: [`start_as`] for a person's `task start --worktree <path>`: creates a git worktree at the
+/// absolute `worktree` (which must not exist yet) on branch `supervisor/<task id>` at the
+/// contract's base commit, checks it, and binds the task to it with `isolation: worktree`.
+pub fn start_in_worktree(
+    root: &Path,
+    writer: &state::Writer,
+    contract: &Value,
+    next: bool,
+    requested: Option<&str>,
+    expected: Option<&str>,
+    worktree: &Path,
+) -> Result<Value, String> {
+    start_with(
+        root,
+        writer,
+        contract,
+        next,
+        requested,
+        expected,
+        Some(worktree),
+    )
+}
+
+fn start_with(
+    root: &Path,
+    writer: &state::Writer,
+    contract: &Value,
+    next: bool,
+    requested: Option<&str>,
+    expected: Option<&str>,
+    worktree: Option<&Path>,
+) -> Result<Value, String> {
     // A person's contract may start a task after prompts were registered (K13); the guard keeps
     // agents from running this command, so they still go through a floor-checked proposal.
     let tx = Transaction::open(root)?;
@@ -134,7 +169,23 @@ pub fn start_as(
             active.task_id
         ));
     }
-    let (response, writes) = plan_start(root, writer, contract, next, requested, expected)?;
+    let (response, writes) =
+        plan_start(root, writer, contract, next, requested, expected, worktree)?;
+    // The worktree is created under the state lock, so no other start can bind the same path; a
+    // replayed start wrote nothing and creates nothing.
+    if let (Some(path), Some(project), Some(branch), Some(base)) = (
+        worktree,
+        writer.project(),
+        response["branch"].as_str(),
+        response["base_sha"].as_str(),
+    ) {
+        let stored = response["worktree"].as_str().unwrap_or_default();
+        crate::worktree::create(project, path, stored, branch, base)?;
+        return match tx.commit(writes) {
+            Ok(()) => Ok(response),
+            Err(why) => Err(crate::worktree::rollback(project, path, branch, &why)),
+        };
+    }
     tx.commit(writes)?;
     Ok(response)
 }
@@ -147,6 +198,7 @@ pub(crate) fn plan_start(
     next: bool,
     requested: Option<&str>,
     expected: Option<&str>,
+    worktree: Option<&Path>,
 ) -> Result<(Value, Vec<(PathBuf, String)>), String> {
     // The caller's own contract is checked first, so a newer schema is refused rather than
     // stamped over. What is saved is checked too: a v1-shaped request is stored as v2, so its
@@ -156,7 +208,7 @@ pub(crate) fn plan_start(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let stored = state::stamp_v2(contract, writer, now);
+    let mut stored = state::stamp_v2(contract, writer, now);
     let parsed = state::contract_from(&stored)?;
     legacy_pending(root)?;
     let previous = active_task(root)?;
@@ -220,6 +272,24 @@ pub(crate) fn plan_start(
         return Err("task next requires the current --task ID".to_owned());
     }
     let id = unique_id();
+    // WP3: the only way a task gets `isolation: worktree`; the worktree itself is created by
+    // `start_with` once these checks pass.
+    let bound = match worktree {
+        None => None,
+        Some(path) => {
+            let project = writer
+                .project()
+                .ok_or("--worktree needs the project the task starts in")?;
+            let base = stored["base_sha"]
+                .as_str()
+                .ok_or("--worktree needs a commit to start from: the repository has no HEAD")?
+                .to_owned();
+            let path = crate::worktree::check_request(project, path)?;
+            stored["isolation"] = "worktree".into();
+            state::contract_from(&stored)?;
+            Some((path, base))
+        }
+    };
     let mut writes = Vec::new();
     let mut recovery_of = Value::Null;
     if let Some(previous) = &previous {
@@ -239,12 +309,23 @@ pub(crate) fn plan_start(
     if let Some(baseline) = writer.project().and_then(crate::candidate::baseline) {
         writes.push((prefix.join(crate::candidate::BASELINE), baseline));
     }
-    writes.push((prefix.join("task.json"), format!("{}\n", json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"recovery_of":recovery_of,"start_event_id":contract.get("event_id"),"start_request_digest":crate::sha256::hex(contract.to_string().as_bytes())}))));
+    let mut metadata = json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"recovery_of":recovery_of,"start_event_id":contract.get("event_id"),"start_request_digest":crate::sha256::hex(contract.to_string().as_bytes())});
+    // WP3: the binding `binding::bound_root` reads after autonomy.json.
+    if let Some((path, _)) = &bound {
+        metadata["worktree"] = path.as_str().into();
+    }
+    writes.push((prefix.join("task.json"), format!("{metadata}\n")));
     writes.push((
         PathBuf::from("active.json"),
         format!("{}\n", json!({"schema":2,"task_id":id})),
     ));
     let mut response = json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"state":"queued","recovery_of":recovery_of});
+    if let Some((path, base)) = &bound {
+        response["worktree"] = path.as_str().into();
+        response["branch"] = crate::worktree::branch(&id).into();
+        response["base_sha"] = base.as_str().into();
+        response["note"] = "work and run the checks in the worktree: edits in the main checkout are refused while this task is bound to it; a check counts when it runs with the worktree as its directory (a Terminal Commander run with cwd set to it, or a shell whose session works in it); start from an up-to-date main, since CI compares the receipt with the merge base".into();
+    }
     let mut warnings = Vec::new();
     if !parsed.forbidden_effects.is_empty() {
         // F13b: only typed entries in strict mode become refusals (M5); a reviewer checks the rest.
@@ -260,7 +341,7 @@ pub(crate) fn plan_start(
         .collect();
     if !replaced.is_empty() {
         warnings.push(format!(
-            "{} replaced by the writer's own record: the gate stores who started the task, the repository head and isolation none (until WP3)",
+            "{} replaced by the writer's own record: the gate stores who started the task, the repository head and isolation none (only `supervisor task start --worktree` sets isolation worktree)",
             replaced.join(", ")
         ));
     }

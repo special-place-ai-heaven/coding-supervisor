@@ -606,8 +606,9 @@ impl<'a> Writer<'a> {
 
 /// contract.json as a writer stores it: the caller's contract as v2, with `base_sha` the
 /// project's HEAD (null outside a repository, before the first commit, or with no project) and
-/// the writer's approval. `isolation` is `none` until worktree creation exists (WP3). The
-/// caller checks the result with [`contract_from`] before saving it.
+/// the writer's approval. `isolation` is `none`; only `lifecycle::start_in_worktree` (a person's
+/// `task start --worktree`) turns it to `worktree`. The caller checks the result with
+/// [`contract_from`] before saving it.
 pub fn stamp_v2(contract: &Value, writer: &Writer, now: u64) -> Value {
     let head = writer
         .project
