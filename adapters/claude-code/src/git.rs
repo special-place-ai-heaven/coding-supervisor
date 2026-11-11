@@ -309,7 +309,9 @@ fn tree_noting(
     if receipts_here {
         includes.push(format!(":(top){RECEIPTS_DIR}/"));
     }
-    let mut remove = vec!["rm", "--cached", "-r", "-q", "--ignore-unmatch", "--"];
+    // -f: on a commit's tree an entry can differ from both HEAD and the worktree file, which
+    // git rm refuses otherwise; only the scratch index is touched.
+    let mut remove = vec!["rm", "--cached", "-f", "-r", "-q", "--ignore-unmatch", "--"];
     remove.extend(includes.iter().map(String::as_str));
     let tree = ok(&add, &env)
         .and_then(|out| {

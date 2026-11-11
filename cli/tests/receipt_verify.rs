@@ -47,6 +47,24 @@ fn an_exported_bundle_verifies_and_names_the_acceptance_commands() {
     assert_eq!((code, &value["bundle"]), (0, &json!("valid")), "{value}");
 }
 
+/// A documentation file changed beside the code (as almost every pull request does) leaves the
+/// bundle valid: the base commit's documentation is dropped from the scratch index even though
+/// it differs from both HEAD and the worktree.
+#[test]
+fn a_bundle_verifies_when_documentation_changed_beside_the_code() {
+    let f = Fixture::new("docs-beside");
+    f.start(json!({"scope":["src/", "README.md"]}));
+    fs::write(f.project.join("src").join("lib.rs"), "// two
+").unwrap();
+    fs::write(f.project.join("README.md"), "two
+").unwrap();
+    f.complete("ok");
+    let (bundle, _, keys) = f.exported();
+    f.commit("work, its documentation and its receipt");
+    let (code, value) = f.verify(&bundle, &keys, &[]);
+    assert_eq!((code, &value["bundle"]), (0, &json!("valid")), "{value}");
+}
+
 #[test]
 fn a_changed_signature_is_invalid() {
     let f = Fixture::new("signature");
