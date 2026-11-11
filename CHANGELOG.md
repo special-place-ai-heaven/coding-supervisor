@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.20.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.19.2...v0.20.0) (2026-11-11)
+
+
+### Features
+
+* create and clean up a worktree for a person's task ([678f94d](https://github.com/special-place-ai-heaven/coding-supervisor/commit/678f94dfec3f38015c47e4277d2ed7de6ba98fda))
+* create and clean up a worktree for a person's task ([ef30d5b](https://github.com/special-place-ai-heaven/coding-supervisor/commit/ef30d5b6528612753397da5a529506fc520a93f1))
+
+
+### Bug Fixes
+
+* check a worktree task's own worktree for uncommitted work before a takeover ([5de5871](https://github.com/special-place-ai-heaven/coding-supervisor/commit/5de587112757734f1315d4f29725418ead432cc5))
+* find a linked-worktree start's task from its new worktree, refuse a revise that moves a worktree task ([393b166](https://github.com/special-place-ai-heaven/coding-supervisor/commit/393b1661f8a1db84c7df98ffed75dfb61a455195))
+* give the full rebind command when a session belongs to an earlier task ([c6cda37](https://github.com/special-place-ai-heaven/coding-supervisor/commit/c6cda3778c964b1a49301136e5d98a4ceedbb53e))
+* keep a journaled worktree start, store the base checkout, unlink nested .git links ([648a552](https://github.com/special-place-ai-heaven/coding-supervisor/commit/648a55287644be8ea8a775cdd8eff6c14c677f69))
+* keep a person's task a person's after a prompt makes it prompt-managed ([e65fb3c](https://github.com/special-place-ai-heaven/coding-supervisor/commit/e65fb3c4df34ebdab0b66fcd1a9d6bb25f79a23c))
+* keep the primary checkout guarded for a task started from a linked worktree ([5930424](https://github.com/special-place-ai-heaven/coding-supervisor/commit/5930424cff954e805d58cd72af8e5ffef01a95c0))
+* match npm's launchers only by the package's exact bin names ([dcd9297](https://github.com/special-place-ai-heaven/coding-supervisor/commit/dcd9297273970b62d2512dadca33c2650cb0a6b1))
+* name the cancel when a prompt-managed person's task cannot be replaced ([58b0bd7](https://github.com/special-place-ai-heaven/coding-supervisor/commit/58b0bd7b036125091bc22f8008e40f8800d77519))
+* name the earlier worktree when a start is replayed without one ([cf21a6e](https://github.com/special-place-ai-heaven/coding-supervisor/commit/cf21a6ebebd928855871f240e6fab96ab335dd1d))
+* offer only the person's cancel when a hook prompt cannot resume the task ([859c0f2](https://github.com/special-place-ai-heaven/coding-supervisor/commit/859c0f2e68599372bcabad23e63ce0200ddbe1f4))
+* refuse a person's commands through npm's launchers ([b3132c0](https://github.com/special-place-ai-heaven/coding-supervisor/commit/b3132c01a5c81e0708605fe8eac89bcb7fbe1c57))
+* refuse a person's commands through the npm package's launcher module ([960225b](https://github.com/special-place-ai-heaven/coding-supervisor/commit/960225b0981377589ae8a59595778e0226881bc4))
+* refuse a replayed start with another worktree setting, name the stored isolation in its warning ([aa18739](https://github.com/special-place-ai-heaven/coding-supervisor/commit/aa18739f610c8032674081cdf1b389808cf121ad))
+* refuse cleanup only for a marked file present in the worktree ([e9e797d](https://github.com/special-place-ai-heaven/coding-supervisor/commit/e9e797dcfb9c620b47fa4bf5f537a611a1da7789))
+* refuse cleanup while a worktree file is marked assume-unchanged or skip-worktree ([22cb20d](https://github.com/special-place-ai-heaven/coding-supervisor/commit/22cb20d744e976e31a3266dbad7f7bcf89364211))
+* refuse task cleanup while the worktree holds ignored files ([526afe3](https://github.com/special-place-ai-heaven/coding-supervisor/commit/526afe3eb39affe414b0687f4bfb08cd389cd4d5))
+* refuse task deactivate, rebind and migrate from agents ([ee1bd90](https://github.com/special-place-ai-heaven/coding-supervisor/commit/ee1bd90349b5d66ad4d9a00acb504061bb646395))
+* say "abandon_previous" does not apply to a task a person started ([130d5c4](https://github.com/special-place-ai-heaven/coding-supervisor/commit/130d5c45dac847d17e9b7859ba19cb0ed4eafe7b))
+* say a person runs the task commands the gate refuses from agents ([c2c9626](https://github.com/special-place-ai-heaven/coding-supervisor/commit/c2c96262f58b0aee216a40fc90128fb473c83076))
+
 ## [0.19.2](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.19.1...v0.19.2) (2026-11-11)
 
 
