@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.19.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.18.2...v0.19.0) (2026-11-11)
+
+
+### Features
+
+* **receipt:** export, verify and require receipt bundles ([442c988](https://github.com/special-place-ai-heaven/coding-supervisor/commit/442c9885d8ab6eaf6322f909b20aef304a1b3e76))
+* **receipt:** receipts exported with the code and verified in CI (WP7) ([7f9ae7b](https://github.com/special-place-ai-heaven/coding-supervisor/commit/7f9ae7b5d9e1ef882e24045fa72d2caf6ad561e6))
+
+
+### Bug Fixes
+
+* **receipt:** check the contract's base_sha always; name a git timeout ([43c3e46](https://github.com/special-place-ai-heaven/coding-supervisor/commit/43c3e4638bbfdd1e34a459fb4f004ea21469cebb))
+* **receipt:** grant the receipt job's reads to release.yml's CI call; pin export order ([dd855ee](https://github.com/special-place-ai-heaven/coding-supervisor/commit/dd855ee377e5dd3ed1a34a5f6098b128a61dd123))
+* **receipt:** harden bundle export and verify ([dba19c2](https://github.com/special-place-ai-heaven/coding-supervisor/commit/dba19c2d2b95308b1aac2200a72ec9b9ac8a3cef))
+* **receipt:** tighten the receipt exemption rule ([70af0f2](https://github.com/special-place-ai-heaven/coding-supervisor/commit/70af0f24c208c68de1df109b19f8891c64faae45))
+
 ## [0.18.2](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.18.1...v0.18.2) (2026-11-11)
 
 
