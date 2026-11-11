@@ -79,3 +79,43 @@ The SymForge lead's objections are met by receipt export plus the CI job
 `Verify supervisor receipts` (WP7) together with branch protection (required check, required
 approval, dismiss stale approvals), which the owner sets in GitHub. An optional local refusal at
 Stop unless the tree is clean and HEAD is pushed is not built.
+
+## The follow-up brief, as recovered on 2026-11-11
+
+Observed on supervisor 0.13.1 from a session in another project. "Nothing here is approved yet."
+
+1. A second session in the same project is locked out completely. Once another live session
+   started a task, this session was refused everything ("GATE: this task belongs to another
+   session; explicit user resume is required before mutation"), read-only shell and a file write
+   outside the project included. Options: (a) one task per session when path scopes do not
+   overlap; (b) one task per git worktree; (c) one task per project, with a real read-only mode
+   for other sessions. In every option, writes outside the project root should not be gated by
+   that project's task. Accept when: two live sessions with disjoint scopes or worktrees can each
+   start, verify and complete; overlapping scopes are refused with the overlap named.
+   Shared memory (2026-11-10) records the owner's words as "b, and four first"; the home-PC
+   session's last note calls option (b) its own leaning. To be confirmed with the owner.
+2. Read-only shell commands are treated as mutation. Refused: `git ls-remote`, `ls`, `which`.
+   Wanted: an allow-list (git status/log/diff/show/ls-remote, ls, cat, which, gh pr view,
+   gh repo view), whole-command match, no redirects, pipes into writers or chaining.
+3. The hook advises cancelling a task that may be live. Say whether the owner is live; offer
+   cancel only when it is not. Mostly done by #73; the cancel wording was not re-checked.
+4. A session is not told when its task is accepted. Wanted: one line with task id, state and
+   counted receipts.
+5. A stop while a required check is still running counts as a refusal ("GATE refuses completion
+   (refusal 1 of 3)" three times while the suite ran). Wanted: "pending: job <id> still running",
+   without using a refusal.
+
+## Older friction report (another project's session, 2026-11-06, supervisor 0.11.1)
+
+Supervisor items it raised; none re-checked against `main` yet:
+
+- A1.1 check discovery missed a virtual Cargo workspace manifest in a direct subfolder and a
+  `package.json` two levels down; A1.2 the hook's own `git diff --check` criterion did not count
+  as a repository check.
+- A1.3 no documented way for a person to declare a repository's checks.
+- A1.4 contract fields learnable only by trial, one missing field per refusal.
+- A1.5 the intent requirement re-injected on every prompt after a non-retryable refusal;
+  A1.6 also on system notifications.
+- A1.7 "advisory" label beside "required before mutations" (same as SymForge item 13).
+- A1.8 lower-cased project path; A1.9 worktree binding untested there.
+- A3 a read of the gate's state folder is refused with a message that says "not writable".
