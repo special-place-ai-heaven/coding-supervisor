@@ -32,13 +32,23 @@ fn case(name: &str) -> Case {
     Case { dir }
 }
 
+/// When the event's pull request was last updated (a push), and a time after it.
+const EVENT_AT: &str = "2026-11-11T10:00:00Z";
+const AFTER: &str = "2026-11-11T10:30:00Z";
+const RELEASE_BRANCH: &str = "release-please--branches--main--components--coding-supervisor";
+
 fn pr(base: &str, head: &str, author: &str) -> Value {
     json!({"pull_request":{"base":{"ref":base},"head":{"ref":head},"user":{"login":author},
-        "labels":[]},"repository":{"owner":{"login":"the-org"}}})
+        "labels":[],"updated_at":EVENT_AT},"repository":{"owner":{"login":"the-org"}}})
 }
 
+/// A `receipt-exempt` timeline event after the event's update time.
 fn labeled(event: &str, actor: &str) -> Value {
-    json!({"event":event,"label":{"name":"receipt-exempt"},"actor":{"login":actor}})
+    labeled_at(event, actor, AFTER, "receipt-exempt")
+}
+
+fn labeled_at(event: &str, actor: &str, at: &str, label: &str) -> Value {
+    json!({"event":event,"label":{"name":label},"actor":{"login":actor},"created_at":at})
 }
 
 /// Runs `receipt required` with the given inputs; `timeline` as JSON lines.
@@ -123,7 +133,24 @@ fn a_docs_only_change_is_exempt_and_a_code_path_beside_it_is_not() {
 #[test]
 fn release_please_is_exempt_only_with_its_author_and_release_files() {
     let c = case("release");
-    let branch = "release-please--branches--main--components--x";
+    let branch = RELEASE_BRANCH;
+    // A branch that only starts with the release prefix does not count.
+    let (req, why) = required(
+        &c,
+        &pr("main", "release-please--branches--main--components--x", OWNER),
+        Some(&RELEASE_FILES),
+        None,
+        &[],
+    );
+    assert!(req, "{why}");
+    let (req, why) = required(
+        &c,
+        &pr("main", "release-please--branches--main--components--x", OWNER),
+        Some(&RELEASE_FILES),
+        None,
+        &["--release-branch", "release-please--branches--main--components--x"],
+    );
+    assert!(!req, "{why}");
     let (req, why) = required(
         &c,
         &pr("main", branch, OWNER),
@@ -183,11 +210,7 @@ fn this_repositorys_release_pull_request_is_exempt_under_its_own_config() {
         "npm/platforms/linux-x64/package.json",
         "npm/platforms/windows-x64/package.json",
     ];
-    let event = pr(
-        "main",
-        "release-please--branches--main--components--coding-supervisor",
-        OWNER,
-    );
+    let event = pr("main", RELEASE_BRANCH, OWNER);
     let (req, why) = required(
         &c,
         &event,
@@ -294,25 +317,97 @@ fn the_exempt_label_counts_only_from_the_owner_or_a_maintainer() {
     assert_eq!(v["required"], false, "{v}");
 }
 
+/// The label counts only when applied after the event's pull request was last updated, so a
+/// push after labelling needs the label again; with no update time it never exempts.
 #[test]
-fn a_push_a_tag_the_release_call_and_another_base_need_nothing() {
+fn the_exempt_label_must_postdate_the_last_push() {
+    let c = case("label-time");
+    let event = pr("main", "feat/x", "someone");
+    let code = Some(&["src/lib.rs"][..]);
+    let before = labeled_at("labeled", OWNER, "2026-11-11T09:59:59Z", "receipt-exempt");
+    let (req, why) = required(&c, &event, code, Some(&[before]), &[]);
+    assert!(req, "{why}");
+    let (req, why) = required(&c, &event, code, Some(&[labeled("labeled", OWNER)]), &[]);
+    assert!(!req, "{why}");
+    let mut timeless = event.clone();
+    timeless["pull_request"]
+        .as_object_mut()
+        .unwrap()
+        .remove("updated_at");
+    let (req, why) = required(&c, &timeless, code, Some(&[labeled("labeled", OWNER)]), &[]);
+    assert!(req, "{why}");
+    // A labelling event with no time of its own does not exempt either.
+    let mut untimed = labeled("labeled", OWNER);
+    untimed.as_object_mut().unwrap().remove("created_at");
+    let (req, why) = required(&c, &event, code, Some(&[untimed]), &[]);
+    assert!(req, "{why}");
+}
+
+/// Events for other labels neither exempt nor undo the exemption label.
+#[test]
+fn events_for_other_labels_do_not_count() {
+    let c = case("label-other");
+    let event = pr("main", "feat/x", "someone");
+    let code = Some(&["src/lib.rs"][..]);
+    let other = labeled_at("labeled", OWNER, AFTER, "bug");
+    let (req, _) = required(&c, &event, code, Some(&[other]), &[]);
+    assert!(req);
+    let undo_other = labeled_at("unlabeled", OWNER, AFTER, "bug");
+    let (req, why) = required(
+        &c,
+        &event,
+        code,
+        Some(&[labeled("labeled", OWNER), undo_other]),
+        &[],
+    );
+    assert!(!req, "{why}");
+}
+
+/// Changed paths keep their spaces: only a trailing carriage return is removed.
+#[test]
+fn a_changed_path_with_a_trailing_space_is_not_documentation() {
+    let c = case("space");
+    let event = pr("main", "docs/x", "someone");
+    let (req, why) = required(&c, &event, Some(&["README.md "]), None, &[]);
+    assert!(req, "{why}");
+    let crlf = c.dir.join("changed-crlf.txt");
+    fs::write(&crlf, "README.md\r\ndocs/a.md\r\n").unwrap();
+    let (req, why) = required(&c, &event, None, None, &["--changed", crlf.to_str().unwrap()]);
+    assert!(!req, "{why}");
+}
+
+/// A push to main and a tag (which is also what release.yml's call carries) need nothing; any
+/// other event shape needs a receipt.
+#[test]
+fn a_push_to_main_and_a_tag_need_nothing_and_other_shapes_need_a_receipt() {
     let c = case("other");
     for (event, word) in [
         (
             json!({"ref":"refs/heads/main","before":"a","after":"b"}),
             "push to main",
         ),
-        (json!({"ref":"refs/tags/v1.2.3"}), "tag"),
-        (
-            json!({"workflow":"release.yml","ref":"refs/tags/v1.2.3"}),
-            "tag",
-        ),
-        (json!({"inputs":{}}), "not a pull request"),
+        (json!({"ref":"refs/tags/v1.2.3","before":"a","after":"b"}), "tag"),
     ] {
         let (req, why) = required(&c, &event, Some(&["src/lib.rs"]), None, &[]);
         assert!(!req, "{event}: {why}");
         assert!(why.contains(word), "{why}");
     }
+    for event in [
+        json!({"inputs":{}}),
+        json!({"ref":"refs/heads/feature","before":"a","after":"b"}),
+        json!({"ref":"refs/heads/main"}),
+        json!({"pull_request":"not an object"}),
+    ] {
+        let (req, why) = required(&c, &event, Some(&["README.md"]), None, &[]);
+        assert!(req, "{event}: {why}");
+    }
+}
+
+/// Every pull request needs a receipt whatever its base: a base changed to main later starts
+/// no new run, so the check from the other base would stay green on the head commit.
+#[test]
+fn a_pull_request_to_another_base_needs_a_receipt_too() {
+    let c = case("base");
     let (req, why) = required(
         &c,
         &pr("release/1.x", "feat/x", "someone"),
@@ -320,18 +415,26 @@ fn a_push_a_tag_the_release_call_and_another_base_need_nothing() {
         None,
         &[],
     );
+    assert!(req, "{why}");
+    let (req, why) = required(
+        &c,
+        &pr("release/1.x", "docs/x", "someone"),
+        Some(&["README.md"]),
+        None,
+        &[],
+    );
     assert!(!req, "{why}");
 }
 
-/// A pull request to main whose base cannot be read fails closed; an unreadable event is an
-/// error (exit 1), never a pass.
+/// A pull request whose base cannot be read still needs one; an unreadable event is an error
+/// (exit 1), never a pass.
 #[test]
 fn unreadable_pull_request_data_needs_a_receipt() {
     let c = case("closed");
     let (req, _) = required(
         &c,
         &json!({"pull_request":{"head":{"ref":"x"}}}),
-        Some(&["README.md"]),
+        Some(&["src/lib.rs"]),
         None,
         &[],
     );

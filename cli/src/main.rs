@@ -36,8 +36,8 @@ const USAGE: &str = "usage: supervisor mcp [--project <dir>]  (serve the gate as
        supervisor receipt sign [--project <dir>]  (sign the active task's stored state with this machine's key, created at the first sign: Windows Credential Manager, else a 0600 file under $XDG_CONFIG_HOME or ~/.config; SUPERVISOR_SIGNING_KEY_FILE=<path> selects a key file instead; prints the supervisor-keys.json entry to add, or unsigned with a reason; an agent running as the same OS user can reach the key, so a signature says this machine's supervisor signed this state, not proof)
        supervisor receipt verify [--project <dir>] [--keys <file>]  (check signature.json against the current stored state and the listed keys, default <project>/supervisor-keys.json; exit 0 valid, 3 invalid or unsigned, 1 could not answer, 2 usage)
        supervisor receipt export [--project <dir>]  (write supervisor-receipts/<task id>.json, signed, for an active task completed on hook-observed receipts that supervisor verdict passes; exit 0 written, 3 refused with a reason, nothing written)
-       supervisor receipt verify --bundle <file> [--keys <file>] [--project <dir>] [--tree <sha>] [--base <sha>]  (check a bundle without any supervisor state: signature with a listed key, completed, contract hash, observed zero-exit receipts, review rule, repository, tree (default HEAD's), changed paths inside the scope; exit 0 valid, 3 invalid)
-       supervisor receipt required --event <file> [--labels <file>] [--changed <file>] [--docs-paths <file>] [--release-config <file>] [--owner <login>] [--maintainers <a,b>] [--release-author <login>]  (CI: print {required, reason} for the event; exit 0)
+       supervisor receipt verify --bundle <file> [--keys <file>] [--project <dir>] [--base <sha>]  (check a bundle without any supervisor state: signature with a listed key, completed, contract hash, observed zero-exit receipts, review rule, repository, HEAD's tree, changed paths since --base (default the contract's base_sha) inside the scope; exit 0 valid, 3 invalid)
+       supervisor receipt required --event <file> [--labels <file>] [--changed <file>] [--docs-paths <file>] [--release-config <file>] [--owner <login>] [--maintainers <a,b>] [--release-author <login>] [--release-branch <name>]  (CI: print {required, reason} for the event; exit 0)
        supervisor install --harness <claude-code|codex|cursor|omp|grok> [--project <dir>] [--home <dir>] [--binary <path>] [--dry-run]
        supervisor --version
 
@@ -96,15 +96,15 @@ fn main() -> ExitCode {
             }
             Some((action, rest)) if action == "verify" => parse_flags(
                 rest,
-                &["--project", "--keys", "--bundle", "--tree", "--base"],
+                &["--project", "--keys", "--bundle", "--base"],
                 &[],
             )
             .and_then(|f| {
                 if f.value("--bundle").is_some() {
                     bundle::verify(&f)
-                } else if f.value("--tree").is_some() || f.value("--base").is_some() {
+                } else if f.value("--base").is_some() {
                     Err(Failure::Usage(
-                        "receipt verify takes --tree and --base only with --bundle".to_owned(),
+                        "receipt verify takes --base only with --bundle".to_owned(),
                     ))
                 } else {
                     receipt::run(action, &f)
@@ -124,6 +124,7 @@ fn main() -> ExitCode {
                     "--owner",
                     "--maintainers",
                     "--release-author",
+                    "--release-branch",
                 ],
                 &[],
             )
