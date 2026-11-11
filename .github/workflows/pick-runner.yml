@@ -71,7 +71,7 @@ jobs:
                 echo "::warning::runner list not understood ($count records, total_count ${total:-missing}); the Linux tests run GitHub-hosted"
                 break
               fi
-              idle_fresh=$(printf '%s\n' "$records" | grep '"status":"online"' | grep '"busy":false' | grep '"name":"Linux"' | grep -c '"name":"fresh"' || true)
+              idle_fresh=$(printf '%s\n' "$records" | grep '"status":"online"' | grep '"busy":false' | grep '"name":"Linux"' | grep '"name":"X64"' | grep -c '"name":"fresh"' || true)
               echo "$name: $total runners; idle fresh: $idle_fresh"
               if [ "$idle_fresh" -gt 0 ]; then
                 linux="$fresh"
