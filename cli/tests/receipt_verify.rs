@@ -54,10 +54,8 @@ fn an_exported_bundle_verifies_and_names_the_acceptance_commands() {
 fn a_bundle_verifies_when_documentation_changed_beside_the_code() {
     let f = Fixture::new("docs-beside");
     f.start(json!({"scope":["src/", "README.md"]}));
-    fs::write(f.project.join("src").join("lib.rs"), "// two
-").unwrap();
-    fs::write(f.project.join("README.md"), "two
-").unwrap();
+    fs::write(f.project.join("src").join("lib.rs"), "// two\n").unwrap();
+    fs::write(f.project.join("README.md"), "two\n").unwrap();
     f.complete("ok");
     let (bundle, _, keys) = f.exported();
     f.commit("work, its documentation and its receipt");
