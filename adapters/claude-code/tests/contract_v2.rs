@@ -416,6 +416,8 @@ fn deny_path_refuses_a_dotdot_through_a_missing_directory_at_strict() {
     fs::create_dir_all(d.0.join("src")).unwrap();
     let mut contract = v2();
     contract["forbidden_effects"] = json!(["deny_path:src/secret/"]);
+    // Isolation worktree with no binding refuses every edit first (the next test).
+    contract["isolation"] = "none".into();
     let mut env = env(&d, &contract, Level::Strict);
     let forbids = |decision: &Decision| matches!(decision, Decision::Deny(why) if why.contains("the task forbids deny_path:src/secret/"));
     let secret = handle(
@@ -428,6 +430,19 @@ fn deny_path_refuses_a_dotdot_through_a_missing_directory_at_strict() {
         &mut env,
     );
     assert!(!forbids(&ok) && !denied_for_scope(&ok), "{ok:?}");
+}
+
+/// WP3: a task with isolation worktree whose binding cannot be read refuses an edit.
+#[test]
+fn isolation_worktree_without_a_binding_refuses_an_edit() {
+    let d = dir("no-binding");
+    fs::create_dir_all(d.0.join("src")).unwrap();
+    let mut env = env(&d, &v2(), Level::Strict);
+    let decision = handle(&write(&env, "t1", &spelled(&d.0, "src/x.rs")), &mut env);
+    assert!(
+        matches!(&decision, Decision::Deny(why) if why.contains("cannot read which worktree")),
+        "{decision:?}"
+    );
 }
 
 /// A `..` after a link is not folded: the path cannot be placed, so a write through a link

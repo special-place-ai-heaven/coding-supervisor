@@ -60,7 +60,8 @@ person's `supervisor task cancel` command only for a session the user says is
 closed. When the hook says that session has ended, `start` archives its task
 as abandoned; if the start is refused for uncommitted changes, ask the user
 whether to resume that task or abandon it, and send `"abandon_previous":true`
-only after they choose to abandon.
+only after they choose to abandon. A task a person started is never archived
+this way: the user's resume prompt takes it over, or the person cancels it.
 
 After restart, read `task_state.pending_jobs` and query those exact job IDs.
 Retain their original dispatch/candidate/session linkage. A scope revision can
@@ -83,9 +84,10 @@ When `task_state` identifies an active task, do not call `task_start` again;
 resume that task or use the supported explicit rollover command.
 
 Keep the returned generated `task_id` and send it on MCP mutations. Never
-substitute the contract's caller-owned id. Explicit `supervisor task start`,
-`task resume`, `task next`, `task deactivate` and `task rebind` remain recovery
-interfaces for pre-existing manual tasks, not steps to assign to the user.
+substitute the contract's caller-owned id. `supervisor task start`,
+`task next`, `task deactivate` and `task rebind` are commands a person runs in
+their own terminal for pre-existing manual tasks; the gate refuses them from
+agents, so do not run them. `task resume` only reads.
 An unfinished task needs an explicit disposition; do not delete its history.
 
 1. Run each criterion's command exactly as the contract names it, on its

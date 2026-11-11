@@ -24,15 +24,24 @@ pub fn run(command: &str, flags: &Flags) -> Result<(), Failure> {
                 .map_err(|e| Failure::Error(format!("{}: {e}", path.display())))?;
             let contract: Value = serde_json::from_str(&text)
                 .map_err(|_| Failure::Error("contract is not valid JSON".to_owned()))?;
-            lifecycle::start_as(
-                &root,
-                &supervisor_claude_code::state::Writer::task_start(Some(&project)),
-                &contract,
+            let writer = supervisor_claude_code::state::Writer::task_start(Some(&project));
+            let (next, requested, expected) = (
                 command == "next",
                 flags.value("--disposition"),
                 flags.value("--task"),
-            )
+            );
+            match flags.value("--worktree") {
+                Some(worktree) => {
+                    let worktree = std::path::absolute(worktree)
+                        .map_err(|e| Failure::Error(format!("{worktree}: {e}")))?;
+                    lifecycle::start_in_worktree(
+                        &root, &writer, &contract, next, requested, expected, &worktree,
+                    )
+                }
+                None => lifecycle::start_as(&root, &writer, &contract, next, requested, expected),
+            }
         }
+        "cleanup" => supervisor_claude_code::worktree::cleanup(&root, &project, needed("--task")?),
         "resume" => lifecycle::resume(&root, needed("--task")?),
         "deactivate" => {
             lifecycle::deactivate(&root, needed("--task")?, flags.value("--disposition"))

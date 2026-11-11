@@ -3,7 +3,7 @@
 # so that file is the only place the version is written.
 #
 # Runner policy (owner, 2026-11-02, extended 2026-11-09): for a push, a release tag and a pull
-# request from this repository the Linux job runs on one of the owner's self-hosted fresh heavy
+# request from this repository the Linux job runs on one of the owner's self-hosted fresh
 # runners when one is online and idle, and GitHub-hosted otherwise (the runners live on the
 # owner's home PC, which is not always on). `changes`, the picker and the Windows job always run
 # GitHub-hosted, so CI never waits for that PC. A fork's pull request, or one labelled ci-hosted,

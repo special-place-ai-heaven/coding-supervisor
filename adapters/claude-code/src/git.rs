@@ -35,6 +35,21 @@ pub fn run_with_env(
     args: &[&str],
     env: &[(&str, &std::ffi::OsStr)],
 ) -> Result<Output, Failure> {
+    run_within(cwd, args, env, DEADLINE)
+}
+
+/// [`run`] with its own deadline, for a person's command whose git (`worktree add`, `worktree
+/// remove`) can take longer than a hook may wait.
+pub fn run_for(cwd: &Path, args: &[&str], deadline: Duration) -> Result<Output, Failure> {
+    run_within(cwd, args, &[], deadline)
+}
+
+fn run_within(
+    cwd: &Path,
+    args: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+    deadline: Duration,
+) -> Result<Output, Failure> {
     let what = format!("git {}", args.join(" "));
     // Test seam: `SUPERVISOR_GIT_TRACE=<file>` appends each git's subcommand (no paths, no
     // output) so a test can pin how many processes a hook call starts.
@@ -71,11 +86,11 @@ pub fn run_with_env(
     let stderr = drain(child.stderr.take());
     let started = Instant::now();
     let timed_out =
-        || Failure::TimedOut(format!("{what}: no answer within {} s", DEADLINE.as_secs()));
+        || Failure::TimedOut(format!("{what}: no answer within {} s", deadline.as_secs()));
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < DEADLINE => thread::sleep(Duration::from_millis(5)),
+            Ok(None) if started.elapsed() < deadline => thread::sleep(Duration::from_millis(5)),
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -90,7 +105,7 @@ pub fn run_with_env(
     };
     // A descendant that inherited a pipe can keep it open after git exits.
     let collect = |pipe: Receiver<Vec<u8>>| {
-        pipe.recv_timeout(DEADLINE.saturating_sub(started.elapsed()))
+        pipe.recv_timeout(deadline.saturating_sub(started.elapsed()))
             .map_err(|_| timed_out())
     };
     Ok(Output {

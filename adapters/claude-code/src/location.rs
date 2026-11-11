@@ -13,19 +13,49 @@ pub fn canonical_project(cwd: &Path) -> String {
 /// (`gitdir: <main>/.git/worktrees/<name>`). `None` for a main checkout, a submodule or no
 /// repository. File reads only, no git process.
 pub fn linked_main_checkout(worktree: &Path) -> Option<PathBuf> {
-    let text = fs::read_to_string(worktree.join(".git")).ok()?;
-    let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
-    let gitdir = if gitdir.is_absolute() {
-        gitdir
-    } else {
-        worktree.join(gitdir)
-    };
+    let gitdir = linked_git_dir(worktree)?;
     let worktrees = gitdir.parent()?;
     let common = worktrees.parent()?;
     if worktrees.file_name()? != "worktrees" || common.file_name()? != ".git" {
         return None;
     }
     common.parent().map(Path::to_path_buf)
+}
+
+/// The git directory a worktree's `.git` file names. File reads only.
+fn linked_git_dir(worktree: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(worktree.join(".git")).ok()?;
+    let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
+    Some(if gitdir.is_absolute() {
+        gitdir
+    } else {
+        worktree.join(gitdir)
+    })
+}
+
+/// WP3: the file in a created worktree's git directory naming the checkout its task was started
+/// from, written only when that checkout is itself a linked worktree. git removes it with the
+/// worktree.
+const STARTED_FROM: &str = "supervisor-started-from";
+
+/// Record `checkout` as the one `worktree`'s task was started from (see [`STARTED_FROM`]).
+pub(crate) fn record_started_from(worktree: &Path, checkout: &str) -> Result<(), String> {
+    let dir = linked_git_dir(worktree).ok_or("the new worktree has no git link")?;
+    fs::write(dir.join(STARTED_FROM), format!("{checkout}\n")).map_err(|e| e.to_string())
+}
+
+/// The checkouts whose state may hold the task linked worktree `worktree` is bound to: the one
+/// its start recorded, then the primary checkout. File reads only; the record is not trusted,
+/// callers still check the task found there.
+pub(crate) fn task_checkouts(worktree: &Path) -> Vec<PathBuf> {
+    let recorded = linked_git_dir(worktree)
+        .and_then(|dir| fs::read_to_string(dir.join(STARTED_FROM)).ok())
+        .map(|text| PathBuf::from(text.trim()))
+        .filter(|path| !path.as_os_str().is_empty());
+    recorded
+        .into_iter()
+        .chain(linked_main_checkout(worktree))
+        .collect()
 }
 
 /// The git directory of the repository containing `dir`: `.git` itself, or the directory a

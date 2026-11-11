@@ -59,7 +59,7 @@ pub fn export(flags: &Flags) -> Result<(), Failure> {
     let key = crate::receipt::load_key(&env, &project);
     let _lock = read_lock(&root)
         .map_err(|e| Failure::Error(format!("receipt export: project state not readable: {e}")))?;
-    let (bundle, task_id) = build(&project, &root)?;
+    let (bundle, task_id, checkout) = build(&project, &root)?;
     let (store, key) = key.map_err(|reason| refused(&reason))?;
     let body_sha256 = sha256::hex(canonical(&bundle).as_bytes());
     let statement = statement_of(&bundle, &body_sha256).map_err(refused)?;
@@ -74,7 +74,7 @@ pub fn export(flags: &Flags) -> Result<(), Failure> {
     let relative = format!("{RECEIPTS_DIR}/{task_id}.json");
     let text = serde_json::to_string_pretty(&bundle)
         .map_err(|_| Failure::Error("receipt export: the bundle could not be rendered".into()))?;
-    let path = project.join(&relative);
+    let path = checkout.join(&relative);
     if atomic_write(&path, format!("{text}\n").as_bytes()).is_err() {
         // atomic_write's temporary file; left behind it would fail CI's folder check.
         let _ = fs::remove_file(path.with_extension("supervisor-tmp"));
@@ -91,8 +91,9 @@ pub fn export(flags: &Flags) -> Result<(), Failure> {
 }
 
 /// The unsigned bundle for the active task, refused unless its stored state verifies (chain),
-/// is `completed`, and `supervisor verdict` passes under `observed` on the same candidate.
-fn build(project: &Path, root: &Path) -> Result<(Value, String), Failure> {
+/// is `completed`, and `supervisor verdict` passes under `observed` on the same candidate; with
+/// the checkout it was built from, where it is written.
+fn build(project: &Path, root: &Path) -> Result<(Value, String, PathBuf), Failure> {
     let error = |what: &str| Failure::Error(format!("receipt export: {what}"));
     let (verdict, code, _) = verdict::evaluate(project, root, Require::Observed, None)?;
     if code != 0 {
@@ -114,6 +115,8 @@ fn build(project: &Path, root: &Path) -> Result<(Value, String), Failure> {
     let (contract, stored_digest) =
         read_contract(&task.dir).map_err(|_| error("the active contract could not be read"))?;
     let contract = contract.ok_or_else(|| error("the active task has no contract"))?;
+    // WP3: a task created with its own worktree is exported from it, and its bundle lands there.
+    let project = &verdict::git_root(project, &task.dir);
     let (stored, head) = load_gate_head(&task.dir, &stored_digest)
         .map_err(|_| error("the task checkpoint could not be read"))?;
     let (Stored::Valid(gate), Some(chain_head)) = (stored, head) else {
@@ -236,7 +239,7 @@ fn build(project: &Path, root: &Path) -> Result<(Value, String), Failure> {
         "changed_paths":changed,"receipts":receipts,"reviews":reviews,
         "exported_at":verdict::rfc3339_millis(now()),
     });
-    Ok((bundle, task.task_id))
+    Ok((bundle, task.task_id, project.clone()))
 }
 
 /// The stored contract as canonical JSON with `approval.by` replaced by [`REDACTED_USER`] and

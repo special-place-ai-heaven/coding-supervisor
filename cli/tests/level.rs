@@ -727,6 +727,69 @@ fn agents_cannot_reset_rounds_or_amend_the_floor() {
     }
 }
 
+/// Denied by the guard on the gate's own commands, not by another rule.
+fn guard_denied(decision: &Value) -> bool {
+    denied(decision)
+        && decision["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .is_some_and(|r| r.contains("not writable by agents"))
+}
+
+/// WP3 review r4: npm's Windows launchers (`supervisor.cmd`, `.bat`, `.ps1`) and its bin target
+/// run by node (`node <path>/supervisor.js`) are the supervisor too; other programs are not.
+#[test]
+fn agents_cannot_run_person_commands_through_npm_launchers() {
+    let f = Fixture::new("launchers");
+    f.start_task();
+    let launchers = [
+        "supervisor.cmd",
+        "C:\\npm\\Supervisor.CMD",
+        "supervisor.bat",
+        "& C:\\npm\\supervisor.ps1",
+        "node C:/npm/node_modules/coding-supervisor/bin/supervisor.js",
+        "node \"C:\\npm\\node_modules\\coding-supervisor\\bin\\supervisor.js\"",
+        // The bin target's module runs the same main when node runs it directly.
+        "node C:/npm/node_modules/coding-supervisor/bin/launcher.js",
+        "node C:\\npm\\node_modules\\coding-supervisor\\bin\\launcher.js",
+        "C:\\npm\\coding-supervisor.cmd",
+    ];
+    let commands = [
+        "level off",
+        "task start --contract c.json",
+        "task cleanup --task t",
+        "hook",
+    ];
+    for (i, launcher) in launchers.iter().enumerate() {
+        for (j, command) in commands.iter().enumerate() {
+            let input = json!({"command": format!("{launcher} {command}")});
+            let decision = f.tool(&format!("npm{i}-{j}"), "Bash", input.clone());
+            assert!(guard_denied(&decision), "{input}: {decision}");
+        }
+    }
+    let argv = json!({"argv":["node","C:/npm/bin/supervisor.js","task","next","--task","t"]});
+    let decision = f.tool("npm-tc", "mcp__terminal_commander__run_and_watch", argv);
+    assert!(guard_denied(&decision), "{decision}");
+    for (i, command) in [
+        "something.cmd task start --contract c.json",
+        "node other.js task start --contract c.json",
+        "node tools/build.js level off",
+        "node tools/launcher.js task start --contract c.json",
+        // Only the launcher named exactly after the bin, and the package's own `bin/launcher.js`.
+        "node scripts/job-supervisor.js task start --contract c.json",
+        "node E:/project/coding-supervisor/scripts/launcher.js task start --contract c.json",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let decision = f.tool(&format!("other{i}"), "Bash", json!({"command": command}));
+        let reason = decision["hookSpecificOutput"]["permissionDecisionReason"].to_string();
+        assert!(
+            !reason.contains("not writable by agents"),
+            "{command}: {decision}"
+        );
+    }
+}
+
 /// M1: the modes are off, audit, enforce and strict; lite, full and ultra stay accepted aliases,
 /// and a level file written by 0.5.x still reads.
 #[test]

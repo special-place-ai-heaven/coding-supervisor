@@ -67,9 +67,11 @@ fn deny(payload: &Value, matched: String) -> Option<Decision> {
 }
 
 /// `supervisor level <off|lite|full|ultra>`, `supervisor task reset-rounds`, `amend-floor`,
-/// `cancel`, `start` or `next`, or the hook command itself (`supervisor hook`,
+/// `cancel`, `start`, `next`, `cleanup`, `deactivate`, `rebind` or `migrate` (every `task`
+/// command but the read-only `resume`), or the hook command itself (`supervisor hook`,
 /// `supervisor-claude-code hook`), in a Bash, PowerShell or Terminal Commander command,
-/// whatever the binary's path, extension or quoting; returns the matched words.
+/// whatever the binary's path, extension (npm's launchers included) or quoting; returns the
+/// matched words.
 fn level_command(payload: &Value) -> Option<String> {
     let tool = payload.get("tool_name").and_then(Value::as_str)?;
     let text = command_text(tool, payload.get("tool_input")?)?.to_lowercase();
@@ -77,9 +79,29 @@ fn level_command(payload: &Value) -> Option<String> {
         .split(|c: char| c.is_whitespace() || "\"'`;&|()".contains(c))
         .filter(|w| !w.is_empty())
         .collect();
+    // The file name without `.exe`, as before. npm's launchers (`.cmd`, `.bat`, `.ps1`, and the
+    // `supervisor.js` bin target, so `node <path>/supervisor.js task …` matches too) count only
+    // when named exactly after the package's bin, so `job-supervisor.js` is another program.
+    // The bin target's `launcher.js` runs the same main when node runs it directly. shortcut:
+    // matched only at `coding-supervisor/bin/launcher.js`, so `node bin/launcher.js` run inside
+    // the package folder is not; match every `launcher.js` if that ever matters.
     let program = |word: &str| {
+        if word
+            .replace('\\', "/")
+            .ends_with("coding-supervisor/bin/launcher.js")
+        {
+            return "supervisor".to_owned();
+        }
         let name = word.rsplit(['/', '\\']).next().unwrap_or_default();
-        name.strip_suffix(".exe").unwrap_or(name).to_owned()
+        match [".cmd", ".bat", ".ps1", ".js"]
+            .into_iter()
+            .find_map(|ext| name.strip_suffix(ext))
+        {
+            Some(stem @ ("supervisor" | "coding-supervisor")) => stem.to_owned(),
+            // Any other launcher keeps its extension, so no rule below matches it.
+            Some(_) => name.to_owned(),
+            None => name.strip_suffix(".exe").unwrap_or(name).to_owned(),
+        }
     };
     // G43: the harness runs the hook command itself, never through a tool call. From an agent
     // it could only feed the gate a made-up event, such as another session's SessionEnd.
@@ -93,11 +115,21 @@ fn level_command(payload: &Value) -> Option<String> {
     words.windows(3).find_map(|w| {
         let program = program(w[0]);
         let sets_level = w[1] == "level" && Level::parse(w[2]).is_some();
-        // A person's escapes and contracts; an agent could reset its own budget or skip the floor.
+        // A person's escapes and contracts; an agent could reset its own budget, skip the floor,
+        // or end or take over a person's task and start its own.
         let operator = w[1] == "task"
             && matches!(
                 w[2],
-                "reset-rounds" | "amend-floor" | "add-check" | "cancel" | "start" | "next"
+                "reset-rounds"
+                    | "amend-floor"
+                    | "add-check"
+                    | "cancel"
+                    | "start"
+                    | "next"
+                    | "cleanup"
+                    | "deactivate"
+                    | "rebind"
+                    | "migrate"
             );
         (program.ends_with("supervisor") && (sets_level || operator))
             .then(|| format!("supervisor {} {}", w[1], w[2]))

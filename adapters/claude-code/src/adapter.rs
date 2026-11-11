@@ -119,7 +119,7 @@ impl Env {
     }
 
     /// [`Env::real`] for a hook payload: a call from the linked worktree its session's task is
-    /// bound to uses the main checkout's state, where that task lives.
+    /// bound to uses the state of the checkout that task was started from, where it lives.
     pub fn for_hook(cwd: &Path, session: &str) -> Self {
         Self::build(
             &crate::binding::redirect(cwd, session).unwrap_or_else(|| cwd.to_path_buf()),
@@ -943,6 +943,14 @@ fn foreign_task(root: &Path, payload: &Value) -> bool {
         .is_some_and(|active| crate::autonomy::owns_session(&active.dir, session) == Ok(false))
 }
 
+/// Whether the active task is a person's (`autonomy::persons_task`); unknown reads as not.
+fn persons_active_task(root: &Path) -> bool {
+    lifecycle::active_task(root)
+        .ok()
+        .flatten()
+        .is_some_and(|active| crate::autonomy::persons_task(&active.dir) == Ok(true))
+}
+
 /// Whether the active task's other-session owner has reported its end; `None` when this
 /// session owns the task, there is none, or ownership cannot be read.
 fn foreign_owner_ended(root: &Path, payload: &Value) -> Option<bool> {
@@ -1038,6 +1046,31 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                         intent["task_id"].as_str().unwrap_or_default(),
                         crate::autonomy::MINIMAL_CONTRACT
                     )
+                } else if foreign_owner_ended(&root, payload) == Some(true)
+                    && persons_active_task(&root)
+                {
+                    // WP3 review r4: an agent's start does not archive a person's task.
+                    call["action"] = "discussion".into();
+                    let id = intent["task_id"].as_str().unwrap_or_default();
+                    let cancel = crate::autonomy::person_cancel(&intent, id);
+                    // A hook prompt resumes only a task a hook prompt made prompt-managed.
+                    let hook_managed =
+                        lifecycle::active_task(&root)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|active| {
+                                crate::autonomy::requires_observed_completion(&active.dir)
+                                    == Ok(true)
+                            });
+                    if hook_managed {
+                        format!(
+                            "The active task {id} was started by a person, and the session that made it prompt-managed has ended; an agent's start does not archive it. If the user asked to resume that task, send \"action\":\"resume\". Otherwise call intent_apply {call} and tell the user that the task waits for them: their direct resume prompt takes it over, or {cancel}."
+                        )
+                    } else {
+                        format!(
+                            "The active task {id} was started by a person, and the session that made it prompt-managed through a caller-asserted prompt has ended; an agent's start does not archive it and a prompt here cannot resume it. Call intent_apply {call} and tell the user that the task waits for them: {cancel}."
+                        )
+                    }
                 } else if foreign_owner_ended(&root, payload) == Some(true) {
                     // The owner reported its end: this session may start the next task.
                     call["action"] = "start".into();
@@ -1573,6 +1606,14 @@ fn process(
         reasons.push("level strict: write outside the contract scope".to_owned());
         return Ok(denial);
     }
+    // WP3: at audit this refusal is reported instead (`handle`); `off` never judges.
+    if event == "PreToolUse"
+        && contract.isolation == coding_supervisor::Isolation::Worktree
+        && let Some(denial) = base_checkout_write(payload, &env.state_dir)
+    {
+        reasons.push("isolation worktree: write in the base checkout".to_owned());
+        return Ok(denial);
+    }
     if event == "PreToolUse" {
         let tool = text(payload, "tool_name").unwrap_or_default();
         if let Some(effect) = forbidden_effect(payload, &default_forbidden_effects(payload)) {
@@ -1813,6 +1854,55 @@ fn out_of_scope(payload: &Value, scope: &[String], task_dir: &Path) -> Option<De
     (!inside).then(|| {
         Decision::Deny(format!(
             "GATE: {tool} refused: {path} is outside the task's contract scope (level strict)"
+        ))
+    })
+}
+
+/// WP3: a Write, Edit, MultiEdit or NotebookEdit into the checkout the task was started from
+/// (`base_checkout` in its task.json, and its primary checkout when that is a linked worktree),
+/// outside the worktree the task is bound to, is refused,
+/// and so is one into that worktree's `.git`. A path that cannot be placed (a broken link)
+/// counts as inside; a binding or base that cannot be read refuses the write. File reads only,
+/// no git process.
+fn base_checkout_write(payload: &Value, task_dir: &Path) -> Option<Decision> {
+    let tool = text(payload, "tool_name")?;
+    if !matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit") {
+        return None;
+    }
+    let input = payload.get("tool_input")?;
+    let path = text(input, "file_path").or_else(|| text(input, "notebook_path"))?;
+    let base = std::fs::read_to_string(task_dir.join("task.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["base_checkout"].as_str().map(str::to_owned));
+    let (Some(bound), Some(base)) = (crate::binding::bound_root(task_dir), base) else {
+        return Some(Decision::Deny(format!(
+            "GATE: {tool} refused: this task works in a worktree (isolation worktree), but the gate cannot read which worktree or which base checkout; a person can lower the level with `supervisor level audit`"
+        )));
+    };
+    let target = Path::new(text(payload, "cwd").unwrap_or(".")).join(path);
+    let in_worktree = project_relative(&bound, &target);
+    // The worktree's `.git` file names its repository; rewriting it would hide the worktree.
+    if let Ok(Some(relative)) = &in_worktree
+        && relative
+            .split('/')
+            .next()
+            .is_some_and(|first| first.eq_ignore_ascii_case(".git"))
+    {
+        return Some(Decision::Deny(format!(
+            "GATE: {tool} refused: {path} is the worktree's own .git; this task works in its worktree {bound} (isolation worktree), whose git link is not edited"
+        )));
+    }
+    // A start from a linked worktree guards the repository's primary checkout too; its `.git`
+    // lies inside the refused base, so an edit tool cannot rewrite it.
+    let primary =
+        location::linked_main_checkout(Path::new(&base)).map(|main| location::normalize(&main));
+    let in_base = std::iter::once(base.as_str())
+        .chain(primary.as_deref())
+        .any(|checkout| !matches!(project_relative(checkout, &target), Ok(None)));
+    (in_base && !matches!(in_worktree, Ok(Some(_)))).then(|| {
+        Decision::Deny(format!(
+            "GATE: {tool} refused: {path} is in the base checkout {base}; this task works in its worktree {bound} (isolation worktree), so edit the file under that path"
         ))
     })
 }

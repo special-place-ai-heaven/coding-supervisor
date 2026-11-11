@@ -789,6 +789,20 @@ pub fn is_autonomous_task(dir: &Path) -> Result<bool, String> {
     Ok(read(&dir.join("autonomy.json"))?.is_some())
 }
 
+/// A person's task: no prompt manages it (no autonomy.json), or a person started it
+/// (`supervisor task start` or `task next` record their writer in the contract's approval, which
+/// an agent revision keeps). A prompt that makes a person's task prompt-managed does not make it
+/// an agent's.
+pub fn persons_task(dir: &Path) -> Result<bool, String> {
+    if read(&dir.join("autonomy.json"))?.is_none() {
+        return Ok(true);
+    }
+    let (contract, _) = state::read_contract(dir)?;
+    Ok(contract
+        .and_then(|c| c.approval)
+        .is_some_and(|a| a.via == state::PERSON_START))
+}
+
 /// Hook-owned autonomous tasks cannot accept caller-asserted MCP completion.
 pub fn requires_observed_completion(dir: &Path) -> Result<bool, String> {
     let Some(metadata) = read(&dir.join("autonomy.json"))? else {
@@ -1516,18 +1530,18 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
     let worktree = requested_worktree(project, proposal);
     // A takeover `start` asks git once whether the ended owner left uncommitted work; outside
     // the lock, like the calls above (G26).
-    // The tree is the task's own: its bound worktree, else the project it was started in. The
-    // answer is kept with the task it was asked about.
+    // The tree is the task's own: its bound worktree (autonomy.json, else a person's task.json
+    // binding), else the project it was started in. The answer is kept with the task it was
+    // asked about.
     let uncommitted = match lifecycle::active_task(root)? {
         Some(active) if proposal.get("action").and_then(Value::as_str) == Some("start") => {
             read(&active.dir.join("autonomy.json"))?
                 .filter(|metadata| metadata.get("session_ended").is_some())
                 .map(|metadata| {
-                    let tree = metadata["worktree"]
-                        .as_str()
-                        .or(metadata["project"].as_str())
-                        .map_or(project, Path::new);
-                    (active.task_id, uncommitted_work(tree))
+                    let tree = crate::binding::bound_root(&active.dir)
+                        .or_else(|| metadata["project"].as_str().map(str::to_owned))
+                        .map_or(project.to_path_buf(), PathBuf::from);
+                    (active.task_id, uncommitted_work(&tree))
                 })
         }
         _ => None,
@@ -1620,6 +1634,25 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
             // ended again while this call waited for the lock (10 s at most) is not seen;
             // ask git under the lock if that ever matters.
             let work = uncommitted != Some((active.task_id.clone(), false));
+            // WP3 review r4: a person's task is ended by the person's own choice only.
+            if persons_task(&active.dir)? {
+                // A resume needs a prompt of the source that made the task prompt-managed.
+                let resume = if metadata["source"] == event["source"] {
+                    "The user's direct resume prompt takes it over (a direct cancel prompt then ends it), or "
+                } else {
+                    "Only "
+                };
+                return Err(format!(
+                    "unfinished task {} was started by a person (`supervisor task start`) and the session that made it prompt-managed has ended{}; an agent's start does not archive a person's task, and \"abandon_previous\" is not accepted for it. {resume}{}",
+                    active.task_id,
+                    if work {
+                        ", leaving uncommitted changes in its working tree"
+                    } else {
+                        ""
+                    },
+                    person_cancel(&event, &active.task_id)
+                ));
+            }
             if work && proposal.get("abandon_previous") != Some(&Value::Bool(true)) {
                 return Err(format!(
                     "unfinished task {} belonged to a session that has ended, and its working tree has uncommitted changes that may be its unfinished work. Ask the user to choose: a direct resume prompt takes that task over with the work, or repeat this start with \"abandon_previous\":true to archive it as abandoned (the files stay as they are)",
@@ -1643,16 +1676,26 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         {
             unverified = Some(why);
         }
-        // WP4: a person's task (no autonomy.json) completed without observed evidence, e.g. on
-        // caller-asserted MCP receipts, is not replaced by an agent's start, which would shed the
-        // limits the person set; the person moves on with `task next`.
+        // WP4: a person's task completed without observed evidence, e.g. on caller-asserted MCP
+        // receipts, is not replaced by an agent's start, which would shed the limits the person
+        // set; the person moves on with `task next` (or, once a prompt manages the task, which
+        // `task next` refuses, `task cancel`). A hook prompt's conversion already keeps MCP from
+        // completing the task, and its unverifiable completion rolls over as above (G22).
         if let Some(active) = &active
-            && read(&active.dir.join("autonomy.json"))?.is_none()
+            && persons_task(&active.dir)?
+            && !requires_observed_completion(&active.dir)?
             && observed_completion(&active.dir, &active.task_id, project).is_err()
         {
+            let way = if is_autonomous_task(&active.dir)? {
+                person_cancel(&event, &active.task_id)
+            } else {
+                format!(
+                    "a person runs `supervisor task next --task {} --contract <file>`",
+                    active.task_id
+                )
+            };
             return Err(format!(
-                "the active task was started by a person and its completion rests on no hook-observed evidence, so an agent cannot replace it; a person runs `supervisor task next --task {} --contract <file>`",
-                active.task_id
+                "the active task was started by a person and its completion rests on no hook-observed evidence, so an agent cannot replace it; {way}"
             ));
         }
         let mut contract = add_floor(
@@ -1669,6 +1712,7 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
             active.is_some(),
             abandoned.as_ref().map(|_| "cancelled"),
             current_id,
+            None,
         )?;
         writes.extend(task_writes);
         let correction = match (unverified, abandoned) {
@@ -1748,14 +1792,31 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 && event["control"] == "resume"
                 && metadata["source"] == event["source"])
         {
-            return Err(if metadata.get("session_ended").is_some() {
-                "proposal belongs to another task session, which has ended: a start with a new contract archives its task as abandoned, or a direct resume prompt from the user takes it over".to_owned()
-            } else {
-                format!(
-                    "proposal belongs to another task session that has not ended, so its task stays protected; a direct resume prompt from the user takes it over, or, only if that session is closed, {}",
-                    person_cancel(&event, &active.task_id)
-                )
-            });
+            return Err(
+                if metadata.get("session_ended").is_some()
+                    && persons_task(&active.dir)?
+                    && metadata["source"] != event["source"]
+                {
+                    format!(
+                        "proposal belongs to another task session, which has ended; the task was started by a person and made prompt-managed by a {} prompt, so a {} prompt cannot resume it; {}",
+                        metadata["source"].as_str().unwrap_or("different"),
+                        event["source"].as_str().unwrap_or("different"),
+                        person_cancel(&event, &active.task_id)
+                    )
+                } else if metadata.get("session_ended").is_some() && persons_task(&active.dir)? {
+                    format!(
+                        "proposal belongs to another task session, which has ended; the task was started by a person, so the user's direct resume prompt takes it over, or {}",
+                        person_cancel(&event, &active.task_id)
+                    )
+                } else if metadata.get("session_ended").is_some() {
+                    "proposal belongs to another task session, which has ended: a start with a new contract archives its task as abandoned, or a direct resume prompt from the user takes it over".to_owned()
+                } else {
+                    format!(
+                        "proposal belongs to another task session that has not ended, so its task stays protected; a direct resume prompt from the user takes it over, or, only if that session is closed, {}",
+                        person_cancel(&event, &active.task_id)
+                    )
+                },
+            );
         }
         let task_state = gate_state(&active.dir)?;
         if matches!(action, "cancel" | "pause" | "resume") && event["control"] != action {
@@ -1829,6 +1890,12 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                     .ok_or("invalid npm entrypoint selection")?
                 {
                     expected.entry(name).or_insert_with(|| digest.clone());
+                }
+                // WP3: a person's worktree task stays in the worktree its start created.
+                if proposal.get("worktree").is_some()
+                    && old.get("isolation").and_then(Value::as_str) == Some("worktree")
+                {
+                    return Err("this task has isolation worktree: it stays in the worktree `supervisor task start --worktree` created for it, so a revise cannot name a worktree".into());
                 }
                 // A revise naming the project itself moves the task back: the binding is cleared.
                 match worktree.clone()? {

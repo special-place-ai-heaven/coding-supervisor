@@ -47,6 +47,19 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        let mut f = Self::repository();
+        let event = f.prompt("owner", "first");
+        f.task = f
+            .propose(&event, "start", json!({"contract": contract()}))
+            .unwrap()["task_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        f
+    }
+
+    /// The committed project with no task yet.
+    fn repository() -> Self {
         let project = std::env::temp_dir().join(format!(
             "supervisor-takeover-{}-{}",
             std::process::id(),
@@ -74,19 +87,11 @@ impl Fixture {
                 "fixture",
             ],
         );
-        let mut f = Self {
+        Self {
             root: project.join("state"),
             project,
             task: String::new(),
-        };
-        let event = f.prompt("owner", "first");
-        f.task = f
-            .propose(&event, "start", json!({"contract": contract()}))
-            .unwrap()["task_id"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        f
+        }
     }
 
     fn prompt(&self, session: &str, id: &str) -> Value {
@@ -167,6 +172,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.project);
+        let _ = fs::remove_dir_all(worktree_of(&self.project));
     }
 }
 
@@ -230,6 +236,244 @@ fn an_ended_owners_task_with_uncommitted_work_needs_an_explicit_choice() {
     let archive = f.archive();
     assert_eq!(archive["disposition"], "abandoned", "{archive}");
     assert_eq!(archive["uncommitted_work"], true, "{archive}");
+}
+
+/// The worktree a person's `task start --worktree` creates for the fixture: beside the project.
+fn worktree_of(project: &Path) -> PathBuf {
+    PathBuf::from(format!("{}-wt", project.display()))
+}
+
+/// WP3 review r3: a person's worktree task (binding in task.json) that a prompt made
+/// prompt-managed is judged by its worktree's uncommitted work, not the main checkout's, which
+/// is clean because edits there were refused. Since round 4 an agent's start refuses a person's
+/// task outright; the refusal names the work it found in the worktree.
+#[test]
+fn an_ended_owners_person_worktree_task_refusal_names_its_worktrees_uncommitted_work() {
+    let mut f = Fixture::repository();
+    let worktree = worktree_of(&f.project);
+    f.task = lifecycle::start_in_worktree(
+        &f.root,
+        &supervisor_claude_code::state::Writer::task_start(Some(&f.project)),
+        &contract(),
+        false,
+        None,
+        None,
+        &worktree,
+    )
+    .unwrap()["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let event = f.prompt("owner", "first");
+    f.propose(&event, "continue", json!({"task_id": f.task}))
+        .unwrap();
+    fs::write(worktree.join("unfinished.rs"), "// work in progress\n").unwrap();
+    f.end_session("owner");
+    let event = f.prompt("replacement", "new");
+    let error = f
+        .propose(&event, "start", json!({"contract": contract()}))
+        .unwrap_err();
+    assert!(
+        error.contains("leaving uncommitted changes in its working tree")
+            && error.contains("\"abandon_previous\" is not accepted"),
+        "{error}"
+    );
+    assert_eq!(f.active(), f.task);
+}
+
+/// WP3 review r5: an agent's task bound to a worktree (`"worktree"` in its start) whose session
+/// ended with uncommitted work in that worktree is archived only on the user's choice: the next
+/// start is refused with the offer of `abandon_previous`, and succeeds with it.
+#[test]
+fn an_ended_owners_agent_worktree_task_with_uncommitted_work_needs_a_choice() {
+    let mut f = Fixture::repository();
+    let worktree = worktree_of(&f.project);
+    git(
+        &f.project,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "agent-wt",
+            &worktree.to_string_lossy(),
+        ],
+    );
+    let event = f.prompt("owner", "first");
+    f.task = f
+        .propose(
+            &event,
+            "start",
+            json!({"contract": contract(), "worktree": worktree.to_string_lossy()}),
+        )
+        .unwrap()["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fs::write(worktree.join("unfinished.rs"), "// work in progress\n").unwrap();
+    f.end_session("owner");
+    let event = f.prompt("replacement", "new");
+    let error = f
+        .propose(&event, "start", json!({"contract": contract()}))
+        .unwrap_err();
+    assert!(
+        error.contains("uncommitted changes")
+            && error.contains("repeat this start with \"abandon_previous\":true")
+            && !error.contains("is not accepted"),
+        "{error}"
+    );
+    assert_eq!(f.active(), f.task);
+    let started = f
+        .propose(
+            &event,
+            "start",
+            json!({"contract": contract(), "abandon_previous": true}),
+        )
+        .unwrap();
+    assert_eq!(f.active(), started["task_id"].as_str().unwrap());
+    let archive = f.archive();
+    assert_eq!(archive["disposition"], "abandoned", "{archive}");
+    assert_eq!(archive["uncommitted_work"], true, "{archive}");
+}
+
+/// WP3 review r5: a person's task that a caller-asserted prompt made prompt-managed cannot be
+/// resumed by a hook prompt (the sources differ), so once that session ends neither the start
+/// refusal, the refusal of another session's proposal nor the prompt hook offers a resume; each
+/// names the person's cancel.
+#[test]
+fn a_persons_task_converted_by_a_caller_asserted_prompt_names_only_the_cancel() {
+    let mut f = Fixture::repository();
+    f.task = lifecycle::start_as(
+        &f.root,
+        &supervisor_claude_code::state::Writer::task_start(Some(&f.project)),
+        &contract(),
+        false,
+        None,
+        None,
+    )
+    .unwrap()["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let event = autonomy::record_intent(
+        &f.root,
+        &f.project,
+        &json!({"session_id":"owner","prompt_id":"first","prompt":"Implement a small change"}),
+    )
+    .unwrap();
+    f.propose(&event, "continue", json!({"task_id": f.task}))
+        .unwrap();
+    f.end_session("owner");
+    let event = f.prompt("replacement", "new");
+    let error = f
+        .propose(&event, "start", json!({"contract": contract()}))
+        .unwrap_err();
+    assert!(
+        error.contains("started by a person")
+            && error.contains("supervisor task cancel --project")
+            && !error.contains("resume"),
+        "{error}"
+    );
+    let error = f
+        .propose(&event, "continue", json!({"task_id": f.task}))
+        .unwrap_err();
+    assert!(
+        error.contains("cannot resume it")
+            && error.contains("supervisor task cancel --project")
+            && !error.contains("resume prompt"),
+        "{error}"
+    );
+    let advice = f.advice("replacement", "advice");
+    assert!(
+        advice.contains("started by a person")
+            && advice.contains("supervisor task cancel --project")
+            && !advice.contains("\"action\":\"resume\"")
+            && !advice.contains("resume prompt"),
+        "{advice}"
+    );
+    // The premise: the hook prompt's resume is refused.
+    let resume = autonomy::record_prompt(
+        &f.root,
+        &f.project,
+        &json!({"session_id":"replacement","prompt_id":"resume","prompt":"resume"}),
+    )
+    .unwrap();
+    assert!(
+        f.propose(&resume, "resume", json!({"task_id": f.task}))
+            .is_err()
+    );
+    assert_eq!(f.active(), f.task);
+}
+
+/// WP3 review r4: a person's task stays a person's after a prompt makes it prompt-managed. Once
+/// that session ends, an agent's start does not archive it, clean or not, with or without
+/// `abandon_previous`, and the prompt hook does not offer that start; the user's direct resume
+/// prompt and then a direct cancel prompt still end it.
+#[test]
+fn an_agent_start_does_not_abandon_a_persons_task_after_its_session_ended() {
+    let mut f = Fixture::repository();
+    let worktree = worktree_of(&f.project);
+    f.task = lifecycle::start_in_worktree(
+        &f.root,
+        &supervisor_claude_code::state::Writer::task_start(Some(&f.project)),
+        &contract(),
+        false,
+        None,
+        None,
+        &worktree,
+    )
+    .unwrap()["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let event = f.prompt("owner", "first");
+    f.propose(&event, "continue", json!({"task_id": f.task}))
+        .unwrap();
+    f.end_session("owner");
+    let event = f.prompt("replacement", "new");
+    for extra in [
+        json!({"contract": contract()}),
+        json!({"contract": contract(), "abandon_previous": true}),
+    ] {
+        let error = f.propose(&event, "start", extra).unwrap_err();
+        assert!(
+            error.contains("started by a person")
+                && error.contains("resume")
+                && error.contains("supervisor task cancel"),
+            "{error}"
+        );
+        assert_eq!(f.active(), f.task);
+    }
+    assert!(
+        !f.root
+            .join("archives")
+            .join(format!("{}.json", f.task))
+            .exists()
+    );
+    let advice = f.advice("replacement", "advice");
+    assert!(advice.contains("started by a person"), "{advice}");
+    assert!(!advice.contains("\"action\":\"start\""), "{advice}");
+    let control = |id: &str, prompt: &str| {
+        autonomy::record_prompt(
+            &f.root,
+            &f.project,
+            &json!({"session_id":"replacement","prompt_id":id,"prompt":prompt}),
+        )
+        .unwrap()
+    };
+    f.propose(
+        &control("resume", "resume"),
+        "resume",
+        json!({"task_id": f.task}),
+    )
+    .unwrap();
+    f.propose(
+        &control("cancel", "cancel"),
+        "cancel",
+        json!({"task_id": f.task}),
+    )
+    .unwrap();
+    assert_eq!(f.archive()["disposition"], "cancelled");
 }
 
 /// The protection that must hold: a session that has not reported ending keeps its task,

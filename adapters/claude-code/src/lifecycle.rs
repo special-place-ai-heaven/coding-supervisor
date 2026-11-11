@@ -27,7 +27,7 @@ fn read_json(path: &Path) -> Result<Option<Value>, String> {
     }
 }
 
-fn safe_id(id: &str) -> Result<(), String> {
+pub(crate) fn safe_id(id: &str) -> Result<(), String> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return Err("invalid task ID".to_owned());
     }
@@ -123,6 +123,41 @@ pub fn start_as(
     requested: Option<&str>,
     expected: Option<&str>,
 ) -> Result<Value, String> {
+    start_with(root, writer, contract, next, requested, expected, None)
+}
+
+/// WP3: [`start_as`] for a person's `task start --worktree <path>`: creates a git worktree at the
+/// absolute `worktree` (which must not exist yet) on branch `supervisor/<task id>` at the
+/// contract's base commit, checks it, and binds the task to it with `isolation: worktree`.
+pub fn start_in_worktree(
+    root: &Path,
+    writer: &state::Writer,
+    contract: &Value,
+    next: bool,
+    requested: Option<&str>,
+    expected: Option<&str>,
+    worktree: &Path,
+) -> Result<Value, String> {
+    start_with(
+        root,
+        writer,
+        contract,
+        next,
+        requested,
+        expected,
+        Some(worktree),
+    )
+}
+
+fn start_with(
+    root: &Path,
+    writer: &state::Writer,
+    contract: &Value,
+    next: bool,
+    requested: Option<&str>,
+    expected: Option<&str>,
+    worktree: Option<&Path>,
+) -> Result<Value, String> {
     // A person's contract may start a task after prompts were registered (K13); the guard keeps
     // agents from running this command, so they still go through a floor-checked proposal.
     let tx = Transaction::open(root)?;
@@ -134,7 +169,30 @@ pub fn start_as(
             active.task_id
         ));
     }
-    let (response, writes) = plan_start(root, writer, contract, next, requested, expected)?;
+    let (response, writes) =
+        plan_start(root, writer, contract, next, requested, expected, worktree)?;
+    // The worktree is created under the state lock, so no other start can bind the same path; a
+    // replayed start wrote nothing and creates nothing.
+    if let (Some(path), Some(project), Some(branch), Some(base)) = (
+        worktree,
+        writer.project(),
+        response["branch"].as_str(),
+        response["base_sha"].as_str(),
+    ) {
+        let stored = response["worktree"].as_str().unwrap_or_default();
+        crate::worktree::create(project, path, stored, branch, base)?;
+        return match tx.commit(writes) {
+            Ok(()) => Ok(response),
+            // A journal on disk finishes the start at the next lock, so its worktree must stay.
+            Err(why) if !matches!(tx.root().join("transaction.json").try_exists(), Ok(false)) => {
+                Err(format!(
+                    "{why}; the start is recorded but not finished: the next supervisor command (for example `supervisor status`) finishes it, or reports why it cannot, so the new worktree {} on branch {branch} is kept for it",
+                    path.display()
+                ))
+            }
+            Err(why) => Err(crate::worktree::rollback(project, path, branch, &why)),
+        };
+    }
     tx.commit(writes)?;
     Ok(response)
 }
@@ -147,6 +205,7 @@ pub(crate) fn plan_start(
     next: bool,
     requested: Option<&str>,
     expected: Option<&str>,
+    worktree: Option<&Path>,
 ) -> Result<(Value, Vec<(PathBuf, String)>), String> {
     // The caller's own contract is checked first, so a newer schema is refused rather than
     // stamped over. What is saved is checked too: a v1-shaped request is stored as v2, so its
@@ -156,7 +215,7 @@ pub(crate) fn plan_start(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let stored = state::stamp_v2(contract, writer, now);
+    let mut stored = state::stamp_v2(contract, writer, now);
     let parsed = state::contract_from(&stored)?;
     legacy_pending(root)?;
     let previous = active_task(root)?;
@@ -166,7 +225,7 @@ pub(crate) fn plan_start(
     if !next && let Some(event_id) = contract.get("event_id").and_then(Value::as_str) {
         let digest = crate::sha256::hex(contract.to_string().as_bytes());
         let tasks = root.join("tasks");
-        let mut replay: Option<(ActiveTask, String)> = None;
+        let mut replay: Option<(ActiveTask, String, Option<String>)> = None;
         match fs::read_dir(&tasks) {
             Ok(entries) => {
                 for entry in entries {
@@ -195,17 +254,29 @@ pub(crate) fn plan_start(
                         .and_then(Value::as_str)
                         .ok_or("task metadata has no contract ID")?
                         .to_owned();
-                    replay = Some((ActiveTask { task_id, dir }, contract_id));
+                    let earlier = metadata["worktree"].as_str().map(str::to_owned);
+                    replay = Some((ActiveTask { task_id, dir }, contract_id, earlier));
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.to_string()),
         }
-        if let Some((previous, contract_id)) = replay {
-            return Ok((
-                json!({"schema":2,"task_id":previous.task_id,"contract_id":contract_id,"state":state_of(&previous.dir)?,"replayed":true}),
-                Vec::new(),
-            ));
+        if let Some((previous, contract_id, earlier)) = replay {
+            // WP3: a replay must not drop a requested worktree silently.
+            if let Some(path) = worktree
+                && earlier.as_deref() != Some(crate::location::normalize(path).as_str())
+            {
+                return Err(format!(
+                    "task-start event ID reused with a different worktree setting: the earlier start had {}; nothing was created",
+                    earlier.map_or("no worktree".to_owned(), |w| format!("the worktree {w}"))
+                ));
+            }
+            let mut response = json!({"schema":2,"task_id":previous.task_id,"contract_id":contract_id,"state":state_of(&previous.dir)?,"replayed":true});
+            // A replay without `--worktree` still names the earlier start's worktree.
+            if let Some(earlier) = earlier {
+                response["worktree"] = earlier.into();
+            }
+            return Ok((response, Vec::new()));
         }
     }
     if previous.is_some() && !next {
@@ -220,6 +291,24 @@ pub(crate) fn plan_start(
         return Err("task next requires the current --task ID".to_owned());
     }
     let id = unique_id();
+    // WP3: the only way a task gets `isolation: worktree`; the worktree itself is created by
+    // `start_with` once these checks pass.
+    let bound = match worktree {
+        None => None,
+        Some(path) => {
+            let project = writer
+                .project()
+                .ok_or("--worktree needs the project the task starts in")?;
+            let base = stored["base_sha"]
+                .as_str()
+                .ok_or("--worktree needs a commit to start from: the repository has no HEAD")?
+                .to_owned();
+            let path = crate::worktree::check_request(project, path)?;
+            stored["isolation"] = "worktree".into();
+            state::contract_from(&stored)?;
+            Some((path, base))
+        }
+    };
     let mut writes = Vec::new();
     let mut recovery_of = Value::Null;
     if let Some(previous) = &previous {
@@ -239,12 +328,25 @@ pub(crate) fn plan_start(
     if let Some(baseline) = writer.project().and_then(crate::candidate::baseline) {
         writes.push((prefix.join(crate::candidate::BASELINE), baseline));
     }
-    writes.push((prefix.join("task.json"), format!("{}\n", json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"recovery_of":recovery_of,"start_event_id":contract.get("event_id"),"start_request_digest":crate::sha256::hex(contract.to_string().as_bytes())}))));
+    let mut metadata = json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"recovery_of":recovery_of,"start_event_id":contract.get("event_id"),"start_request_digest":crate::sha256::hex(contract.to_string().as_bytes())});
+    // WP3: the binding `binding::bound_root` reads after autonomy.json, and the checkout whose
+    // edits are refused while it holds (never read back from the worktree's own `.git`).
+    if let (Some((path, _)), Some(project)) = (&bound, writer.project()) {
+        metadata["worktree"] = path.as_str().into();
+        metadata["base_checkout"] = crate::location::canonical_project(project).into();
+    }
+    writes.push((prefix.join("task.json"), format!("{metadata}\n")));
     writes.push((
         PathBuf::from("active.json"),
         format!("{}\n", json!({"schema":2,"task_id":id})),
     ));
     let mut response = json!({"schema":2,"task_id":id,"contract_id":parsed.id.0,"state":"queued","recovery_of":recovery_of});
+    if let Some((path, base)) = &bound {
+        response["worktree"] = path.as_str().into();
+        response["branch"] = crate::worktree::branch(&id).into();
+        response["base_sha"] = base.as_str().into();
+        response["note"] = "work and run the checks in the worktree: edits in the main checkout are refused while this task is bound to it; a check counts when it runs with the worktree as its directory (a Terminal Commander run with cwd set to it, or a shell whose session works in it); start from an up-to-date main, since CI compares the receipt with the merge base".into();
+    }
     let mut warnings = Vec::new();
     if !parsed.forbidden_effects.is_empty() {
         // F13b: only typed entries in strict mode become refusals (M5); a reviewer checks the rest.
@@ -259,8 +361,13 @@ pub(crate) fn plan_start(
         })
         .collect();
     if !replaced.is_empty() {
+        let isolation = if bound.is_some() {
+            "isolation worktree (set by --worktree)"
+        } else {
+            "isolation none (only `supervisor task start --worktree` sets isolation worktree)"
+        };
         warnings.push(format!(
-            "{} replaced by the writer's own record: the gate stores who started the task, the repository head and isolation none (until WP3)",
+            "{} replaced by the writer's own record: the gate stores who started the task, the repository head and {isolation}",
             replaced.join(", ")
         ));
     }
@@ -470,10 +577,17 @@ pub fn with_task(
         if let Some(session) = session {
             let bindings = sessions.as_object_mut().ok_or("invalid session bindings")?;
             match bindings.get(session).and_then(Value::as_str) {
-                Some(bound) if bound != active.task_id => return Err(
-                    "session belongs to an earlier task; explicitly task rebind before continuing"
-                        .to_owned(),
-                ),
+                Some(bound) if bound != active.task_id => {
+                    let project = read_json(&root.join("project.json"))
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v["canonical_worktree"].as_str().map(str::to_owned))
+                        .unwrap_or_else(|| "<project>".to_owned());
+                    return Err(format!(
+                        "session belongs to an earlier task; a person runs `supervisor task rebind --project \"{project}\" --task {} --session {session}` from their own terminal before this session continues",
+                        active.task_id
+                    ));
+                }
                 Some(_) => {}
                 None => {
                     bindings.insert(session.to_owned(), active.task_id.clone().into());
