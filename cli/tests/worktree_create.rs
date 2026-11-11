@@ -280,6 +280,12 @@ fn a_replayed_start_with_another_worktree_setting_is_refused() {
     assert!(again.status.success(), "{again:?}");
     let v: Value = serde_json::from_slice(&again.stdout).unwrap();
     assert_eq!(v["replayed"], true, "{v}");
+    // WP3 review r4: a replay without `--worktree` names the earlier start's worktree.
+    let plain = start_file(&g, &file, None);
+    assert!(plain.status.success(), "{plain:?}");
+    let v: Value = serde_json::from_slice(&plain.stdout).unwrap();
+    assert_eq!(v["replayed"], true, "{v}");
+    assert_eq!(v["worktree"], normalized(&wt(&g)).as_str(), "{v}");
     let other = start_file(&g, &file, Some(&g.root.join("wt2")));
     assert!(!other.status.success(), "{other:?}");
     let stderr = String::from_utf8_lossy(&other.stderr);

@@ -271,10 +271,12 @@ pub(crate) fn plan_start(
                     earlier.map_or("no worktree".to_owned(), |w| format!("the worktree {w}"))
                 ));
             }
-            return Ok((
-                json!({"schema":2,"task_id":previous.task_id,"contract_id":contract_id,"state":state_of(&previous.dir)?,"replayed":true}),
-                Vec::new(),
-            ));
+            let mut response = json!({"schema":2,"task_id":previous.task_id,"contract_id":contract_id,"state":state_of(&previous.dir)?,"replayed":true});
+            // A replay without `--worktree` still names the earlier start's worktree.
+            if let Some(earlier) = earlier {
+                response["worktree"] = earlier.into();
+            }
+            return Ok((response, Vec::new()));
         }
     }
     if previous.is_some() && !next {
