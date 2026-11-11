@@ -141,10 +141,11 @@ pub(crate) fn rollback(project: &Path, path: &Path, branch: &str, why: &str) -> 
 
 /// `supervisor task cleanup --task <id>`: remove the worktree task `task_id` was created with,
 /// keeping its branch. Refused while the task is active, when the worktree is no longer the
-/// task's, while it holds uncommitted or untracked work, and when it holds commits past the base
-/// without a receipt (`supervisor-receipts/<id>.json` naming the task in its last commit). Links
-/// and junctions git does not track are unlinked first, so `git worktree remove` never deletes
-/// through them; their targets must still exist afterwards.
+/// task's, while it holds uncommitted or untracked work, when it holds commits past the base
+/// without a receipt (`supervisor-receipts/<id>.json` naming the task in its last commit), and
+/// while it holds ignored files, which `git worktree remove` would delete. Links and junctions
+/// git does not track are unlinked first, so `git worktree remove` never deletes through them;
+/// their targets must still exist afterwards.
 pub fn cleanup(root: &Path, project: &Path, task_id: &str) -> Result<Value, String> {
     crate::lifecycle::safe_id(task_id)?;
     let (path, base) = {
@@ -218,7 +219,19 @@ pub fn cleanup(root: &Path, project: &Path, task_id: &str) -> Result<Value, Stri
         .filter(|p| !p.is_empty())
         .map(str::to_owned)
         .collect();
-    let unlinked = unlink_links(&worktree, &tracked)?;
+    let (links, ignored) = untracked_entries(&worktree, &tracked)?;
+    if !ignored.is_empty() {
+        let shown = ignored.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+        let more = if ignored.len() > 3 { ", ..." } else { "" };
+        return Err(format!(
+            "{path} holds {} ignored files that removing the worktree would delete ({shown}{more}); delete them or move them out of the worktree, then run cleanup again; nothing was touched",
+            ignored.len()
+        ));
+    }
+    for (link, kind) in &links {
+        unlink(link, *kind)?;
+    }
+    let unlinked = links.len();
     let target = worktree.to_string_lossy();
     git(project, &["worktree", "remove", &target]).map_err(|why| {
         format!(
@@ -238,12 +251,16 @@ fn receipt_in_head(worktree: &Path, task_id: &str) -> bool {
         .is_some_and(|bundle| bundle["task_id"] == task_id)
 }
 
-/// Unlink every link and junction under `worktree` that git does not track, without entering
-/// any; each target that existed must still exist afterwards. The number unlinked. Only the
-/// worktree's own `.git` file is skipped: a `.git` deeper down, link or folder, is looked at
-/// like any other entry.
-fn unlink_links(worktree: &Path, tracked: &HashSet<String>) -> Result<usize, String> {
-    let mut unlinked = 0;
+/// Every link and junction under `worktree` that git does not track, found without entering any,
+/// and every other file git does not track: with a clean status those are ignored files, which
+/// `git worktree remove` would delete (relative paths). Only the worktree's own `.git` file is
+/// skipped: a `.git` deeper down, link or folder, is looked at like any other entry. A tracked
+/// folder entry (a submodule) is not entered.
+fn untracked_entries(
+    worktree: &Path,
+    tracked: &HashSet<String>,
+) -> Result<(Vec<(PathBuf, fs::FileType)>, Vec<String>), String> {
+    let (mut links, mut ignored) = (Vec::new(), Vec::new());
     let own_git = worktree.join(".git");
     let mut dirs = vec![worktree.to_path_buf()];
     while let Some(dir) = dirs.pop() {
@@ -256,25 +273,24 @@ fn unlink_links(worktree: &Path, tracked: &HashSet<String>) -> Result<usize, Str
             let kind = fs::symlink_metadata(&path)
                 .map_err(|e| format!("{}: {e}", path.display()))?
                 .file_type();
-            if !kind.is_symlink() {
-                if kind.is_dir() {
-                    dirs.push(path);
-                }
-                continue;
-            }
             let relative = path
                 .strip_prefix(worktree)
                 .map(|r| r.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_default();
-            // A tracked link is git's: removing it would make the tree dirty.
+            // A tracked entry is git's: removing a tracked link would make the tree dirty.
             if tracked.contains(&relative) {
                 continue;
             }
-            unlink(&path, kind)?;
-            unlinked += 1;
+            if kind.is_symlink() {
+                links.push((path, kind));
+            } else if kind.is_dir() {
+                dirs.push(path);
+            } else {
+                ignored.push(relative);
+            }
         }
     }
-    Ok(unlinked)
+    Ok((links, ignored))
 }
 
 fn unlink(link: &Path, kind: fs::FileType) -> Result<(), String> {

@@ -22,7 +22,7 @@ const USAGE: &str = "usage: supervisor mcp [--project <dir>]  (serve the gate as
        supervisor hook  (one Claude Code hook payload on stdin, at most one decision on stdout)
        supervisor init [--project <dir>] [--output <file>]  (write an inactive editable draft contract)
        supervisor task <start|next> --contract <file> [--project <dir>] [--task <active-id>] [--disposition <cancelled|failed|blocked|budget_exhausted>] [--worktree <path>]  (--worktree: create a git worktree at <path>, which must not exist, on branch supervisor/<task id> at the repository head, and bind the task to it with isolation worktree: edits in the main checkout are then refused)
-       supervisor task cleanup --task <id> [--project <dir>]  (a person's command: remove the worktree a finished task was created with, keeping its branch; never forced, refused while it holds uncommitted work or commits without a receipt; links and junctions inside are unlinked first)
+       supervisor task cleanup --task <id> [--project <dir>]  (a person's command: remove the worktree a finished task was created with, keeping its branch; never forced, refused while it holds uncommitted work, ignored files or commits without a receipt; links and junctions inside are unlinked first)
        supervisor task <resume|deactivate> --task <active-id> [--project <dir>] [--disposition <outcome>]
        supervisor task rebind --task <active-id> --session <session-id> [--project <dir>]
        supervisor task migrate --legacy <directory> [--project <dir>]

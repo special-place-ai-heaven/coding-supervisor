@@ -773,6 +773,33 @@ fn cleanup_refuses_uncommitted_or_untracked_work() {
     assert!(listed(&f));
 }
 
+/// WP3 review r3: `git worktree remove` deletes ignored files, so cleanup refuses while any are
+/// there (a file or a folder holding one), names them and touches nothing.
+#[test]
+fn cleanup_refuses_ignored_files_and_names_them() {
+    let f = Fixture::new("wt-clean-ignored");
+    fs::write(f.project.join(".gitignore"), ".env\nbuild\n").unwrap();
+    f.commit("ignore .env and build");
+    let task = start(&f)["task_id"].as_str().unwrap().to_owned();
+    deactivate(&f, &task);
+    fs::write(wt(&f).join(".env"), "local\n").unwrap();
+    fs::create_dir_all(wt(&f).join("build")).unwrap();
+    fs::write(wt(&f).join("build").join("out.bin"), "built\n").unwrap();
+    let out = cleanup(&f, &task);
+    assert!(!out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("ignored")
+            && stderr.contains(".env")
+            && stderr.contains("build/out.bin")
+            && stderr.contains("nothing was touched"),
+        "{stderr}"
+    );
+    assert_eq!(fs::read_to_string(wt(&f).join(".env")).unwrap(), "local\n");
+    assert!(wt(&f).join("build").join("out.bin").is_file());
+    assert!(listed(&f));
+}
+
 #[test]
 fn cleanup_refuses_committed_work_without_a_receipt() {
     let f = Fixture::new("wt-clean-unreceipted");
