@@ -344,6 +344,104 @@ fn a_task_completed_through_mcp_still_refuses_hook_work_past_its_limit() {
     assert_eq!(common::state(&common::task_state(&s)), "completed");
 }
 
+/// One judged PreToolUse hook call for the active task: one turn.
+fn spend_a_turn(d: &common::Dir, s: &supervisor_mcp::Server, id: &str) {
+    use supervisor_claude_code::adapter::{Decision, Env, handle};
+    let mut env = Env {
+        state_dir: s.state_dir().to_path_buf(),
+        state_location: "test",
+        candidate: Box::new(Fake),
+        clock: supervisor_claude_code::adapter::now,
+        level: supervisor_claude_code::level::Setting {
+            level: supervisor_claude_code::level::Level::Enforce,
+            ..Default::default()
+        },
+    };
+    let bash = json!({"hook_event_name":"PreToolUse","cwd":d.0.join("project"),
+        "session_id":"session","agent_id":"main","tool_use_id":id,"tool_name":"Bash",
+        "tool_input":{"command":"echo x > out.txt"}});
+    assert_eq!(handle(&bash, &mut env), Decision::None);
+}
+
+fn task_dir(s: &supervisor_mcp::Server) -> std::path::PathBuf {
+    supervisor_claude_code::lifecycle::active_task(s.state_dir())
+        .unwrap()
+        .unwrap()
+        .dir
+}
+
+/// A task at its turn limit is not accepted or completed through MCP on caller-asserted
+/// receipts; the refusal changes no state, is journaled and is not a turn.
+#[test]
+fn accept_try_and_task_complete_refuse_at_a_reached_limit() {
+    let d = dir("limits-accept");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["limits"] = json!({"turns":1});
+    common::ok(&s, "task_start", contract);
+    spend_a_turn(&d, &s, "b1");
+    common::observe(&s, "one", &["src/lib.rs"]);
+    for criterion in ["C1", "C2", "C3", "C4"] {
+        common::pass(&s, criterion);
+    }
+    let before = common::state(&common::task_state(&s)).to_owned();
+    let tasks = task_dir(&s);
+    let gate = std::fs::read(tasks.join("gate.json")).unwrap();
+    for tool in ["accept_try", "task_complete"] {
+        let why = common::refused(&s, tool, json!({}));
+        assert!(
+            why.contains("task limit reached: 1 of 1 turns used"),
+            "{why}"
+        );
+        assert!(why.contains("supervisor task next"), "{why}");
+    }
+    assert_eq!(std::fs::read(tasks.join("gate.json")).unwrap(), gate);
+    assert_eq!(common::state(&common::task_state(&s)), before);
+    let journal = std::fs::read_to_string(tasks.join("events.jsonl")).unwrap();
+    assert!(
+        journal.lines().any(|line| {
+            let line: Value = serde_json::from_str(line).unwrap();
+            line["event"] == "mcp:accept_try"
+                && line["reasons"].to_string().contains("task limit reached")
+        }),
+        "{journal}"
+    );
+    assert_eq!(
+        supervisor_claude_code::limits::turns_used(&tasks).unwrap(),
+        1
+    );
+}
+
+/// An accept made before the limit does not let task_complete through once it is reached.
+#[test]
+fn task_complete_refuses_at_a_reached_limit_after_an_earlier_accept() {
+    let d = dir("limits-complete");
+    let s = server(&d);
+    let mut contract = common::four();
+    contract["limits"] = json!({"turns":1});
+    common::ok(&s, "task_start", contract);
+    common::observe(&s, "one", &["src/lib.rs"]);
+    for criterion in ["C1", "C2", "C3", "C4"] {
+        common::pass(&s, criterion);
+    }
+    let accepted = common::state(&common::ok(&s, "accept_try", json!({}))).to_owned();
+    // One judged hook turn, written as the hook writes it, leaving gate.json alone.
+    let tasks = task_dir(&s);
+    let mut journal = std::fs::OpenOptions::new()
+        .append(true)
+        .open(tasks.join("events.jsonl"))
+        .unwrap();
+    std::io::Write::write_all(&mut journal, b"{\"event\":\"PreToolUse\"}\n").unwrap();
+    let gate = std::fs::read(tasks.join("gate.json")).unwrap();
+    let why = common::refused(&s, "task_complete", json!({}));
+    assert!(
+        why.contains("task limit reached: 1 of 1 turns used"),
+        "{why}"
+    );
+    assert_eq!(std::fs::read(tasks.join("gate.json")).unwrap(), gate);
+    assert_eq!(common::state(&common::task_state(&s)), accepted);
+}
+
 /// WP4 review round 3: a wall-clock-only contract shows no turn count.
 #[test]
 fn task_state_shows_no_turn_count_for_a_wall_clock_only_limit() {

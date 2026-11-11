@@ -450,7 +450,21 @@ impl Server {
                 return Err(refusal);
             }
         }
-        // WP4: shown by task_state only; this advisory server never moves a task at a limit.
+        // WP4: caller-asserted receipts never accept or complete a task at a reached limit; the
+        // refusal comes before the gate is saved, so it changes no state (never budget_exhausted).
+        if matches!(op, Op::Accept | Op::Complete)
+            && let Some(reached) = supervisor_claude_code::limits::usage(dir, &contract, now())?
+                .and_then(|usage| usage.reached)
+        {
+            let text = supervisor_claude_code::limits::reached_text(&reached);
+            reasons.push(format!("task limit reached: {text}; refused through MCP"));
+            let task_id = lifecycle::task_identity(dir, &contract.id.0)?;
+            return Err(format!(
+                "task limit reached: {text}; MCP receipts are caller-asserted, so a task at its limit completes only through the chair's Stop hook on observed evidence; for new work, {}",
+                supervisor_claude_code::limits::way_out(dir, &task_id)?
+            ));
+        }
+        // WP4: task_state shows the limits and their use.
         let limits = match op {
             Op::State => supervisor_claude_code::limits::usage_json(dir, &contract, now()),
             _ => None,
