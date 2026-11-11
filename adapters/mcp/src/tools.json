@@ -26,7 +26,7 @@
         "contract": {"type": "object", "description": "Required for start and revise (or contract_file); uses the standard task contract shape."},
         "contract_file": {"type": "string", "description": "Instead of contract: a JSON contract file, relative to the project, read and validated as if sent inline."},
         "worktree": {"type": "string", "description": "Optional, for start or revise: a linked git worktree of this repository (it may not exist yet) to bind the task to; edits, checks and the candidate are then taken from there."},
-        "abandon_previous": {"type": "boolean", "description": "Optional, for start: true only after the user chose to abandon an ended session's unfinished task whose working tree has uncommitted changes; the task is archived as abandoned and the files stay."}
+        "abandon_previous": {"type": "boolean", "description": "Optional, for start: true only after the user chose to abandon an ended session's unfinished task whose working tree has uncommitted changes; the task is archived as abandoned and the files stay. Not accepted for a task a person started."}
       },
       "required": ["event_id", "nonce", "prompt_hash", "action"]
     }
