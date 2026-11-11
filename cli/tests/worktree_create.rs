@@ -383,6 +383,61 @@ fn a_person_task_is_judged_on_its_worktree_from_the_main_checkout() {
     );
 }
 
+/// A session working in the worktree itself: its hook calls are redirected to the main
+/// checkout's task, and a Bash check there counts.
+#[test]
+fn a_bash_check_in_the_worktree_counts() {
+    let f = Fixture::new("wt-bash-wt");
+    let task = start(&f)["task_id"].as_str().unwrap().to_owned();
+    let wt = wt(&f);
+    let file = wt.join("src").join("lib.rs");
+    assert!(!denied(&write_at(&f, &wt, &file, "edit-1")));
+    fs::write(&file, "// two\n").unwrap();
+    let mut payload = json!({"hook_event_name":"PreToolUse","tool_use_id":"bash-1",
+        "agent_id":"main","tool_name":"Bash","tool_input":{"command":"cargo test -p fixture"}});
+    assert!(!denied(&hook_at(&f, &wt, payload.clone())));
+    payload["hook_event_name"] = "PostToolUse".into();
+    payload["tool_response"] = json!({"stdout":"ok","stderr":"","interrupted":false});
+    hook_at(&f, &wt, payload);
+    let stop = stop_at(&f, &wt);
+    assert_ne!(stop["decision"], "block", "{stop}");
+    assert!(completed(&f, &task));
+}
+
+#[test]
+fn task_next_creates_a_new_worktree_and_archives_the_previous_task() {
+    let f = Fixture::new("wt-next");
+    let first = start(&f)["task_id"].as_str().unwrap().to_owned();
+    let second_path = f.root.join("wt2");
+    let file = contract_file(&f, json!({}));
+    let out = f.run(&[
+        "task",
+        "next",
+        "--task",
+        &first,
+        "--disposition",
+        "cancelled",
+        "--contract",
+        file.to_str().unwrap(),
+        "--worktree",
+        second_path.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let second = v["task_id"].as_str().unwrap();
+    assert_eq!(v["recovery_of"], first.as_str(), "{v}");
+    assert_eq!(
+        f.git_in(&second_path, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        format!("supervisor/{second}")
+    );
+    assert_eq!(
+        task_file(&f, second, "task.json")["worktree"],
+        normalized(&second_path).as_str()
+    );
+    // The first task's worktree stays until its own cleanup.
+    assert!(wt(&f).exists());
+}
+
 #[test]
 fn a_bash_check_from_the_main_checkout_does_not_count_for_a_worktree_task() {
     let f = Fixture::new("wt-bash-main");
@@ -560,7 +615,8 @@ fn cleanup_removes_an_untouched_worktree_and_keeps_the_branch() {
 #[test]
 fn cleanup_unlinks_a_junction_and_keeps_its_target() {
     let f = Fixture::new("wt-clean-link");
-    fs::write(f.project.join(".gitignore"), "node_modules/\n").unwrap();
+    // No trailing slash: on unix the link is a symlink, which git sees as a file.
+    fs::write(f.project.join(".gitignore"), "node_modules\n").unwrap();
     f.commit("ignore node_modules");
     let shared = f.root.join("shared");
     fs::create_dir_all(&shared).unwrap();
