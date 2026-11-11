@@ -89,7 +89,7 @@ fn unsigned(reason: &str) -> Value {
 }
 
 /// The key store and its key, created at the first sign.
-fn load_key(
+pub(crate) fn load_key(
     env: &dyn Fn(&str) -> Option<String>,
     project: &Path,
 ) -> Result<(KeyStore, SigningKey), String> {
@@ -183,38 +183,10 @@ fn verify(current: Result<(PathBuf, Statement), &'static str>, keys: &Path) -> V
         return invalid("the signature file names no key id");
     };
     let key_id = key_id.as_str();
-    let listed = match fs::read_to_string(keys) {
-        Ok(text) => serde_json::from_str::<Value>(&text),
-        Err(e) if e.kind() == ErrorKind::NotFound => return invalid("the keys file is absent"),
-        Err(_) => return invalid("the keys file could not be read"),
+    let public = match listed_key(keys, key_id) {
+        Ok(public) => public,
+        Err(reason) => return invalid(reason),
     };
-    let Ok(listed) = listed else {
-        return invalid("the keys file does not parse");
-    };
-    let Some(entries) = listed["keys"].as_array() else {
-        return invalid("the keys file has no keys list");
-    };
-    let listed: Vec<&Value> = entries
-        .iter()
-        .filter(|e| e["key_id"].as_str().map(str::to_ascii_lowercase).as_deref() == Some(key_id))
-        .collect();
-    let Some(entry) = listed.first() else {
-        return invalid("the signing key is not listed in the keys file");
-    };
-    // Any entry revoking the id counts, so listing the key again cannot undo a revocation.
-    if listed.iter().any(|e| !e["revoked_at"].is_null()) {
-        return invalid("the signing key is revoked");
-    }
-    let public = entry["public_key"]
-        .as_str()
-        .and_then(signing::unhex::<32>)
-        .and_then(|bytes| VerifyingKey::from_bytes(&bytes).ok());
-    let Some(public) = public else {
-        return invalid("the listed public key is not a valid 64-hex Ed25519 key");
-    };
-    if signing::key_id(&public) != key_id {
-        return invalid("the listed key id does not match its public key");
-    }
     // Checked over the statement recomputed from the stored state, never the sidecar's copy.
     let checked = statement.bytes().and_then(|bytes| {
         signing::verify(
@@ -227,6 +199,41 @@ fn verify(current: Result<(PathBuf, Statement), &'static str>, keys: &Path) -> V
         Ok(()) => json!({"signature":"valid","key_id":key_id,"task_id":statement.task}),
         Err(reason) => invalid(&reason),
     }
+}
+
+/// The public key the keys file lists for `key_id` (lowercase hex), or why it cannot be used:
+/// absent or unparsable file, not listed, revoked by any entry, malformed, or an id that does not
+/// match its key.
+pub(crate) fn listed_key(keys: &Path, key_id: &str) -> Result<VerifyingKey, &'static str> {
+    let listed = match fs::read_to_string(keys) {
+        Ok(text) => serde_json::from_str::<Value>(&text),
+        Err(e) if e.kind() == ErrorKind::NotFound => return Err("the keys file is absent"),
+        Err(_) => return Err("the keys file could not be read"),
+    };
+    let listed = listed.map_err(|_| "the keys file does not parse")?;
+    let entries = listed["keys"]
+        .as_array()
+        .ok_or("the keys file has no keys list")?;
+    let listed: Vec<&Value> = entries
+        .iter()
+        .filter(|e| e["key_id"].as_str().map(str::to_ascii_lowercase).as_deref() == Some(key_id))
+        .collect();
+    let entry = listed
+        .first()
+        .ok_or("the signing key is not listed in the keys file")?;
+    // Any entry revoking the id counts, so listing the key again cannot undo a revocation.
+    if listed.iter().any(|e| !e["revoked_at"].is_null()) {
+        return Err("the signing key is revoked");
+    }
+    let public = entry["public_key"]
+        .as_str()
+        .and_then(signing::unhex::<32>)
+        .and_then(|bytes| VerifyingKey::from_bytes(&bytes).ok())
+        .ok_or("the listed public key is not a valid 64-hex Ed25519 key")?;
+    if signing::key_id(&public) != key_id {
+        return Err("the listed key id does not match its public key");
+    }
+    Ok(public)
 }
 
 /// For `supervisor status`: compares the sidecar with the stored state; never reads a key

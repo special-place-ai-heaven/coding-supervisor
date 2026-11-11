@@ -128,12 +128,7 @@ pub fn only_docs_changed_since(cwd: &Path, state_dir: &Path, base: &str) -> bool
     if base.len() < 7 || !base.bytes().all(|b| b.is_ascii_hexdigit()) {
         return false;
     }
-    let docs = ci_docs_only(|file| {
-        run(cwd, &["show", &format!("{base}:{file}")])
-            .ok()
-            .filter(|out| out.status.success())
-            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
-    });
+    let docs = docs_list_at(cwd, base);
     // An index entry marked skip-worktree or assume-unchanged hides an edit from `git add`, so
     // the worktree's tree would not show it: every entry must be a plain cached one (`H`).
     let plain_index = run(cwd, &["ls-files", "-v"])
@@ -148,6 +143,83 @@ pub fn only_docs_changed_since(cwd: &Path, state_dir: &Path, base: &str) -> bool
         && plain_index
         && tree(cwd, state_dir, Some(base), &docs)
             .is_some_and(|was| tree(cwd, state_dir, None, &docs) == Some(was))
+}
+
+/// The documentation list as commit `base` holds it (see [`ci_docs_only`]).
+pub fn docs_list_at(cwd: &Path, base: &str) -> Vec<String> {
+    ci_docs_only(|file| {
+        run(cwd, &["show", &format!("{base}:{file}")])
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+    })
+}
+
+/// WP7: the tree a receipt bundle names: of `commit`, or of the worktree with `None`, without
+/// the `docs` globs and without `supervisor-receipts/`, built in a scratch index under
+/// `scratch_dir`. Export and `receipt verify --bundle` both use it, with the documentation list
+/// of the same base commit.
+pub fn bundle_tree(
+    cwd: &Path,
+    scratch_dir: &Path,
+    commit: Option<&str>,
+    docs: &[String],
+) -> Option<String> {
+    tree(cwd, scratch_dir, commit, docs)
+}
+
+/// WP7: the paths that differ between two trees, sorted, renames listed as both paths.
+pub fn changed_between(cwd: &Path, from: &str, to: &str) -> Option<Vec<String>> {
+    let out = run(
+        cwd,
+        &[
+            "diff-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            "--no-renames",
+            from,
+            to,
+        ],
+    )
+    .ok()
+    .filter(|out| out.status.success())?;
+    let mut paths: Vec<String> = out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Some(paths)
+}
+
+/// WP7: the repository's identity, its root commits sorted (a merged history can have more than
+/// one). `Err` names why there is none; a shallow clone is refused, since its oldest commit is
+/// not the root.
+pub fn root_commits(cwd: &Path) -> Result<Vec<String>, &'static str> {
+    let ok = |args: &[&str]| {
+        run(cwd, args)
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    match ok(&["rev-parse", "--is-shallow-repository"])
+        .as_deref()
+        .map(str::trim)
+    {
+        Some("false") => {}
+        Some(_) => return Err("the repository is a shallow clone; fetch its full history"),
+        None => return Err("git could not read the repository"),
+    }
+    let text = ok(&["rev-list", "--max-parents=0", "HEAD"]).ok_or("git could not read HEAD")?;
+    let mut roots: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+    roots.sort();
+    if roots.is_empty() {
+        return Err("the repository has no commit");
+    }
+    Ok(roots)
 }
 
 /// The tree of `commit`, or of the worktree, without the `docs` globs.
@@ -206,7 +278,9 @@ fn tree(cwd: &Path, state_dir: &Path, commit: Option<&str>, docs: &[String]) -> 
     let mut includes: Vec<String> = docs.iter().map(|p| format!(":(top,glob){p}")).collect();
     let receipts_here = match commit {
         Some(_) => true,
-        None => crate::location::worktree_root(cwd).is_some_and(|top| top.join(RECEIPTS_DIR).is_dir()),
+        None => {
+            crate::location::worktree_root(cwd).is_some_and(|top| top.join(RECEIPTS_DIR).is_dir())
+        }
     };
     if receipts_here {
         includes.push(format!(":(top){RECEIPTS_DIR}/"));
