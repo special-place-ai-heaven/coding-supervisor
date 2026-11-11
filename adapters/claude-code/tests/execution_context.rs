@@ -520,6 +520,26 @@ fn a_stop_with_no_check_run_names_every_check() {
     assert!(!why.contains("C1 has no observed run"), "{why}");
 }
 
+/// G50, the review's scenario: two checks pass, three were never run; the first refusal names
+/// the three and not the two that passed.
+#[test]
+fn a_stop_names_the_checks_never_run_and_not_those_that_passed() {
+    let (_fixture, mut env) = setup_with(checks());
+    let fmt = start(&env, "fmt", json!(["cargo", "fmt"]));
+    finish(&mut env, fmt, "exited", Some(0));
+    let lint = start(&env, "lint", json!(["cargo", "clippy"]));
+    finish(&mut env, lint, "exited", Some(0));
+    let refusal = stop(&mut env);
+    let Decision::Block(why) = &refusal else {
+        panic!("{refusal:?}");
+    };
+    assert!(why.contains("missing C3"), "{why}");
+    assert!(why.contains("C4 has no observed run"), "{why}");
+    assert!(why.contains("C5 has no observed run"), "{why}");
+    assert!(!why.contains("C1"), "{why}");
+    assert!(!why.contains("C2"), "{why}");
+}
+
 /// G50: with only jobs still running, every one is named, and the next stop in the turn waits
 /// as G27 does for one.
 #[test]

@@ -394,6 +394,17 @@ fn replay_a_handback_with_no_check_run_names_every_check() {
     }
 }
 
+/// G50 at SubagentStop: checks the worker cited and passed are not named as never run.
+#[test]
+fn replay_a_handback_does_not_name_cited_checks_as_never_run() {
+    let d = dir("g50-handback-cited");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    let r = worker(&mut env, "w1", "PASS", &ALL4[..3]);
+    let why = blocked(&r);
+    assert!(why.contains("missing C4"), "{why}");
+    assert!(!why.contains("has no observed run"), "{why}");
+}
+
 #[test]
 fn replay_a19_changed_candidate_makes_receipts_stale() {
     let d = dir("a19");
