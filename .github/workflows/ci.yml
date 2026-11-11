@@ -180,6 +180,133 @@ jobs:
           tar zxf "$dir/cargo-audit.tgz" --strip-components=1 -C "$dir" "$name/cargo-audit"
           "$dir/cargo-audit" audit
 
+  # WP7: a pull request to main must add a receipt bundle under supervisor-receipts/ that
+  # `supervisor receipt verify --bundle` accepts, and the bundled contracts' acceptance commands
+  # are run again here, unless `supervisor receipt required` finds an exemption (documentation
+  # only, release-please's version-only pull request, or the receipt-exempt label applied by the
+  # owner). It reports on every pull request, docs-only and release ones included, and is a no-op
+  # success on a push to main, a tag and release.yml's call, so it never needs the `changes` job.
+  # Everything the decision rests on comes from the base commit (keys list, docs list,
+  # release-please config) or the API (labels and who applied them), never from the pull
+  # request's tree. Limit: on a same-repository pull request this workflow file and the verifier
+  # binary both come from the pull request itself; the protection rests on review plus the key
+  # list read from the base commit. After the owner applies the label, re-run this job: label
+  # events do not start CI. GitHub-hosted on purpose: a fork's pull request must never run on a
+  # self-hosted machine, the job runs for docs-only changes too (the picker is skipped then), and
+  # it needs gh and jq, which the fresh runners lack. Re-running the acceptance commands repeats
+  # part of the test job; it is kept to the bundled contracts' own commands.
+  receipts:
+    name: Verify supervisor receipts
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # The label timeline: GET /repos/.../issues/<n>/timeline.
+      pull-requests: read
+      issues: read
+    steps:
+      - name: No receipt for this event
+        if: github.event_name != 'pull_request'
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: echo "No receipt is required for a $EVENT event ($REF)."
+
+      # The pull request's own head commit, not the merge commit: a bundle names the tree of the
+      # commit it was made for. No credentials are left in .git/config.
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        if: github.event_name == 'pull_request'
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+
+      - name: Build the verifier from this pull request
+        if: github.event_name == 'pull_request'
+        run: |
+          cargo build --locked -p supervisor
+          mkdir -p "$RUNNER_TEMP/receipts"
+          cp target/debug/supervisor "$RUNNER_TEMP/receipts/supervisor"
+
+      - name: Decide whether a receipt is required, then verify every bundle this pull request adds
+        id: verify
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          # The repository belongs to an organisation, which never applies a label, so the
+          # owner's own login decides the label and is release-please's author (its token is
+          # the owner's).
+          OWNER_LOGIN: special-place-administrator
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/receipts"
+          bin="$dir/supervisor"
+          if [ "$(git rev-parse HEAD)" != "$HEAD" ]; then
+            echo "::error::the checkout is not the pull request's head commit $HEAD"
+            exit 1
+          fi
+          # Lists from the base commit, so a pull request cannot widen them for itself.
+          git show "$BASE:.github/docs-paths.txt" > "$dir/docs-paths.txt" 2>/dev/null || : > "$dir/docs-paths.txt"
+          git show "$BASE:.github/release-please-config.json" > "$dir/release-please-config.json" 2>/dev/null || echo '{}' > "$dir/release-please-config.json"
+          git diff --name-only --no-renames "$BASE...$HEAD" > "$dir/changed.txt"
+          gh api --paginate "repos/$REPO/issues/$PR/timeline" --jq '.[] | @json' > "$dir/timeline.jsonl"
+          "$bin" receipt required --event "$GITHUB_EVENT_PATH" --labels "$dir/timeline.jsonl" \
+            --changed "$dir/changed.txt" --docs-paths "$dir/docs-paths.txt" \
+            --release-config "$dir/release-please-config.json" --owner "$OWNER_LOGIN" > "$dir/required.json"
+          cat "$dir/required.json"
+          if [ "$(jq -r .required "$dir/required.json")" != true ]; then
+            echo "No receipt required: $(jq -r .reason "$dir/required.json")"
+            exit 0
+          fi
+          if ! git show "$BASE:supervisor-keys.json" > "$dir/keys.json" 2>/dev/null; then
+            echo "::error::the base commit has no supervisor-keys.json, so no receipt signature can be trusted"
+            exit 1
+          fi
+          # Only bundles this pull request adds or changes count; the folder accumulates on main.
+          mapfile -t bundles < <(git diff --name-only --no-renames --diff-filter=AM "$BASE...$HEAD" -- supervisor-receipts/)
+          if [ "${#bundles[@]}" -eq 0 ]; then
+            echo "::error::this pull request to main adds no receipt bundle under supervisor-receipts/ and no exemption applies; run 'supervisor receipt export' on the completed task and commit the bundle, or ask the owner for the receipt-exempt label"
+            exit 1
+          fi
+          # The changed-path manifest is recomputed from where this branch left main.
+          fork=$(git merge-base "$BASE" "$HEAD")
+          : > "$dir/commands.jsonl"
+          for bundle in "${bundles[@]}"; do
+            echo "verifying $bundle"
+            "$bin" receipt verify --bundle "$bundle" --keys "$dir/keys.json" --project . --base "$fork" | tee "$dir/verify.json"
+            jq -c '.acceptance[].command' "$dir/verify.json" >> "$dir/commands.jsonl"
+          done
+          echo "rerun=true" >> "$GITHUB_OUTPUT"
+
+      # No token and no secrets here: the step names none, and env -i drops the runner's own
+      # variables. Commands run unchanged with bash on Linux; one recorded with Windows-only
+      # syntax fails the job, it is never skipped.
+      - name: Re-run the bundled contracts' acceptance commands
+        if: github.event_name == 'pull_request' && steps.verify.outputs.rerun == 'true'
+        run: |
+          set -euo pipefail
+          sort -u "$RUNNER_TEMP/receipts/commands.jsonl" > "$RUNNER_TEMP/receipts/unique.jsonl"
+          while IFS= read -r line; do
+            command=$(jq -r . <<< "$line")
+            echo "::group::$command"
+            env -i PATH="$PATH" HOME="$HOME" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+              RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_TERM_COLOR=always RUSTC_WRAPPER= \
+              timeout 1800 bash -c "$command" < /dev/null
+            echo "::endgroup::"
+          done < "$RUNNER_TEMP/receipts/unique.jsonl"
+
   # Formatting, lint and the dependency check are the same on both systems and run on Linux.
   windows-hosted:
     # GitHub-hosted (owner, 2026-11-09): the shared interim Windows runner was too loaded for the
