@@ -67,7 +67,8 @@ fn deny(payload: &Value, matched: String) -> Option<Decision> {
 }
 
 /// `supervisor level <off|lite|full|ultra>`, `supervisor task reset-rounds`, `amend-floor`,
-/// `cancel`, `start`, `next` or `cleanup`, or the hook command itself (`supervisor hook`,
+/// `cancel`, `start`, `next`, `cleanup`, `deactivate`, `rebind` or `migrate` (every `task`
+/// command but the read-only `resume`), or the hook command itself (`supervisor hook`,
 /// `supervisor-claude-code hook`), in a Bash, PowerShell or Terminal Commander command,
 /// whatever the binary's path, extension or quoting; returns the matched words.
 fn level_command(payload: &Value) -> Option<String> {
@@ -93,7 +94,8 @@ fn level_command(payload: &Value) -> Option<String> {
     words.windows(3).find_map(|w| {
         let program = program(w[0]);
         let sets_level = w[1] == "level" && Level::parse(w[2]).is_some();
-        // A person's escapes and contracts; an agent could reset its own budget or skip the floor.
+        // A person's escapes and contracts; an agent could reset its own budget, skip the floor,
+        // or end or take over a person's task and start its own.
         let operator = w[1] == "task"
             && matches!(
                 w[2],
@@ -104,6 +106,9 @@ fn level_command(payload: &Value) -> Option<String> {
                     | "start"
                     | "next"
                     | "cleanup"
+                    | "deactivate"
+                    | "rebind"
+                    | "migrate"
             );
         (program.ends_with("supervisor") && (sets_level || operator))
             .then(|| format!("supervisor {} {}", w[1], w[2]))

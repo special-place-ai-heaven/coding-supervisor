@@ -912,3 +912,25 @@ fn an_agent_cannot_run_cleanup() {
         "tool_input":{"command":"supervisor task cleanup --task x"}}));
     assert!(denied(&decision), "{decision}");
 }
+
+/// WP3 review r3: ending, rebinding or importing a task is a person's command too; an agent that
+/// ended a person's worktree task could start its own task without the worktree refusal. The
+/// guard names the words it matched; `task resume` changes nothing and stays allowed.
+#[test]
+fn an_agent_cannot_deactivate_rebind_or_migrate() {
+    let f = Fixture::new("wt-guard-agent");
+    let task = start(&f)["task_id"].as_str().unwrap().to_owned();
+    for (i, word, args) in [
+        (0, "deactivate", "--disposition cancelled"),
+        (1, "rebind", "--session other"),
+        (2, "migrate", "--legacy old"),
+        (3, "resume", ""),
+    ] {
+        let decision = f.hook(json!({"hook_event_name":"PreToolUse","tool_use_id":format!("g{i}"),
+            "agent_id":"main","tool_name":"Bash",
+            "tool_input":{"command":format!("supervisor task {word} --task {task} {args}")}}));
+        let guarded = reason(&decision).contains(&format!("(supervisor task {word})"));
+        assert_eq!(guarded, word != "resume", "{word}: {decision}");
+        assert_eq!(denied(&decision), guarded, "{word}: {decision}");
+    }
+}
