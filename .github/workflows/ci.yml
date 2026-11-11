@@ -229,7 +229,9 @@ jobs:
             exit 1
           fi
 
-      # The only step with a token, run before any pull request code is built or run.
+      # The only step with a token, run before any pull request code is built or run. The file it
+      # writes stays writable by the later build of pull request code; that is inside the stated
+      # limit that the verifier itself comes from the pull request.
       - name: Read the label timeline from the API
         if: steps.event.outputs.pr == 'true'
         env:
@@ -289,7 +291,7 @@ jobs:
             echo "::error::the default branch $DEFAULT could not be resolved"
             exit 1
           fi
-          fork=$(git merge-base "$tip" "$HEAD")
+          fork=$(git merge-base "$tip" "$HEAD") || { echo "::error::this pull request shares no history with $DEFAULT, so there is no point to compare from"; exit 1; }
           echo "default branch $DEFAULT at $tip; this pull request leaves it at $fork"
           # Lists from the default branch, so a pull request cannot widen them for itself.
           git show "$tip:.github/docs-paths.txt" > "$dir/docs-paths.txt" 2>/dev/null || : > "$dir/docs-paths.txt"
