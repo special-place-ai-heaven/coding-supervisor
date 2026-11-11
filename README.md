@@ -300,6 +300,41 @@ project that is the home folder itself refuses the default key path. A crash bet
 `.tmp` file holding the key beside the key file, which nothing removes. A new upstream advisory turns the required Linux CI check red,
 release tags included.
 
+### Receipt bundles in the repository
+
+`supervisor receipt export` writes `supervisor-receipts/<task id>.json` into the project, to
+be committed with the work. It refuses (exit 3, nothing written) unless the active task's
+stored state verifies, is `completed`, and `supervisor verdict` passes on hook-observed
+receipts for the current worktree. The bundle holds the repository's root commits, the
+contract, gate state and chain head, the candidate, the tree of the candidate's content
+(without the documentation list of the contract's base commit and without
+`supervisor-receipts/`), the paths changed since the contract's `base_sha` as git lists them,
+the receipts on the candidate and the reviews on it, signed with the same key as `receipt
+sign` over the statement `coding-supervisor receipt bundle v2`. It prints the
+`supervisor-keys.json` entry for the key.
+
+`supervisor receipt verify --bundle <file> [--keys <file>] [--tree <sha>] [--base <sha>]`
+needs no supervisor state. `valid` (exit 0) means: the bundle is the one signed, by a key
+listed and not revoked in the keys file; the task was `completed`; every mandatory criterion
+has an observed receipt with exit code 0 that cites a command the contract names, on the
+bundle's candidate; the contract's review rule is met by the bundled reviews; the bundle was
+made in this repository; its tree equals HEAD's (or `--tree`); every path changed between
+`--base` (default the contract's `base_sha`) and that tree is inside the contract's scope and
+the bundle lists exactly those paths; and `supervisor-receipts/` holds nothing but bundles.
+Anything else is `invalid` with a reason (exit 3). It also prints the commands to re-run.
+
+`supervisor-receipts/` is outside the candidate identity, so committing a bundle does not make
+it stale; a real change beside it does. What the bundle publishes: the contract (its goal,
+check names, commands and scope are the person's or the agent's own words) with `approval.by`
+replaced by `redacted-os-user sha256:<SHA-256 of the name>` (unsalted, so a guessable name can
+be found by trying names); receipt commands, exit codes, times, `cwd` relative to the project
+and output reference ids; reviewer ids, decisions, times, provenance and a finding count and
+SHA-256. No receipt output, no finding text, no reviewer model, no absolute path. CI cannot
+re-walk the gate's hash chain from a bundle (the chain also covers the left-out finding text
+and absolute paths), so the chain head and the stored contract digest are trusted through the
+signature. CI checks are in the "Verify supervisor receipts" job and
+[docs/adopting-receipt-verification.md](docs/adopting-receipt-verification.md).
+
 ## Harness support
 
 | Harness | Supervisor integration and evidence |
