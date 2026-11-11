@@ -80,9 +80,15 @@ fn level_command(payload: &Value) -> Option<String> {
         .filter(|w| !w.is_empty())
         .collect();
     // The file stem for the binary and npm's launchers (`.cmd`, `.bat`, `.ps1`, and the
-    // `supervisor.js` bin target, so `node <path>/supervisor.js task …` matches too).
+    // `supervisor.js` bin target, so `node <path>/supervisor.js task …` matches too). The bin
+    // target's `launcher.js` runs the same main when node runs it directly. shortcut: matched
+    // only when its path names the package, so `node bin/launcher.js` run inside the package
+    // folder is not; match every `launcher.js` if that ever matters.
     let program = |word: &str| {
         let name = word.rsplit(['/', '\\']).next().unwrap_or_default();
+        if name == "launcher.js" && word.contains("supervisor") {
+            return "supervisor".to_owned();
+        }
         [".exe", ".cmd", ".bat", ".ps1", ".js"]
             .into_iter()
             .find_map(|ext| name.strip_suffix(ext))

@@ -740,6 +740,8 @@ fn agents_cannot_run_person_commands_through_npm_launchers() {
         "& C:\\npm\\supervisor.ps1",
         "node C:/npm/node_modules/coding-supervisor/bin/supervisor.js",
         "node \"C:\\npm\\node_modules\\coding-supervisor\\bin\\supervisor.js\"",
+        // The bin target's module runs the same main when node runs it directly.
+        "node C:/npm/node_modules/coding-supervisor/bin/launcher.js",
     ];
     let commands = [
         "level off",
@@ -761,6 +763,7 @@ fn agents_cannot_run_person_commands_through_npm_launchers() {
         "something.cmd task start --contract c.json",
         "node other.js task start --contract c.json",
         "node tools/build.js level off",
+        "node tools/launcher.js task start --contract c.json",
     ]
     .iter()
     .enumerate()
