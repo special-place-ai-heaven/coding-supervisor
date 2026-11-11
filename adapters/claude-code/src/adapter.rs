@@ -49,6 +49,26 @@ pub fn receipts_observed(
         .collect())
 }
 
+/// G51: the latest hook-journaled run of `criterion` on `candidate` that no receipt of
+/// `receipts` counts yet, for `supervisor verdict` and `status`. Runs become receipts only when
+/// a Stop or SubagentStop is judged, so before that a finished run is reported, never counted.
+pub fn latest_uncounted_run(
+    dir: &Path,
+    task_id: &str,
+    criterion: &Criterion,
+    candidate: &coding_supervisor::CandidateId,
+    receipts: &[VerificationReceipt],
+) -> Result<Option<Value>, String> {
+    let run = observation::latest_run(dir, task_id, criterion, candidate)?;
+    Ok(run.filter(|run| {
+        !receipts.iter().any(|r| {
+            r.criterion == criterion.id
+                && r.candidate == *candidate
+                && Some(r.output_ref.as_str()) == run["reference"].as_str()
+        })
+    }))
+}
+
 /// A hook completion in `runs` matches every material field of `receipt`.
 fn journaled(receipt: &VerificationReceipt, runs: &[observation::Run]) -> bool {
     runs.iter().any(|run| {
@@ -542,6 +562,34 @@ fn proposal_command(payload: &Value) -> bool {
 
 /// Ends the refusal for a Terminal Commander job whose exit is not recorded yet (G27).
 const PENDING_JOB: &str = " after it ends to record its exit";
+/// Ends a refusal entry for a mandatory criterion with no run on the candidate (G50).
+const NOT_RUN: &str = " has no observed run on this candidate";
+
+/// G50: the unmet criteria as a refusal lists them, past eight entries counting the rest.
+// shortcut: a fixed cap keeps the refusal readable; contracts hold a handful of criteria.
+fn listed(mut problems: Vec<String>) -> Vec<String> {
+    const LISTED: usize = 8;
+    if problems.len() > LISTED {
+        let more = problems.len() - LISTED;
+        problems.truncate(LISTED);
+        problems.push(format!("and {more} more unmet"));
+    }
+    problems
+}
+
+/// G50: a refusal for a missing or stale receipt names only the first such criterion; the
+/// criteria never run are named after it, its own entry left out.
+fn with_unrun(error: &GateError, never_run: &[String]) -> String {
+    let (GateError::MissingReceipt(first) | GateError::StaleReceipt(first)) = error else {
+        return render(error);
+    };
+    let own = format!("{}{NOT_RUN}", first.0);
+    let rest = never_run.iter().filter(|n| **n != own).cloned().collect();
+    std::iter::once(render(error))
+        .chain(listed(rest))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
 
 /// What the pre-intent gate lets through while the current prompt is unclassified.
 fn inspection(payload: &Value) -> bool {
@@ -2005,16 +2053,20 @@ fn git_subcommand<'a>(words: &[&'a str]) -> Option<&'a str> {
     None
 }
 
-/// A path that exists but cannot be resolved: a symlink or junction whose target is missing.
-/// Its name proves nothing, since a write through it lands wherever the target is.
+/// A path that cannot be placed: a symlink or junction whose target is missing, or a `..` that
+/// `fold_dotdots` cannot fold. Its name proves nothing, since a write through it lands
+/// wherever the target, or the writer's reading of the `..`, puts it.
 struct Unresolvable;
 
 /// `path` relative to the canonical `project` (see `location::canonical_project`), in git's
 /// `/`-separated form; `Ok(None)` outside the project. The deepest existing ancestor is
 /// resolved, so a new file under a symlinked or short-name spelling of the project still
-/// matches.
+/// matches. A `..` that no link can redirect is folded first (`fold_dotdots`), so a `..`
+/// through a directory that does not exist is judged where it lands; any other `..` cannot be
+/// placed.
 fn project_relative(project: &str, path: &Path) -> Result<Option<String>, Unresolvable> {
-    let mut existing = path;
+    let folded = fold_dotdots(path)?;
+    let mut existing = folded.as_path();
     let mut missing = Vec::new();
     let resolved = loop {
         if let Ok(dir) = std::fs::canonicalize(existing) {
@@ -2044,6 +2096,28 @@ fn project_relative(project: &str, path: &Path) -> Result<Option<String>, Unreso
         .strip_prefix('/')
         .filter(|_| same)
         .map(str::to_owned))
+}
+
+/// `path` with each `..` folded into the entry before it when that entry does not exist or is
+/// a plain directory: no link sits there, so the text says where the path lands, while Linux
+/// (and Windows for a `\\?\` path) cannot resolve a `..` through a missing directory. A `..`
+/// after a link, a file or the root is `Unresolvable`: a writer that folds the text and one
+/// that leaves it to the OS land in different places. `Path::components` already drops inner
+/// `.` segments.
+fn fold_dotdots(path: &Path) -> Result<PathBuf, Unresolvable> {
+    let mut folded = PathBuf::new();
+    for component in path.components() {
+        if component != Component::ParentDir {
+            folded.push(component);
+        } else if matches!(folded.components().next_back(), Some(Component::Normal(_)))
+            && !matches!(std::fs::symlink_metadata(&folded), Ok(meta) if !meta.is_dir())
+        {
+            folded.pop();
+        } else {
+            return Err(Unresolvable);
+        }
+    }
+    Ok(folded)
 }
 
 /// Refuse everywhere a refusal is possible; gate.json is left exactly as found.
@@ -2484,27 +2558,55 @@ impl Session {
 
     /// The latest dispatch wins even when it has no valid completion. An older success
     /// must not hide a newer failed, interrupted, pending, or invalidated execution.
-    fn latest_attempts(&self, dir: &Path, project: &Path) -> Result<(), String> {
-        crate::autonomy::validate_entrypoints(dir, project)?;
+    /// G50: every unmet mandatory criterion gets its own entry; a criterion never run adds words,
+    /// never a refusal. It is in the first list when a dispatched gap is, otherwise in the second,
+    /// for [`with_unrun`] to add to a missing or stale receipt refusal. The first list is whole;
+    /// callers shorten it with [`listed`] after deciding on it.
+    fn latest_attempts(&self, dir: &Path, project: &Path) -> (Vec<String>, Vec<String>) {
+        if let Err(why) = crate::autonomy::validate_entrypoints(dir, project) {
+            return (vec![why], Vec::new());
+        }
         let Ok(current) = &self.observed else {
-            return Err("candidate identity could not be observed".to_owned());
+            return (
+                vec!["candidate identity could not be observed".to_owned()],
+                Vec::new(),
+            );
         };
         let rows = match std::fs::read_to_string(dir.join("runs.jsonl")) {
-            Ok(text) => text
+            Ok(text) => match text
                 .lines()
                 .map(serde_json::from_str::<Value>)
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| "invalid command observation journal".to_owned())?,
+            {
+                Ok(rows) => rows,
+                Err(_) => {
+                    return (
+                        vec!["invalid command observation journal".to_owned()],
+                        Vec::new(),
+                    );
+                }
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(_) => return Err("command observation journal unavailable".to_owned()),
+            Err(_) => {
+                return (
+                    vec!["command observation journal unavailable".to_owned()],
+                    Vec::new(),
+                );
+            }
         };
         let mut current_rows = Vec::new();
         for row in rows {
             if text(&row, "kind") == Some("dispatch") {
-                let dispatch =
-                    text(&row, "dispatch_id").ok_or("command dispatch has no identity")?;
-                if !crate::autonomy::dispatch_is_current(dir, dispatch)? {
-                    continue;
+                let Some(dispatch) = text(&row, "dispatch_id") else {
+                    return (
+                        vec!["command dispatch has no identity".to_owned()],
+                        Vec::new(),
+                    );
+                };
+                match crate::autonomy::dispatch_is_current(dir, dispatch) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(why) => return (vec![why], Vec::new()),
                 }
             }
             current_rows.push(row);
@@ -2512,6 +2614,9 @@ impl Session {
         // Current criteria are project-root checks. Nested observations retain their
         // actual cwd, but explicit nested criterion contexts need a separate contract API.
         let execution_root = crate::binding::execution_root(dir, project);
+        let mut problems = Vec::new();
+        let mut never_run = Vec::new();
+        let mut remedy_stated = false;
         for criterion in self.criteria.iter().filter(|c| c.mandatory) {
             let latest = current_rows.iter().rev().find(|row| {
                 text(row, "kind") == Some("dispatch")
@@ -2537,18 +2642,31 @@ impl Session {
                         .is_some()
                     })
             });
-            let Some(latest) = latest else { continue };
+            let Some(latest) = latest else {
+                if !criterion.is_baseline() && !self.passing_on_checkpoint(criterion) {
+                    never_run.push(format!("{}{NOT_RUN}", criterion.id.0));
+                }
+                continue;
+            };
             if !observation::approved_context(latest) {
-                let set = observation::unapproved_env(latest)
-                    .map(|names| format!(" (it set {names})"))
-                    .unwrap_or_default();
-                return Err(format!(
-                    "{} latest execution has unapproved or legacy execution context{set}: rerun it without extra environment or shell; job and thread counts, colour and progress variables are approved ({}); a CARGO_TARGET_DIR passed to the command counts only when the hook's own environment has the same value (set it in the harness settings env or cargo's [build] target-dir instead)",
+                // The long remedy once; a later criterion points back to it.
+                let remedy = if remedy_stated {
+                    "rerun it the same way".to_owned()
+                } else {
+                    remedy_stated = true;
+                    observation::context_remedy()
+                };
+                problems.push(format!(
+                    "{} latest execution has unapproved or legacy execution context{}: {remedy}",
                     criterion.id.0,
-                    observation::HARMLESS_ENV.join(", ")
+                    observation::context_set(latest),
                 ));
+                continue;
             }
-            let dispatch = text(latest, "dispatch_id").ok_or("command dispatch has no identity")?;
+            let Some(dispatch) = text(latest, "dispatch_id") else {
+                problems.push("command dispatch has no identity".to_owned());
+                continue;
+            };
             let observed = format!("observed:{}:{dispatch}", self.task_id);
             let reconstructed = format!("tc-reconstructed:{}:{dispatch}", self.task_id);
             let receipt = self.gate.receipts.iter().rev().find(|r| {
@@ -2559,12 +2677,10 @@ impl Session {
             });
             match receipt.and_then(|r| r.exit_code) {
                 Some(0) => {}
-                Some(exit) => {
-                    return Err(render(&GateError::FailingReceipt {
-                        criterion: criterion.id.clone(),
-                        exit_code: exit,
-                    }));
-                }
+                Some(exit) => problems.push(render(&GateError::FailingReceipt {
+                    criterion: criterion.id.clone(),
+                    exit_code: exit,
+                })),
                 None => {
                     // A Terminal Commander job is recorded only from its final command_status;
                     // an exit seen through bucket_wait carries no structured exit state.
@@ -2574,20 +2690,24 @@ impl Session {
                         .then(|| text(row, "job_id"))
                         .flatten()
                     });
-                    return Err(match job {
-                        Some(job) => format!(
-                            "{} latest execution has no observed completion: call command_status for Terminal Commander job {job}{PENDING_JOB}",
-                            criterion.id.0
-                        ),
-                        None => format!(
-                            "{} latest execution has no observed completion",
-                            criterion.id.0
-                        ),
-                    });
+                    problems.push(match job {
+                            Some(job) => format!(
+                                "{} latest execution has no observed completion: call command_status for Terminal Commander job {job}{PENDING_JOB}",
+                                criterion.id.0
+                            ),
+                            None => format!(
+                                "{} latest execution has no observed completion",
+                                criterion.id.0
+                            ),
+                        });
                 }
             }
         }
-        Ok(())
+        if problems.is_empty() {
+            return (problems, never_run);
+        }
+        problems.extend(never_run);
+        (problems, Vec::new())
     }
 
     /// WP4: a PreToolUse at a reached limit that is not [`limit_exempt`] is refused whatever the
@@ -2781,10 +2901,9 @@ impl Session {
             return Ok(Decision::None);
         }
         self.note_asserted(reasons);
-        if let Err(why) = self.latest_attempts(dir, Path::new(text(payload, "cwd").unwrap_or(".")))
-        {
-            problems.push(why);
-        }
+        let (attempts, never_run) =
+            self.latest_attempts(dir, Path::new(text(payload, "cwd").unwrap_or(".")));
+        problems.extend(listed(attempts));
         let completed = self.task.state() == TaskState::Completed;
         let accepted = if completed || self.task.state() == TaskState::ReadyForReview {
             self.observed_evidence()
@@ -2799,7 +2918,7 @@ impl Session {
                 | GateError::StaleReceipt(_)
                 | GateError::FailingReceipt { .. }
                 | GateError::OutOfScope(_)),
-            ) => problems.push(render(&e)),
+            ) => problems.push(with_unrun(&e, &never_run)),
             Err(e) => reasons.push(format!("try_accept: {}", render(&e))),
         }
         if problems.is_empty() {
@@ -2993,20 +3112,26 @@ impl Session {
         // A repair round is spent only on a candidate judged wrong, never on absent evidence.
         // A redefined check entrypoint is a defect in the candidate.
         let mut judged_wrong = crate::autonomy::validate_entrypoints(dir, project).is_err();
-        if let Err(why) = self.latest_attempts(dir, project) {
-            problems.push(why);
-        }
+        let (attempts, never_run) = self.latest_attempts(dir, project);
         // M6 rides on strict, which is when reproduction is required.
-        if self.task.requires_reproduction() {
-            problems.extend(self.too_few_tests(dir)?);
-        }
-        // G27: the only gap is a job still running; refuse it once per turn, then wait.
-        let only_pending_job = problems.len() == 1 && problems[0].ends_with(PENDING_JOB);
+        let few_tests = if self.task.requires_reproduction() {
+            self.too_few_tests(dir)?
+        } else {
+            Vec::new()
+        };
+        // G27: the only gaps are jobs still running; refuse once per turn, then wait. A check
+        // never run did not stop that wait before G50 listed it, and does not now. Decided on
+        // every gap, before the list is shortened, so the cap does not decide the wait.
+        let gaps = || problems.iter().chain(&attempts).chain(&few_tests);
+        let only_pending_job = gaps().any(|p| p.ends_with(PENDING_JOB))
+            && gaps().all(|p| p.ends_with(PENDING_JOB) || p.ends_with(NOT_RUN));
+        problems.extend(listed(attempts));
+        problems.extend(few_tests);
         // WP5: `Some(rejected)` when the review rule refused; the refusal then teaches it.
         let mut review_gap = None;
         let result = if problems.is_empty() {
             self.observed_evidence()
-                .map_err(|e| render(&e))
+                .map_err(|e| with_unrun(&e, &never_run))
                 .and_then(|()| {
                     match self.task.state() {
                         TaskState::Completed => self.observed_evidence(),
@@ -3028,7 +3153,7 @@ impl Session {
                             }
                             _ => None,
                         };
-                        render(&e)
+                        with_unrun(&e, &never_run)
                     })
                 })
         } else {
@@ -3320,6 +3445,25 @@ impl Session {
                     criterion.id.0
                 ),
             });
+        }
+        // G49: a required check whose run environment is not approved never counts; say so
+        // before the run, in the Stop refusal's words. `audit` reports it and lets it run.
+        if !self.task.state().is_terminal()
+            && let Some(dir) = &self.evidence_dir
+            && let Some((criterion, record)) = observation::unapproved_dispatch(
+                dir,
+                payload,
+                &self.task_id,
+                text(payload, "agent_id").unwrap_or("main"),
+                &self.criteria,
+            )
+        {
+            return Ok(Decision::Deny(format!(
+                "GATE: {} would not count: this run has unapproved or legacy execution context{}: {}",
+                criterion.id.0,
+                observation::context_set(&record),
+                observation::context_remedy()
+            )));
         }
         if !matches!(tool, "Write" | "Edit" | "Agent") {
             return Ok(Decision::None);
@@ -3727,6 +3871,92 @@ mod deny_path_tests {
         let _ = fs::remove_dir(&link);
         let _ = fs::remove_dir_all(&root);
         assert_eq!(effect.as_deref(), Some("deny_path:src/"));
+    }
+
+    /// A `..` through a directory that does not exist is judged where it lands. The paths use
+    /// the canonical spelling (on Windows `\\?\`, which the OS does not fold), so the case
+    /// fails here as the plain spelling does on Linux.
+    #[test]
+    fn deny_path_refuses_a_dotdot_through_a_missing_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "supervisor-deny-path-dotdot-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("project").join("src")).unwrap();
+        fs::create_dir_all(root.join("project").join("docs")).unwrap();
+        let project = fs::canonicalize(root.join("project")).unwrap();
+        let effect = |rest: &str| {
+            let sep = std::path::MAIN_SEPARATOR_STR;
+            let path = format!("{}{sep}{}", project.display(), rest.replace('/', sep));
+            let payload = json!({"tool_name":"Write","cwd":project,
+                "tool_input":{"file_path":path,"content":"x"}});
+            forbidden_effect(&payload, &["deny_path:src/".to_owned()])
+        };
+        let into_src = effect("nope/../src/x.rs");
+        let into_docs = effect("src/nope/../../docs/x.rs");
+        let outside = effect("nope/../../outside/x.rs");
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(into_src.as_deref(), Some("deny_path:src/"));
+        assert_eq!(into_docs, None);
+        assert_eq!(outside, None);
+    }
+
+    /// A `..` after a file, after a link, or after an earlier fold followed by a link lands where
+    /// the writer decides (a writer that folds the text and the OS can disagree), so every
+    /// `deny_path` refuses it. Canonical spelling as above.
+    #[test]
+    fn deny_path_refuses_a_dotdot_it_cannot_fold() {
+        let root = std::env::temp_dir().join(format!(
+            "supervisor-deny-path-unfolded-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let (project, outside) = (root.join("project"), root.join("outside"));
+        fs::create_dir_all(project.join("src").join("generated")).unwrap();
+        fs::create_dir_all(project.join("docs")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(project.join("README.md"), "x").unwrap();
+        let project = fs::canonicalize(project).unwrap();
+        let link = |at: &std::path::Path, to: &std::path::Path| {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(to, at).unwrap();
+            #[cfg(windows)]
+            {
+                let made = std::process::Command::new("cmd")
+                    .args(["/C", "mklink", "/J"])
+                    .arg(at)
+                    .arg(to)
+                    .output()
+                    .unwrap();
+                assert!(made.status.success(), "mklink /J failed");
+            }
+        };
+        let (out, gen_link) = (project.join("src").join("out"), project.join("gen"));
+        link(&out, &outside);
+        link(&gen_link, &project.join("src").join("generated"));
+        let effect = |rest: &str| {
+            let sep = std::path::MAIN_SEPARATOR_STR;
+            let path = format!("{}{sep}{}", project.display(), rest.replace('/', sep));
+            let payload = json!({"tool_name":"Write","cwd":project,
+                "tool_input":{"file_path":path,"content":"x"}});
+            forbidden_effect(&payload, &["deny_path:src/".to_owned()])
+        };
+        let after_file = effect("README.md/../src/x.rs");
+        let after_link = effect("src/out/../x.rs");
+        let after_fold = effect("nope/../gen/../x.rs");
+        let folded = effect("src/nope/../../docs/x.rs");
+        #[cfg(windows)]
+        for at in [&out, &gen_link] {
+            let _ = fs::remove_dir(at);
+        }
+        let _ = fs::remove_dir_all(&root);
+        let denied = Some("deny_path:src/".to_owned());
+        assert_eq!(
+            [after_file, after_link, after_fold],
+            [denied.clone(), denied.clone(), denied]
+        );
+        assert_eq!(folded, None);
     }
 }
 

@@ -385,6 +385,83 @@ fn a_dangling_link_inside_the_scope_is_out_of_scope() {
     let _ = fs::remove_dir(d.0.join("src").join("out"));
 }
 
+/// `rest` (with `/`) under the canonical spelling of `base`. On Windows that is the `\\?\` form,
+/// which the OS does not fold `..` in, so a case fails here as the plain spelling does on Linux.
+fn spelled(base: &Path, rest: &str) -> PathBuf {
+    let sep = std::path::MAIN_SEPARATOR_STR;
+    let base = fs::canonicalize(base).unwrap();
+    PathBuf::from(format!("{}{sep}{}", base.display(), rest.replace('/', sep)))
+}
+
+/// A `..` through a directory that does not exist is judged where it lands.
+#[test]
+fn a_dotdot_through_a_missing_directory_is_judged_where_it_lands() {
+    let d = dir("dotdot");
+    fs::create_dir_all(d.0.join("src")).unwrap();
+    let mut env = env(&d, &v2(), Level::Strict);
+    for (id, rest, denied) in [
+        ("t1", "nope/../src/new.rs", false),
+        ("t2", "src/nope/../../outside.rs", true),
+        ("t3", "src/nope/../../src/deep/new.rs", false),
+    ] {
+        let decision = handle(&write(&env, id, &spelled(&d.0, rest)), &mut env);
+        assert_eq!(denied_for_scope(&decision), denied, "{rest}: {decision:?}");
+    }
+}
+
+/// The same through a `deny_path` at strict: the write lands inside the denied directory.
+#[test]
+fn deny_path_refuses_a_dotdot_through_a_missing_directory_at_strict() {
+    let d = dir("dotdot-deny");
+    fs::create_dir_all(d.0.join("src")).unwrap();
+    let mut contract = v2();
+    contract["forbidden_effects"] = json!(["deny_path:src/secret/"]);
+    let mut env = env(&d, &contract, Level::Strict);
+    let forbids = |decision: &Decision| matches!(decision, Decision::Deny(why) if why.contains("the task forbids deny_path:src/secret/"));
+    let secret = handle(
+        &write(&env, "t1", &spelled(&d.0, "nope/../src/secret/x.rs")),
+        &mut env,
+    );
+    assert!(forbids(&secret), "{secret:?}");
+    let ok = handle(
+        &write(&env, "t2", &spelled(&d.0, "nope/../src/ok.rs")),
+        &mut env,
+    );
+    assert!(!forbids(&ok) && !denied_for_scope(&ok), "{ok:?}");
+}
+
+/// A `..` after a link is not folded: the path cannot be placed, so a write through a link
+/// pointing outside stays out of scope even though its text reads as inside.
+#[test]
+fn a_dotdot_after_a_link_is_not_folded() {
+    let d = dir("dotdot-link");
+    let outside = dir("dotdot-link-outside");
+    fs::create_dir_all(d.0.join("src")).unwrap();
+    let link = d.0.join("src").join("out");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside.0, &link).unwrap();
+    #[cfg(windows)]
+    assert!(
+        Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&outside.0)
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "mklink /J failed"
+    );
+    let mut env = env(&d, &v2(), Level::Strict);
+    let decision = handle(
+        &write(&env, "t1", &spelled(&d.0, "src/out/../x.rs")),
+        &mut env,
+    );
+    #[cfg(windows)]
+    let _ = fs::remove_dir(&link);
+    assert!(denied_for_scope(&decision), "{decision:?}");
+}
+
 fn written(dir: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(dir.join("contract.json")).unwrap()).unwrap()
 }

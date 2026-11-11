@@ -172,6 +172,49 @@ pub(crate) fn unapproved_env(record: &Value) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" and "))
 }
 
+/// " (it set ...)" for a record whose execution profile named what it set; empty otherwise.
+pub(crate) fn context_set(record: &Value) -> String {
+    unapproved_env(record)
+        .map(|names| format!(" (it set {names})"))
+        .unwrap_or_default()
+}
+
+/// What to do about an unapproved execution context (G46), stated once per message.
+pub(crate) fn context_remedy() -> String {
+    format!(
+        "rerun it without extra environment or shell; job and thread counts, colour and progress variables are approved ({}); a CARGO_TARGET_DIR passed to the command counts only when the hook's own environment has the same value (set it in the harness settings env or cargo's [build] target-dir instead)",
+        HARMLESS_ENV.join(", ")
+    )
+}
+
+/// G49: the criterion this PreToolUse's dispatch would satisfy at the project root but for its
+/// unapproved execution profile, with the dispatch row `observe` just journaled for it, so the
+/// agent can be told before the run. A call `observe` did not journal (remote, another checkout,
+/// no cwd, another session's task) or that runs in a nested folder is left alone.
+pub(crate) fn unapproved_dispatch<'a>(
+    dir: &Path,
+    payload: &Value,
+    task: &str,
+    agent: &str,
+    criteria: &'a [Criterion],
+) -> Option<(&'a Criterion, Value)> {
+    let id = text(payload, "tool_use_id")?;
+    let row = records(dir).ok()?.into_iter().rev().find(|row| {
+        text(row, "kind") == Some("dispatch")
+            && text(row, "dispatch_id") == Some(id)
+            && same_scope(row, payload, task, agent)
+    })?;
+    let root = crate::binding::execution_root(dir, Path::new(text(payload, "cwd")?));
+    if text(&row, "cwd") != Some(root.as_str())
+        || row.pointer("/execution_profile/approved") != Some(&Value::Bool(false))
+    {
+        return None;
+    }
+    let command = text(&row, "command")?;
+    let criterion = criteria.iter().find(|c| c.accepts(command))?;
+    Some((criterion, row))
+}
+
 /// Validate stored approval without reapproving old records from today's environment.
 pub(crate) fn approved_context(record: &Value) -> bool {
     let Some(profile) = record.get("execution_profile") else {
@@ -1043,6 +1086,72 @@ pub(crate) fn read_runs(dir: &Path, task: &str) -> Result<Vec<Run>, String> {
             })
         })
         .collect())
+}
+
+/// G51: the latest journaled run of `criterion` on exactly `candidate`, read only, as the Stop
+/// judges it: `finished` with its exit and receipt reference, `pending` with the Terminal
+/// Commander job whose exit is not recorded yet, or `unapproved`. `None` when there is none, or
+/// the run was stopped or invalidated. Reporting it never makes it evidence.
+pub(crate) fn latest_run(
+    dir: &Path,
+    task: &str,
+    criterion: &Criterion,
+    candidate: &CandidateId,
+) -> Result<Option<Value>, String> {
+    let rows = records(dir)?;
+    let wanted = json!({"base_commit":candidate.base_commit,"dirty_digest":candidate.dirty_digest});
+    let mut latest = None;
+    for row in &rows {
+        if text(row, "kind") == Some("dispatch")
+            && text(row, "task_id") == Some(task)
+            && text(row, "cwd").is_some()
+            && text(row, "cwd") == text(row, "execution_root")
+            && row.get("candidate") == Some(&wanted)
+            && text(row, "command").is_some_and(|c| criterion.accepts(c))
+            && let Some(id) = text(row, "dispatch_id")
+            && crate::autonomy::dispatch_is_current(dir, id)?
+        {
+            latest = Some(row);
+        }
+    }
+    let Some(dispatch) = latest else {
+        return Ok(None);
+    };
+    let id = text(dispatch, "dispatch_id").unwrap_or_default();
+    let command = text(dispatch, "command");
+    if !approved_context(dispatch) {
+        return Ok(Some(json!({"status":"unapproved","command":command})));
+    }
+    let same = |row: &&Value| {
+        text(row, "dispatch_id") == Some(id)
+            && text(row, "task_id") == Some(task)
+            && row.get("session_id") == dispatch.get("session_id")
+            && row.get("agent_id") == dispatch.get("agent_id")
+    };
+    if let Some(run) = read_runs(dir, task)?.into_iter().rev().find(|run| {
+        run.candidate == *candidate
+            && [
+                format!("observed:{task}:{id}"),
+                format!("tc-reconstructed:{task}:{id}"),
+            ]
+            .contains(&run.reference)
+    }) {
+        return Ok(Some(json!({"status":"finished","command":command,
+            "exit_code":run.exit_code,"reference":run.reference})));
+    }
+    if rows
+        .iter()
+        .filter(same)
+        .any(|row| matches!(text(row, "kind"), Some("stopped" | "invalidated")))
+    {
+        return Ok(None);
+    }
+    Ok(rows
+        .iter()
+        .filter(same)
+        .find_map(|row| (text(row, "kind") == Some("job")).then(|| text(row, "job_id")))
+        .flatten()
+        .map(|job| json!({"status":"pending","command":command,"job_id":job})))
 }
 
 /// M6: passing tests in a test runner's summary lines: cargo (`test result: ok. N passed`, one

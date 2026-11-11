@@ -145,10 +145,16 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # nextest runs every test in its own process, test files in parallel. Installed into
-      # ~/.cargo/bin without sudo (the fresh runners have none), once per runner.
+      # ~/.cargo/bin without sudo (the fresh runners have none), once per runner: a fixed version,
+      # checked against its SHA-256. A copy already on the runner is used as it is.
       - name: Install cargo-nextest if missing
         run: |
-          command -v cargo-nextest > /dev/null || curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+          command -v cargo-nextest > /dev/null && exit 0
+          version=0.9.151
+          tgz="$RUNNER_TEMP/cargo-nextest.tgz"
+          curl -LsSf --retry 3 -o "$tgz" "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$version/cargo-nextest-$version-x86_64-unknown-linux-gnu.tar.gz"
+          echo "1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4  $tgz" | sha256sum -c -
+          tar zxf "$tgz" -C "${CARGO_HOME:-$HOME/.cargo}/bin" cargo-nextest
 
       - name: Run tests
         run: cargo nextest run --workspace --no-fail-fast
@@ -332,12 +338,17 @@ jobs:
           echo "rerun=true" >> "$GITHUB_OUTPUT"
 
       # A bundled contract can name `cargo nextest run`. Downloaded only when commands are re-run,
-      # so a pull request that needs no receipt does not depend on the download; only the one
-      # binary is taken from the archive.
+      # so a pull request that needs no receipt does not depend on the download; a fixed version,
+      # checked against its SHA-256, and only the one binary is taken from the archive.
       - name: Install cargo-nextest if missing
         if: steps.event.outputs.pr == 'true' && steps.verify.outputs.rerun == 'true'
         run: |
-          command -v cargo-nextest > /dev/null || curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin" cargo-nextest
+          command -v cargo-nextest > /dev/null && exit 0
+          version=0.9.151
+          tgz="$RUNNER_TEMP/cargo-nextest.tgz"
+          curl -LsSf --retry 3 -o "$tgz" "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$version/cargo-nextest-$version-x86_64-unknown-linux-gnu.tar.gz"
+          echo "1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4  $tgz" | sha256sum -c -
+          tar zxf "$tgz" -C "${CARGO_HOME:-$HOME/.cargo}/bin" cargo-nextest
 
       # No token or secret is in this step's environment: the step names none, and env -i drops
       # the runner's own variables. Hosted runners allow sudo, so a command could still reach the

@@ -437,6 +437,49 @@ fn a_docs_only_candidate_keeps_a_hand_written_criterion() {
     refused(&f, &mut env);
 }
 
+/// G46 with a listed file already in the base: a later commit that changes only that file still
+/// leaves the candidate a documentation-only one. The base's tree then holds an entry that
+/// differs from both HEAD and the worktree file.
+#[test]
+fn a_committed_docs_change_after_the_base_needs_only_the_diff_check() {
+    let (f, mut env) = docs_task(&[]);
+    fs::write(f.project.join("README.md"), "readme 1\n").unwrap();
+    git(&f.project, &["add", "-A"]);
+    git(&f.project, &["commit", "-q", "-m", "readme"]);
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(&f.project)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let path = env.state_dir.join("contract.json");
+    let mut contract: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    contract["base_sha"] = String::from_utf8_lossy(&head.stdout).trim().into();
+    fs::write(&path, contract.to_string()).unwrap();
+    fs::write(f.project.join("README.md"), "readme 2\n").unwrap();
+    git(&f.project, &["commit", "-q", "-a", "-m", "docs"]);
+    diff_check(&f, &mut env);
+    accepted(&f, &mut env);
+}
+
+/// G28 with a listed file staged and then edited again: the worktree's tree is still computed,
+/// so a further edit to that file keeps the evidence.
+#[test]
+fn a_staged_then_edited_docs_file_keeps_the_evidence() {
+    let (f, mut env) = setup();
+    docs_scope(&env);
+    docs_paths_file(&f);
+    fs::write(f.project.join("README.md"), "readme 1\n").unwrap();
+    git(&f.project, &["add", "-A"]);
+    git(&f.project, &["commit", "-q", "-m", "list"]);
+    fs::write(f.project.join("README.md"), "readme 2\n").unwrap();
+    git(&f.project, &["add", "README.md"]);
+    fs::write(f.project.join("README.md"), "readme 3\n").unwrap();
+    passing_run(&f, &mut env);
+    fs::write(f.project.join("README.md"), "readme 4\n").unwrap();
+    accepted(&f, &mut env);
+}
+
 /// Review of G28: a project whose CI names no documentation paths keeps the exact rule.
 #[test]
 fn without_a_ci_docs_list_a_docs_edit_invalidates() {

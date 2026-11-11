@@ -484,6 +484,8 @@ fn t01_verdict_json_every_key_present_on_every_path() {
         "provenance",
         "receipt",
         "satisfies",
+        // G51: added deliberately; null when no uncounted run is journaled.
+        "latest_run",
     ]);
     let receipt = set(&[
         "head_sha",
@@ -1850,4 +1852,85 @@ fn t45_verdict_review_policy_off_never_fails() {
     assert_eq!(r["review"]["required"], false);
     assert_eq!(r["review"]["met"], true);
     assert_eq!(r["review"]["latest"]["decision"], "rejected");
+}
+
+/// G51 (live sessions 3 and 4 of 2026-11-11): runs the hooks journaled become receipts only when
+/// a stop is judged, so before then the verdict said `missing` with no word of them. Each
+/// criterion now carries its latest uncounted run on HEAD; the verdict still fails on them.
+#[test]
+fn t46_verdict_reports_runs_a_stop_has_not_counted_yet() {
+    let f = Fixture::git("t46");
+    let head = f.head();
+    let criteria = json!([
+        {"id":"C1","check":"format","mandatory":true,"command":"cargo fmt"},
+        {"id":"C2","check":"lint","mandatory":true,"command":"cargo clippy"},
+        {"id":"C3","check":"test","mandatory":true,"command":"cargo test"},
+        {"id":"C4","check":"whitespace","mandatory":true,"command":"git diff --check"}]);
+    let (task, dir) = f.task_stored_with(
+        TaskState::Verifying,
+        &[],
+        &[],
+        &[],
+        &json!({ "criteria": criteria }),
+    );
+    let cwd = canonical_project(&f.project);
+    let dispatch = |id: &str, argv: &[&str], approved: bool| {
+        json!({"kind":"dispatch","task_id":task,"agent_id":"main","session_id":"s",
+            "dispatch_id":id,"tool":"mcp__terminal_commander__command_start_combed",
+            "identity_schema":3,"identity":{"argv":argv},"command":argv.join(" "),
+            "cwd":cwd,"execution_project":cwd,"execution_root":cwd,
+            "execution_profile":{"name":"local-default-v1","approved":approved,"cargo_target_sha256":null},
+            "candidate":{"base_commit":head.base_commit,"dirty_digest":head.dirty_digest},"t":T0})
+    };
+    let fmt = dispatch("fmt", &["cargo", "fmt"], true);
+    let mut done = fmt.clone();
+    done["kind"] = "completed".into();
+    done["completion_trust"] = "observed".into();
+    done["exit_code"] = 0.into();
+    done["finished"] = (T0 + 1).into();
+    let lint = dispatch("lint", &["cargo", "clippy"], true);
+    let mut job = lint.clone();
+    job["kind"] = "job".into();
+    job["job_id"] = "job-lint".into();
+    let test = dispatch("test", &["cargo", "test"], false);
+    let rows: Vec<String> = [fmt, done, lint, job, test]
+        .iter()
+        .map(Value::to_string)
+        .collect();
+    fs::write(dir.join("runs.jsonl"), rows.join("\n") + "\n").unwrap();
+    let (code, r) = f.verdict_json(&[]);
+    assert_eq!(code, 3, "{r}");
+    assert_eq!(r["unmet"], json!(["C1", "C2", "C3", "C4"]), "{r}");
+    let c1 = criterion(&r, "C1");
+    assert_eq!(c1["state"], "missing");
+    assert_eq!(c1["latest_run"]["status"], "finished", "{r}");
+    assert_eq!(c1["latest_run"]["exit_code"], 0);
+    assert_eq!(
+        criterion(&r, "C2")["latest_run"]["job_id"],
+        "job-lint",
+        "{r}"
+    );
+    assert_eq!(
+        criterion(&r, "C3")["latest_run"]["status"],
+        "unapproved",
+        "{r}"
+    );
+    assert_eq!(criterion(&r, "C4")["latest_run"], Value::Null);
+    let human = String::from_utf8(f.verdict(&[]).stdout).unwrap();
+    assert!(
+        human
+            .contains("C1: missing (latest run observed, exit 0; it counts when a stop is judged)"),
+        "{human}"
+    );
+    assert!(
+        human.contains(
+            "C2: missing (latest run has no recorded exit: call command_status on job job-lint)"
+        ),
+        "{human}"
+    );
+    assert!(
+        human.contains("C3: missing (latest run has unapproved execution context"),
+        "{human}"
+    );
+    assert!(human.contains("\nC4: missing\n"), "{human}");
 }
