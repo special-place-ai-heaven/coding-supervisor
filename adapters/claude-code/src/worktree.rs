@@ -221,7 +221,12 @@ pub fn cleanup(root: &Path, project: &Path, task_id: &str) -> Result<Value, Stri
         .collect();
     let (links, ignored) = untracked_entries(&worktree, &tracked)?;
     if !ignored.is_empty() {
-        let shown = ignored.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+        let shown = ignored
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         let more = if ignored.len() > 3 { ", ..." } else { "" };
         return Err(format!(
             "{path} holds {} ignored files that removing the worktree would delete ({shown}{more}); delete them or move them out of the worktree, then run cleanup again; nothing was touched",
@@ -251,6 +256,9 @@ fn receipt_in_head(worktree: &Path, task_id: &str) -> bool {
         .is_some_and(|bundle| bundle["task_id"] == task_id)
 }
 
+/// A link or junction found in a worktree, with its file type.
+type Link = (PathBuf, fs::FileType);
+
 /// Every link and junction under `worktree` that git does not track, found without entering any,
 /// and every other file git does not track: with a clean status those are ignored files, which
 /// `git worktree remove` would delete (relative paths). Only the worktree's own `.git` file is
@@ -259,7 +267,7 @@ fn receipt_in_head(worktree: &Path, task_id: &str) -> bool {
 fn untracked_entries(
     worktree: &Path,
     tracked: &HashSet<String>,
-) -> Result<(Vec<(PathBuf, fs::FileType)>, Vec<String>), String> {
+) -> Result<(Vec<Link>, Vec<String>), String> {
     let (mut links, mut ignored) = (Vec::new(), Vec::new());
     let own_git = worktree.join(".git");
     let mut dirs = vec![worktree.to_path_buf()];

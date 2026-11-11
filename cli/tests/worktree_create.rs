@@ -1005,9 +1005,11 @@ fn an_agent_cannot_deactivate_rebind_or_migrate() {
         (2, "migrate", "--legacy old"),
         (3, "resume", ""),
     ] {
-        let decision = f.hook(json!({"hook_event_name":"PreToolUse","tool_use_id":format!("g{i}"),
+        let decision = f.hook(
+            json!({"hook_event_name":"PreToolUse","tool_use_id":format!("g{i}"),
             "agent_id":"main","tool_name":"Bash",
-            "tool_input":{"command":format!("supervisor task {word} --task {task} {args}")}}));
+            "tool_input":{"command":format!("supervisor task {word} --task {task} {args}")}}),
+        );
         let guarded = reason(&decision).contains(&format!("(supervisor task {word})"));
         assert_eq!(guarded, word != "resume", "{word}: {decision}");
         assert_eq!(denied(&decision), guarded, "{word}: {decision}");
