@@ -180,18 +180,20 @@ jobs:
           tar zxf "$dir/cargo-audit.tgz" --strip-components=1 -C "$dir" "$name/cargo-audit"
           "$dir/cargo-audit" audit
 
-  # WP7: a pull request to main must add a receipt bundle under supervisor-receipts/ that
-  # `supervisor receipt verify --bundle` accepts, and the bundled contracts' acceptance commands
-  # are run again here, unless `supervisor receipt required` finds an exemption (documentation
-  # only, release-please's version-only pull request, or the receipt-exempt label applied by the
-  # owner). It reports on every pull request, docs-only and release ones included, and is a no-op
+  # WP7: every pull request, whatever its base, must add a receipt bundle under
+  # supervisor-receipts/ that `supervisor receipt verify --bundle` accepts, and the bundled
+  # contracts' acceptance commands are run again here, unless `supervisor receipt required` finds
+  # an exemption (documentation only, release-please's version-only pull request, or the
+  # receipt-exempt label applied by the owner after the last push). The base does not matter
+  # because changing a pull request's base starts no new run. It reports on every pull request,
+  # docs-only and release ones included, and is a no-op
   # success on a push to main, a tag and release.yml's call, so it never needs the `changes` job.
   # Everything the decision rests on comes from the base commit (keys list, docs list,
   # release-please config) or the API (labels and who applied them), never from the pull
-  # request's tree. Limit: on a same-repository pull request this workflow file and the verifier
-  # binary both come from the pull request itself; the protection rests on review plus the key
-  # list read from the base commit. After the owner applies the label, re-run this job: label
-  # events do not start CI. GitHub-hosted on purpose: a fork's pull request must never run on a
+  # request's tree. Limit: on every pull request, a fork's included, this workflow file and the
+  # verifier binary both come from the pull request itself; the protection rests on review plus
+  # the key list read from the base commit. After the owner applies the label, re-run this job:
+  # label events do not start CI, and a later push needs the label removed and applied again. GitHub-hosted on purpose: a fork's pull request must never run on a
   # self-hosted machine, the job runs for docs-only changes too (the picker is skipped then), and
   # it needs gh and jq, which the fresh runners lack. Re-running the acceptance commands repeats
   # part of the test job; it is kept to the bundled contracts' own commands.
@@ -277,7 +279,7 @@ jobs:
           # Only bundles this pull request adds or changes count; the folder accumulates on main.
           mapfile -t bundles < <(git diff --name-only --no-renames --diff-filter=AM "$BASE...$HEAD" -- supervisor-receipts/)
           if [ "${#bundles[@]}" -eq 0 ]; then
-            echo "::error::this pull request to main adds no receipt bundle under supervisor-receipts/ and no exemption applies; run 'supervisor receipt export' on the completed task and commit the bundle, or ask the owner for the receipt-exempt label"
+            echo "::error::this pull request adds no receipt bundle under supervisor-receipts/ and no exemption applies; run 'supervisor receipt export' on the completed task and commit the bundle, or ask the owner for the receipt-exempt label"
             exit 1
           fi
           # The changed-path manifest is recomputed from where this branch left main.
@@ -290,8 +292,9 @@ jobs:
           done
           echo "rerun=true" >> "$GITHUB_OUTPUT"
 
-      # No token and no secrets here: the step names none, and env -i drops the runner's own
-      # variables. Commands run unchanged with bash on Linux; one recorded with Windows-only
+      # No token or secret is in this step's environment: the step names none, and env -i drops
+      # the runner's own variables. Hosted runners allow sudo, so a command could still reach the
+      # job's token through the runner; that is why the job's permissions are read-only. Commands run unchanged with bash on Linux; one recorded with Windows-only
       # syntax fails the job, it is never skipped.
       - name: Re-run the bundled contracts' acceptance commands
         if: github.event_name == 'pull_request' && steps.verify.outputs.rerun == 'true'

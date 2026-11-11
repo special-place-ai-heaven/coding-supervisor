@@ -306,37 +306,48 @@ release tags included.
 be committed with the work. It refuses (exit 3, nothing written) unless the active task's
 stored state verifies, is `completed`, and `supervisor verdict` passes on hook-observed
 receipts for the current worktree, which must still be the candidate the task completed on:
-export right after completion, before committing the work. The bundle holds the repository's root commits, the
-contract, gate state and chain head, the candidate, the tree of the candidate's content
+export right after completion, before committing the work. A contract with no mandatory
+criterion is refused (`no_mandatory_criteria`). The bundle holds the repository's root
+commits, the contract, gate state and chain head, the candidate, the tree of the candidate's content
 (without the documentation list of the contract's base commit and without
 `supervisor-receipts/`), the paths changed since the contract's `base_sha` as git lists them,
-the receipts on the candidate and the reviews on it, signed with the same key as `receipt
+the hook-observed receipts on the candidate (receipts recorded through the MCP server are left
+out: their `output_ref` is the caller's text) and the reviews on it, signed with the same key as `receipt
 sign` over the statement `coding-supervisor receipt bundle v2`. It prints the
 `supervisor-keys.json` entry for the key.
 
-`supervisor receipt verify --bundle <file> [--keys <file>] [--tree <sha>] [--base <sha>]`
-needs no supervisor state. `valid` (exit 0) means: the bundle is the one signed, by a key
-listed and not revoked in the keys file; the task was `completed`; every mandatory criterion
-has an observed receipt with exit code 0 that cites a command the contract names, on the
-bundle's candidate; the contract's review rule is met by the bundled reviews; the bundle was
-made in this repository; its tree equals HEAD's (or `--tree`); every path changed between
-`--base` (default the contract's `base_sha`) and that tree is inside the contract's scope and
-the bundle lists exactly those paths; and every entry of `supervisor-receipts/` is a plain file
+`supervisor receipt verify --bundle <file> [--keys <file>] [--base <sha>]` needs no
+supervisor state. `valid` (exit 0) means: the bundle is the one signed, by a key listed and not
+revoked in the keys file; its file name is its task id followed by `.json`; the task was
+`completed`; the contract has a mandatory criterion, and for each the latest observed receipt
+on the bundle's candidate has exit code 0, `claim_supported` and a command the contract names;
+the contract's review rule is met by the bundled reviews; the bundle was made in this
+repository (its root commits, so a fork counts as the same repository); its tree equals
+HEAD's; every path changed between `--base` (default the contract's `base_sha`) and that tree
+is inside the contract's scope and the bundle lists exactly those paths; and every entry of `supervisor-receipts/` is a plain file
 that parses as a bundle of version 1 (only the bundle being verified is checked further).
-Anything else is `invalid` with a reason (exit 3). It also prints the commands to re-run. On a
+`--base`, the contract's `base_sha` and the bundle's `base_sha` must each be a full commit id
+(40 or 64 hex characters) before anything reaches git. Anything else is `invalid` with a reason
+(exit 3). It also prints the commands to re-run. On a
 pull request that `supervisor receipt required` exempts, CI runs no verify, so no folder check
 either.
 
 `supervisor-receipts/` is outside the candidate identity, so committing a bundle does not make
-it stale; a real change beside it does. What the bundle publishes: the contract (its goal,
-check names, commands and scope are the person's or the agent's own words) with `approval.by`
-replaced by `redacted-os-user sha256:<SHA-256 of the name>` (unsalted, so a guessable name can
-be found by trying names); receipt commands, exit codes, times, `cwd` relative to the project
-and output reference ids; reviewer ids, decisions, times, provenance and a finding count and
-SHA-256. No receipt output, no finding text, no reviewer model, no absolute path. CI cannot
+it stale; a real change beside it does. Anything under that folder is outside the local gate,
+and CI checks only the files a pull request adds or changes there. What the bundle publishes,
+as written: the contract's goal, scope, criterion ids, check names, commands,
+`forbidden_effects`, `artifacts` and `approval.via`, with `approval.by` replaced by
+`redacted-os-user sha256:<SHA-256 of the name>` (unsalted, so a guessable name can be found by
+trying names); receipt commands, exit codes, times, `cwd` relative to the project (or
+`outside-project`) and the hooks' output reference ids; reviewer ids, decisions, times,
+provenance and a finding count and SHA-256. It leaves out receipt output, finding text, the
+reviewer model and the receipts' absolute `cwd`; anything an author wrote into the contract's
+own fields is published as written. `exported_contract_sha256` is the SHA-256 of the exported
+contract text; `stored_contract_sha256` is the stored file's, which CI cannot recheck. CI cannot
 re-walk the gate's hash chain from a bundle (the chain also covers the left-out finding text
 and absolute paths), so the chain head and the stored contract digest are trusted through the
-signature. CI checks are in the "Verify supervisor receipts" job and
+signature. Only the statement is signed: the `signature` object's other fields (`storage`, any
+extra key) are not. CI checks are in the "Verify supervisor receipts" job and
 [docs/adopting-receipt-verification.md](docs/adopting-receipt-verification.md).
 
 ## Harness support
