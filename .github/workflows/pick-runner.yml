@@ -6,7 +6,8 @@
 # self-hosted machine. This job itself always runs GitHub-hosted, so it never waits for the
 # owner's PC (owner, 2026-11-09).
 #
-# On the self-hosted route: a fresh heavy runner when one is online and idle, otherwise
+# On the self-hosted route: any fresh Linux runner that is online and idle (owner, 2026-11-11: every
+# fresh runner shares one resource pool; the heavy and light labels are names only), otherwise
 # ubuntu-latest (owner, 2026-11-02: the fresh runners live on the owner's home PC, which is not
 # always on). The lookup calls the GitHub API with curl and needs no JSON tool, so it also runs on
 # a fresh runner, which has no gh or jq. It uses RUNNER_STATUS_TOKEN, else RELEASE_PLEASE_TOKEN
@@ -43,7 +44,7 @@ jobs:
           SELF_HOSTED: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) }}
         run: |
           linux='"ubuntu-latest"'
-          heavy='["self-hosted","Linux","X64","fresh","heavy"]'
+          fresh='["self-hosted","Linux","X64","fresh"]'
           if [ "$SELF_HOSTED" != "true" ]; then
             echo "fork or ci-hosted pull request: GitHub-hosted by rule"
           else
@@ -70,12 +71,12 @@ jobs:
                 echo "::warning::runner list not understood ($count records, total_count ${total:-missing}); the Linux tests run GitHub-hosted"
                 break
               fi
-              idle_heavy=$(printf '%s\n' "$records" | grep '"status":"online"' | grep '"busy":false' | grep -c '"name":"heavy"' || true)
-              echo "$name: $total runners; idle heavy: $idle_heavy"
-              if [ "$idle_heavy" -gt 0 ]; then
-                linux="$heavy"
+              idle_fresh=$(printf '%s\n' "$records" | grep '"status":"online"' | grep '"busy":false' | grep '"name":"Linux"' | grep -c '"name":"fresh"' || true)
+              echo "$name: $total runners; idle fresh: $idle_fresh"
+              if [ "$idle_fresh" -gt 0 ]; then
+                linux="$fresh"
               else
-                echo "::warning::no idle fresh heavy runner; the Linux tests run GitHub-hosted"
+                echo "::warning::no idle fresh runner; the Linux tests run GitHub-hosted"
               fi
               break
             done
