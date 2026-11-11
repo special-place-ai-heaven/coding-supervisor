@@ -37,7 +37,7 @@ const USAGE: &str = "usage: supervisor mcp [--project <dir>]  (serve the gate as
        supervisor receipt verify [--project <dir>] [--keys <file>]  (check signature.json against the current stored state and the listed keys, default <project>/supervisor-keys.json; exit 0 valid, 3 invalid or unsigned, 1 could not answer, 2 usage)
        supervisor receipt export [--project <dir>]  (write supervisor-receipts/<task id>.json, signed, for an active task completed on hook-observed receipts that supervisor verdict passes; exit 0 written, 3 refused with a reason, nothing written)
        supervisor receipt verify --bundle <file> [--keys <file>] [--project <dir>] [--base <sha>]  (check a bundle without any supervisor state: signature with a listed key, completed, contract hash, observed zero-exit receipts, review rule, repository, HEAD's tree, changed paths since --base (default the contract's base_sha) inside the scope; exit 0 valid, 3 invalid)
-       supervisor receipt required --event <file> [--labels <file>] [--changed <file>] [--docs-paths <file>] [--release-config <file>] [--owner <login>] [--maintainers <a,b>] [--release-author <login>] [--release-branch <name>]  (CI: print {required, reason} for the event; exit 0)
+       supervisor receipt required --event <file> [--labels <file>] [--changed <file>] [--docs-paths <file>] [--release-config <file>] [--owner <login>] [--maintainers <a,b>] [--release-author <login>] [--release-branch <name>] [--head-on-default-branch]  (CI: print {required, reason} for the event; exit 0)
        supervisor install --harness <claude-code|codex|cursor|omp|grok> [--project <dir>] [--home <dir>] [--binary <path>] [--dry-run]
        supervisor --version
 
@@ -125,7 +125,7 @@ fn main() -> ExitCode {
                     "--release-author",
                     "--release-branch",
                 ],
-                &[],
+                &["--head-on-default-branch"],
             )
             .and_then(|f| required::run(&f)),
             _ => Err(Failure::Usage(
