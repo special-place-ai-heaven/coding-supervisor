@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.19.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.19.0...v0.19.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* a pull request whose head is already on the default branch needs no receipt ([a9cf093](https://github.com/special-place-ai-heaven/coding-supervisor/commit/a9cf093d2cbd669bbdea6564a6ab772419b390fe))
+* receipt export refuses changed paths outside the contract's scope ([e516e38](https://github.com/special-place-ai-heaven/coding-supervisor/commit/e516e38e79024e7380eb077311a6621f2660d781))
+* receipt follow-ups (merged head, export scope check, test time limits) ([d43effc](https://github.com/special-place-ai-heaven/coding-supervisor/commit/d43effc2ed1c1c96e643cf5e9a97c7b9877dd809))
+* receipt verify accepts a pull request that changes documentation beside code ([69b3cc9](https://github.com/special-place-ai-heaven/coding-supervisor/commit/69b3cc916040307138f2c502c0df25e96f5c6b50))
+* review follow-ups for the receipt exemption, export refusal and nextest install ([02a9f74](https://github.com/special-place-ai-heaven/coding-supervisor/commit/02a9f748f5a5f33a589cb92b3e5bad7fd3597f1f))
+
 ## [0.19.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.18.2...v0.19.0) (2026-11-11)
 
 
