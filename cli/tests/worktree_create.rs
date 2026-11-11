@@ -860,6 +860,31 @@ fn cleanup_refuses_ignored_files_and_names_them() {
     assert!(listed(&f));
 }
 
+/// WP3 review r4: git status hides an edit to a file marked assume-unchanged or skip-worktree,
+/// and `git worktree remove` would delete it, so cleanup refuses while any file carries a mark.
+#[test]
+fn cleanup_refuses_files_marked_assume_unchanged_or_skip_worktree() {
+    for flag in ["--assume-unchanged", "--skip-worktree"] {
+        let f = Fixture::new(&format!("wt-clean-marked{flag}"));
+        let task = start(&f)["task_id"].as_str().unwrap().to_owned();
+        deactivate(&f, &task);
+        f.git_in(&wt(&f), &["update-index", flag, "src/lib.rs"]);
+        fs::write(wt(&f).join("src").join("lib.rs"), "// hidden edit\n").unwrap();
+        let out = cleanup(&f, &task);
+        assert!(!out.status.success(), "{flag}: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("src/lib.rs") && stderr.contains("nothing was touched"),
+            "{flag}: {stderr}"
+        );
+        assert_eq!(
+            fs::read_to_string(wt(&f).join("src").join("lib.rs")).unwrap(),
+            "// hidden edit\n"
+        );
+        assert!(listed(&f), "{flag}");
+    }
+}
+
 #[test]
 fn cleanup_refuses_committed_work_without_a_receipt() {
     let f = Fixture::new("wt-clean-unreceipted");

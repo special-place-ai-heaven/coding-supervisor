@@ -143,7 +143,8 @@ pub(crate) fn rollback(project: &Path, path: &Path, branch: &str, why: &str) -> 
 /// keeping its branch. Refused while the task is active, when the worktree is no longer the
 /// task's, while it holds uncommitted or untracked work, when it holds commits past the base
 /// without a receipt (`supervisor-receipts/<id>.json` naming the task in its last commit), and
-/// while it holds ignored files, which `git worktree remove` would delete. Links and junctions
+/// while it holds ignored files, which `git worktree remove` would delete, or a file marked
+/// assume-unchanged or skip-worktree, whose edits git status hides. Links and junctions
 /// git does not track are unlinked first, so `git worktree remove` never deletes through them;
 /// their targets must still exist afterwards.
 pub fn cleanup(root: &Path, project: &Path, task_id: &str) -> Result<Value, String> {
@@ -214,11 +215,26 @@ pub fn cleanup(root: &Path, project: &Path, task_id: &str) -> Result<Value, Stri
             crate::git::RECEIPTS_DIR
         ));
     }
-    let tracked: HashSet<String> = git(&worktree, &["ls-files", "-z"])?
+    // `-v` tags each path; a lowercase tag (assume-unchanged) or `S` (skip-worktree) marks a file
+    // whose edits git status does not show and `git worktree remove` would delete.
+    let listing = git(&worktree, &["ls-files", "-v", "-z"])?;
+    let entries: Vec<(char, &str)> = listing
         .split('\0')
-        .filter(|p| !p.is_empty())
-        .map(str::to_owned)
+        .filter_map(|entry| {
+            let mut chars = entry.chars();
+            let tag = chars.next()?;
+            Some((tag, chars.as_str().strip_prefix(' ')?))
+        })
         .collect();
+    if let Some((_, marked)) = entries
+        .iter()
+        .find(|(tag, _)| tag.is_ascii_lowercase() || *tag == 'S')
+    {
+        return Err(format!(
+            "{path} holds {marked}, marked assume-unchanged or skip-worktree, so git status does not show edits to it and removing the worktree would delete them; clear the mark (`git update-index --no-assume-unchanged --no-skip-worktree {marked}`) and commit or discard the edits, then run cleanup again; nothing was touched"
+        ));
+    }
+    let tracked: HashSet<String> = entries.iter().map(|(_, p)| (*p).to_owned()).collect();
     let (links, ignored) = untracked_entries(&worktree, &tracked)?;
     if !ignored.is_empty() {
         let shown = ignored
