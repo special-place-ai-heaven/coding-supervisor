@@ -170,7 +170,11 @@ fn build(project: &Path, root: &Path) -> Result<(Value, String), Failure> {
         .ok_or_else(|| refused("git could not list the changed paths"))?;
     // As verify in CI: a file changed before the task started is not charged by the local gate
     // (G48) but is still in this list.
-    within_scope(&changed, &contract.scope).map_err(|why| refused(&why))?;
+    within_scope(&changed, &contract.scope).map_err(|why| {
+        refused(&format!(
+            "{why}; commit or remove them, then start a new task"
+        ))
+    })?;
     // The tree must be the candidate's: nothing may have changed while it was computed.
     let again = (GitCandidate {
         cwd: project.to_path_buf(),

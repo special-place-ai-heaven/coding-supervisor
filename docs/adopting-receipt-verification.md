@@ -54,7 +54,7 @@ required" only for a push to `main` and a tag, and "required" for any other even
    after the pull request's last update in the event that started the run, so after any later
    push: remove the label, apply it again, and re-run the job.
 5. **Per pull request.** Finish the task under the hooks, run `supervisor receipt export` right
-   away, and commit the bundle with the work. Export runs verify's scope check on the same base
+   away, and commit the bundle with the work. Export runs verify's scope check on the contract's `base_sha`
    and refuses, naming the paths, when a changed path is outside the contract's scope (for
    example a file already changed before the task started, which the local gate does not charge
    to the task). Export refuses once the completed work has been

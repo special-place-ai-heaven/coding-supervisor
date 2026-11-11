@@ -130,6 +130,9 @@ fn a_head_already_on_the_default_branch_needs_no_receipt() {
     // An empty change list without the flag still needs a receipt.
     let (req, why) = required(&c, &event, Some(&[]), Some(&[]), &[]);
     assert!(req, "{why}");
+    // The flag with changed paths is a workflow mistake (a head on the tip changes nothing).
+    let (req, why) = required(&c, &event, Some(&["src/lib.rs"]), Some(&[]), &merged);
+    assert!(req, "{why}");
     // The flag exempts pull requests only; an event this rule does not know still needs one.
     let (req, why) = required(&c, &json!({"inputs":{}}), Some(&[]), None, &merged);
     assert!(req, "{why}");

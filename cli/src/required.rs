@@ -4,7 +4,8 @@
 //!
 //! Every pull request needs a receipt, whatever its base, unless one exemption holds:
 //! (0) CI found its head commit already on the default branch (`--head-on-default-branch`,
-//! passed only when `git merge-base --is-ancestor <head> <tip>` exits 0), so it brings nothing;
+//! passed only when `git merge-base --is-ancestor <head> <tip>` exits 0) and no path changed, so
+//! it brings nothing;
 //! (a) every changed path is on the documentation list; (b) it is release-please's version-only
 //! pull request: head branch exactly the release branch, opened by the release author, and every
 //! changed path one of the files release-please writes; (c) its last `receipt-exempt`
@@ -111,13 +112,14 @@ fn decide(input: &Input) -> (bool, String) {
             ),
         };
     };
-    if input.head_on_default {
+    let changed = input.changed.as_deref().filter(|c| !c.is_empty());
+    // A head on the tip changes nothing, so the flag beside changed paths is a workflow mistake.
+    if input.head_on_default && changed.is_none() {
         return (
             false,
             "the head commit is already on the default branch: nothing to receipt".into(),
         );
     }
-    let changed = input.changed.as_deref().filter(|c| !c.is_empty());
     if let Some(changed) = changed
         && !input.docs.is_empty()
         && changed

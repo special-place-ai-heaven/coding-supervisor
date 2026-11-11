@@ -262,12 +262,6 @@ jobs:
         if: steps.event.outputs.pr == 'true'
         continue-on-error: true
 
-      # A bundled contract can name `cargo nextest run`, which the re-run step below runs.
-      - name: Install cargo-nextest if missing
-        if: steps.event.outputs.pr == 'true'
-        run: |
-          command -v cargo-nextest > /dev/null || curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
-
       - name: Build the verifier from this pull request
         if: steps.event.outputs.pr == 'true'
         run: |
@@ -336,6 +330,14 @@ jobs:
             jq -c '.acceptance[].command' "$dir/verify.json" >> "$dir/commands.jsonl"
           done
           echo "rerun=true" >> "$GITHUB_OUTPUT"
+
+      # A bundled contract can name `cargo nextest run`. Downloaded only when commands are re-run,
+      # so a pull request that needs no receipt does not depend on the download; only the one
+      # binary is taken from the archive.
+      - name: Install cargo-nextest if missing
+        if: steps.event.outputs.pr == 'true' && steps.verify.outputs.rerun == 'true'
+        run: |
+          command -v cargo-nextest > /dev/null || curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin" cargo-nextest
 
       # No token or secret is in this step's environment: the step names none, and env -i drops
       # the runner's own variables. Hosted runners allow sudo, so a command could still reach the

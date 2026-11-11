@@ -86,7 +86,7 @@ fn a_wrong_contract_hash_is_invalid() {
     invalid(f.verify(&bundle, &keys, &[]), "does not match its SHA-256");
 }
 
-/// Export runs verify's scope check on the same base and refuses, naming the paths, writing
+/// Export runs verify's scope check on the contract's `base_sha` and refuses, naming the paths, writing
 /// nothing. Two ways the local gate lets such a path through: a file already changed when the
 /// task started (G48 does not charge it to the task), and one committed during the task (outside
 /// the candidate's dirty paths).

@@ -76,7 +76,7 @@ Five sessions, 16.87 USD in total.
    of the Linux test job. Decide whether the receipt job may skip commands the same CI run
    already ran on the same commit.
 3. Done (branch `fix/receipt-followups`): `supervisor receipt export` runs verify's scope check
-   (one shared function) on the same base and refuses with the paths named, so a file changed
+   (one shared function) on the contract's `base_sha` and refuses with the paths named, so a file changed
    before the task started and outside its scope fails at export, not in CI
    (`cli/tests/receipt_verify.rs`).
 4. Done (branch `fix/receipt-followups`): two tests for the combination of the dirty-tree
