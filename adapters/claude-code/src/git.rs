@@ -10,6 +10,12 @@ use std::time::{Duration, Instant};
 
 const DEADLINE: Duration = Duration::from_secs(5);
 
+/// WP7: where committed receipt bundles live, repository-relative. Left out of the candidate
+/// identity (dirty digest, changed paths and every tree), so committing a bundle does not make
+/// the evidence it carries stale.
+pub const RECEIPTS_DIR: &str = "supervisor-receipts";
+const RECEIPTS_EXCLUDE: &str = ":(top,exclude)supervisor-receipts/";
+
 /// Why git gave no exit status to read.
 pub enum Failure {
     /// git could not be started or waited for.
@@ -178,15 +184,33 @@ fn tree(cwd: &Path, state_dir: &Path, commit: Option<&str>, docs: &[String]) -> 
         .collect();
     let mut add = match commit {
         Some(commit) => vec!["read-tree", commit],
-        // The gate's own fallback state directory inside the project is not content.
-        None => vec!["add", "-A", "--", ":/", ":(top,exclude).supervisor/"],
+        // The gate's own fallback state directory inside the project is not content, and
+        // neither are committed receipt bundles (WP7), which describe the tree they sit in.
+        None => vec![
+            "add",
+            "-A",
+            "--",
+            ":/",
+            ":(top,exclude).supervisor/",
+            RECEIPTS_EXCLUDE,
+        ],
     };
     if commit.is_none() {
         add.extend(excludes.iter().map(String::as_str));
     }
     // Tracked and committed documentation leaves the scratch index too, so a committed docs
-    // edit does not change the tree either.
-    let includes: Vec<String> = docs.iter().map(|p| format!(":(top,glob){p}")).collect();
+    // edit does not change the tree either. So do tracked bundles; for the worktree only when the
+    // folder is there, so a project that never exports runs no extra git.
+    // shortcut: a bundle deleted from the worktree but still in the index stays in the tree
+    // until that deletion is committed; check the index instead if that ever matters.
+    let mut includes: Vec<String> = docs.iter().map(|p| format!(":(top,glob){p}")).collect();
+    let receipts_here = match commit {
+        Some(_) => true,
+        None => crate::location::worktree_root(cwd).is_some_and(|top| top.join(RECEIPTS_DIR).is_dir()),
+    };
+    if receipts_here {
+        includes.push(format!(":(top){RECEIPTS_DIR}/"));
+    }
     let mut remove = vec!["rm", "--cached", "-r", "-q", "--ignore-unmatch", "--"];
     remove.extend(includes.iter().map(String::as_str));
     let tree = ok(&add, &env)

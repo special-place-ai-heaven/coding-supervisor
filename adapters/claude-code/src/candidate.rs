@@ -85,7 +85,13 @@ impl GitCandidate {
         let mut changed_paths: Vec<String> = paths
             .iter()
             .map(|p| p.strip_prefix(prefix.as_str()).unwrap_or(p).to_owned())
-            .filter(|p| !p.is_empty() && !p.starts_with(".supervisor/"))
+            .filter(|p| {
+                !p.is_empty()
+                    && !p.starts_with(".supervisor/")
+                    && !p
+                        .strip_prefix(crate::git::RECEIPTS_DIR)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
             .collect();
         changed_paths.sort();
         changed_paths.dedup();
