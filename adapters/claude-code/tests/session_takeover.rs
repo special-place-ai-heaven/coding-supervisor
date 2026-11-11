@@ -279,6 +279,77 @@ fn an_ended_owners_worktree_task_with_uncommitted_work_in_its_worktree_needs_a_c
     assert_eq!(f.active(), f.task);
 }
 
+/// WP3 review r4: a person's task stays a person's after a prompt makes it prompt-managed. Once
+/// that session ends, an agent's start does not archive it, clean or not, with or without
+/// `abandon_previous`, and the prompt hook does not offer that start; the user's direct resume
+/// prompt and then a direct cancel prompt still end it.
+#[test]
+fn an_agent_start_does_not_abandon_a_persons_task_after_its_session_ended() {
+    let mut f = Fixture::repository();
+    let worktree = worktree_of(&f.project);
+    f.task = lifecycle::start_in_worktree(
+        &f.root,
+        &supervisor_claude_code::state::Writer::task_start(Some(&f.project)),
+        &contract(),
+        false,
+        None,
+        None,
+        &worktree,
+    )
+    .unwrap()["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let event = f.prompt("owner", "first");
+    f.propose(&event, "continue", json!({"task_id": f.task}))
+        .unwrap();
+    f.end_session("owner");
+    let event = f.prompt("replacement", "new");
+    for extra in [
+        json!({"contract": contract()}),
+        json!({"contract": contract(), "abandon_previous": true}),
+    ] {
+        let error = f.propose(&event, "start", extra).unwrap_err();
+        assert!(
+            error.contains("started by a person")
+                && error.contains("resume")
+                && error.contains("supervisor task cancel"),
+            "{error}"
+        );
+        assert_eq!(f.active(), f.task);
+    }
+    assert!(
+        !f.root
+            .join("archives")
+            .join(format!("{}.json", f.task))
+            .exists()
+    );
+    let advice = f.advice("replacement", "advice");
+    assert!(advice.contains("started by a person"), "{advice}");
+    assert!(!advice.contains("\"action\":\"start\""), "{advice}");
+    let control = |id: &str, prompt: &str| {
+        autonomy::record_prompt(
+            &f.root,
+            &f.project,
+            &json!({"session_id":"replacement","prompt_id":id,"prompt":prompt}),
+        )
+        .unwrap()
+    };
+    f.propose(
+        &control("resume", "resume"),
+        "resume",
+        json!({"task_id": f.task}),
+    )
+    .unwrap();
+    f.propose(
+        &control("cancel", "cancel"),
+        "cancel",
+        json!({"task_id": f.task}),
+    )
+    .unwrap();
+    assert_eq!(f.archive()["disposition"], "cancelled");
+}
+
 /// The protection that must hold: a session that has not reported ending keeps its task,
 /// whatever the other session asserts.
 #[test]

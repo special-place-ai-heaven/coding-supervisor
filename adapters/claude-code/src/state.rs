@@ -387,6 +387,8 @@ fn commands(c: &Value, id: &str) -> Result<Vec<String>, String> {
 
 /// The writer a migrated v1 contract records in its approval; never written to a file.
 pub const V1_MIGRATION: &str = "v1-migration";
+/// The writer a person's own task start or next records in its approval.
+pub const PERSON_START: &str = "task-start";
 /// Journaled in `reasons` on every call that judged a migrated v1 contract.
 pub const V1_MIGRATED_REASON: &str =
     "contract v1 migrated in memory: isolation none, no limits, no review requirement";
@@ -581,7 +583,7 @@ impl<'a> Writer<'a> {
             .or_else(|_| std::env::var("USER"))
             .ok();
         Self {
-            via: "task-start",
+            via: PERSON_START,
             project,
             by,
         }

@@ -1124,6 +1124,84 @@ fn an_agent_cannot_replace_a_persons_task_completed_without_observed_evidence() 
     );
 }
 
+/// `continue` for the person's task `id`, from a hook prompt or a caller-asserted one.
+fn convert(env: &Env, d: &Dir, id: &str, hook: bool) {
+    let prompt =
+        json!({"session_id":"owner","prompt_id":"first","prompt":"Implement a small change"});
+    let event = if hook {
+        autonomy::record_prompt(&env.state_dir, &d.0, &prompt)
+    } else {
+        autonomy::record_intent(&env.state_dir, &d.0, &prompt)
+    }
+    .unwrap();
+    autonomy::propose(
+        &env.state_dir,
+        &d.0,
+        &json!({"event_id":event["event_id"],"nonce":event["nonce"],
+            "prompt_hash":event["prompt_hash"],"action":"continue","task_id":id}),
+    )
+    .unwrap();
+}
+
+/// WP3 review r4: a caller-asserted `continue` that makes a person's task prompt-managed does
+/// not make it an agent's task: completed on caller-asserted receipts, it is still not replaced
+/// by an agent's start. After a hook prompt's `continue`, MCP cannot complete the task at all.
+#[test]
+fn an_agent_cannot_replace_a_converted_persons_task_completed_without_observed_evidence() {
+    let d = dir("person-converted-hook");
+    let (env, id) = person(&d, json!({"turns":10}));
+    convert(&env, &d, &id, true);
+    let task = lifecycle::active_task(&env.state_dir).unwrap().unwrap();
+    assert_eq!(task.task_id, id);
+    assert!(autonomy::requires_observed_completion(&task.dir).unwrap());
+
+    {
+        let d = dir("person-converted-asserted");
+        let (mut env, id) = person(&d, json!({"turns":10}));
+        convert(&env, &d, &id, false);
+        let candidate = coding_supervisor::CandidateId {
+            base_commit: "base".into(),
+            dirty_digest: "one".into(),
+        };
+        lifecycle::with_task(&env.state_dir, Some(&id), None, None, |stage| {
+            let (_, digest) = state::read_contract(stage)?;
+            let mut gate = state::Gate::new(
+                "wp4".to_owned(),
+                coding_supervisor::Checkpoint {
+                    state: TaskState::Completed,
+                    candidate: Some(candidate.clone()),
+                    open_findings: vec![],
+                    consumed_repair_rounds: 0,
+                    next_action: String::new(),
+                },
+            );
+            gate.receipts.push(coding_supervisor::VerificationReceipt {
+                criterion: coding_supervisor::CriterionId("C2".into()),
+                candidate: candidate.clone(),
+                command: "cargo test".into(),
+                cwd: ".".into(),
+                exit_code: Some(0),
+                output_ref: "mcp-asserted:out".into(),
+                claim_supported: true,
+                started_at: 1,
+                finished_at: 2,
+            });
+            state::save_gate(stage, &gate, &digest)?;
+            Ok(Value::Null)
+        })
+        .unwrap();
+        let why = propose_start(&mut env, &d).unwrap_err();
+        assert!(why.contains("started by a person"), "{why}");
+        assert_eq!(
+            lifecycle::active_task(&env.state_dir)
+                .unwrap()
+                .unwrap()
+                .task_id,
+            id
+        );
+    }
+}
+
 /// Positive control: the same task completed on hook-observed evidence may be followed by an
 /// agent's start.
 #[test]

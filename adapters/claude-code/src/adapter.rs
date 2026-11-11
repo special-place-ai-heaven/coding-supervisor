@@ -943,6 +943,14 @@ fn foreign_task(root: &Path, payload: &Value) -> bool {
         .is_some_and(|active| crate::autonomy::owns_session(&active.dir, session) == Ok(false))
 }
 
+/// Whether the active task is a person's (`autonomy::persons_task`); unknown reads as not.
+fn persons_active_task(root: &Path) -> bool {
+    lifecycle::active_task(root)
+        .ok()
+        .flatten()
+        .is_some_and(|active| crate::autonomy::persons_task(&active.dir) == Ok(true))
+}
+
 /// Whether the active task's other-session owner has reported its end; `None` when this
 /// session owns the task, there is none, or ownership cannot be read.
 fn foreign_owner_ended(root: &Path, payload: &Value) -> Option<bool> {
@@ -1037,6 +1045,16 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                         "The active task {} is completed and takes no more work (continue is refused). Next call for new work: intent_apply {call} plus \"contract\": a scoped contract, at least {}; for a question, the same fields with \"action\":\"discussion\".",
                         intent["task_id"].as_str().unwrap_or_default(),
                         crate::autonomy::MINIMAL_CONTRACT
+                    )
+                } else if foreign_owner_ended(&root, payload) == Some(true)
+                    && persons_active_task(&root)
+                {
+                    // WP3 review r4: an agent's start does not archive a person's task.
+                    call["action"] = "discussion".into();
+                    let id = intent["task_id"].as_str().unwrap_or_default();
+                    format!(
+                        "The active task {id} was started by a person, and the session that made it prompt-managed has ended; an agent's start does not archive it. If the user asked to resume that task, send \"action\":\"resume\". Otherwise call intent_apply {call} and tell the user that the task waits for them: their direct resume prompt takes it over, or {}.",
+                        crate::autonomy::person_cancel(&intent, id)
                     )
                 } else if foreign_owner_ended(&root, payload) == Some(true) {
                     // The owner reported its end: this session may start the next task.
