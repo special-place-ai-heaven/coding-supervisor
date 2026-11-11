@@ -577,6 +577,20 @@ fn listed(mut problems: Vec<String>) -> Vec<String> {
     problems
 }
 
+/// G50: a refusal for a missing or stale receipt names only the first such criterion; the
+/// criteria never run are named after it, its own entry left out.
+fn with_unrun(error: &GateError, never_run: &[String]) -> String {
+    let (GateError::MissingReceipt(first) | GateError::StaleReceipt(first)) = error else {
+        return render(error);
+    };
+    let own = format!("{}{NOT_RUN}", first.0);
+    let rest = never_run.iter().filter(|n| **n != own).cloned().collect();
+    std::iter::once(render(error))
+        .chain(listed(rest))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// What the pre-intent gate lets through while the current prompt is unclassified.
 fn inspection(payload: &Value) -> bool {
     read_only_tool(payload)
@@ -2518,15 +2532,19 @@ impl Session {
 
     /// The latest dispatch wins even when it has no valid completion. An older success
     /// must not hide a newer failed, interrupted, pending, or invalidated execution.
-    /// G50: every unmet mandatory criterion gets its own entry; a criterion never run is named
-    /// only when there is already something to refuse, so it adds words, never a refusal. The
-    /// list is whole; callers shorten it with [`listed`] after deciding on it.
-    fn latest_attempts(&self, dir: &Path, project: &Path) -> Vec<String> {
+    /// G50: every unmet mandatory criterion gets its own entry; a criterion never run adds words,
+    /// never a refusal. It is in the first list when a dispatched gap is, otherwise in the second,
+    /// for [`with_unrun`] to add to a missing or stale receipt refusal. The first list is whole;
+    /// callers shorten it with [`listed`] after deciding on it.
+    fn latest_attempts(&self, dir: &Path, project: &Path) -> (Vec<String>, Vec<String>) {
         if let Err(why) = crate::autonomy::validate_entrypoints(dir, project) {
-            return vec![why];
+            return (vec![why], Vec::new());
         }
         let Ok(current) = &self.observed else {
-            return vec!["candidate identity could not be observed".to_owned()];
+            return (
+                vec!["candidate identity could not be observed".to_owned()],
+                Vec::new(),
+            );
         };
         let rows = match std::fs::read_to_string(dir.join("runs.jsonl")) {
             Ok(text) => match text
@@ -2535,21 +2553,34 @@ impl Session {
                 .collect::<Result<Vec<_>, _>>()
             {
                 Ok(rows) => rows,
-                Err(_) => return vec!["invalid command observation journal".to_owned()],
+                Err(_) => {
+                    return (
+                        vec!["invalid command observation journal".to_owned()],
+                        Vec::new(),
+                    );
+                }
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(_) => return vec!["command observation journal unavailable".to_owned()],
+            Err(_) => {
+                return (
+                    vec!["command observation journal unavailable".to_owned()],
+                    Vec::new(),
+                );
+            }
         };
         let mut current_rows = Vec::new();
         for row in rows {
             if text(&row, "kind") == Some("dispatch") {
                 let Some(dispatch) = text(&row, "dispatch_id") else {
-                    return vec!["command dispatch has no identity".to_owned()];
+                    return (
+                        vec!["command dispatch has no identity".to_owned()],
+                        Vec::new(),
+                    );
                 };
                 match crate::autonomy::dispatch_is_current(dir, dispatch) {
                     Ok(true) => {}
                     Ok(false) => continue,
-                    Err(why) => return vec![why],
+                    Err(why) => return (vec![why], Vec::new()),
                 }
             }
             current_rows.push(row);
@@ -2646,10 +2677,11 @@ impl Session {
                 }
             }
         }
-        if !problems.is_empty() {
-            problems.extend(never_run);
+        if problems.is_empty() {
+            return (problems, never_run);
         }
-        problems
+        problems.extend(never_run);
+        (problems, Vec::new())
     }
 
     /// WP4: a PreToolUse at a reached limit that is not [`limit_exempt`] is refused whatever the
@@ -2843,9 +2875,9 @@ impl Session {
             return Ok(Decision::None);
         }
         self.note_asserted(reasons);
-        problems.extend(listed(
-            self.latest_attempts(dir, Path::new(text(payload, "cwd").unwrap_or("."))),
-        ));
+        let (attempts, never_run) =
+            self.latest_attempts(dir, Path::new(text(payload, "cwd").unwrap_or(".")));
+        problems.extend(listed(attempts));
         let completed = self.task.state() == TaskState::Completed;
         let accepted = if completed || self.task.state() == TaskState::ReadyForReview {
             self.observed_evidence()
@@ -2860,7 +2892,7 @@ impl Session {
                 | GateError::StaleReceipt(_)
                 | GateError::FailingReceipt { .. }
                 | GateError::OutOfScope(_)),
-            ) => problems.push(render(&e)),
+            ) => problems.push(with_unrun(&e, &never_run)),
             Err(e) => reasons.push(format!("try_accept: {}", render(&e))),
         }
         if problems.is_empty() {
@@ -3054,7 +3086,7 @@ impl Session {
         // A repair round is spent only on a candidate judged wrong, never on absent evidence.
         // A redefined check entrypoint is a defect in the candidate.
         let mut judged_wrong = crate::autonomy::validate_entrypoints(dir, project).is_err();
-        let attempts = self.latest_attempts(dir, project);
+        let (attempts, never_run) = self.latest_attempts(dir, project);
         // M6 rides on strict, which is when reproduction is required.
         let few_tests = if self.task.requires_reproduction() {
             self.too_few_tests(dir)?
@@ -3073,7 +3105,7 @@ impl Session {
         let mut review_gap = None;
         let result = if problems.is_empty() {
             self.observed_evidence()
-                .map_err(|e| render(&e))
+                .map_err(|e| with_unrun(&e, &never_run))
                 .and_then(|()| {
                     match self.task.state() {
                         TaskState::Completed => self.observed_evidence(),
@@ -3095,7 +3127,7 @@ impl Session {
                             }
                             _ => None,
                         };
-                        render(&e)
+                        with_unrun(&e, &never_run)
                     })
                 })
         } else {

@@ -374,6 +374,26 @@ fn replay_a18_self_reported_checks_cannot_mark_ready() {
     assert_eq!(gate(&env)["state"], "verifying");
 }
 
+/// G50 at SubagentStop: a handback with no check run names every check, not only the first.
+#[test]
+fn replay_a_handback_with_no_check_run_names_every_check() {
+    let d = dir("g50-handback");
+    let mut env = env(&d, Some(four()), fake("one", &["src/lib.rs"]));
+    edits(&mut env, "w1");
+    let r = handle(
+        &handback("w1", "VERDICT: PASS\nCHECKS RUN: 0", false),
+        &mut env,
+    );
+    let why = blocked(&r);
+    assert!(why.contains("missing C1"), "{why}");
+    for id in ["C2", "C3", "C4"] {
+        assert!(
+            why.contains(&format!("{id} has no observed run on this candidate")),
+            "{why}"
+        );
+    }
+}
+
 #[test]
 fn replay_a19_changed_candidate_makes_receipts_stale() {
     let d = dir("a19");

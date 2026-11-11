@@ -496,6 +496,30 @@ fn the_stop_refusal_lists_every_unmet_criterion() {
     assert_eq!(why.matches("CARGO_BUILD_JOBS").count(), 1, "{why}");
 }
 
+/// G50: with no check run at all, the first Stop refusal names every one, not only the first
+/// the core finds missing.
+#[test]
+fn a_stop_with_no_check_run_names_every_check() {
+    let (_fixture, mut env) = setup_with(json!([
+        {"id":"C1","check":"format","mandatory":true,"command":"cargo fmt"},
+        {"id":"C2","check":"lint","mandatory":true,"command":"cargo clippy"},
+        {"id":"C3","check":"test","mandatory":true,"command":"cargo test"}]));
+    let refusal = stop(&mut env);
+    let Decision::Block(why) = &refusal else {
+        panic!("{refusal:?}");
+    };
+    assert!(why.contains("missing C1"), "{why}");
+    assert!(
+        why.contains("C2 has no observed run on this candidate"),
+        "{why}"
+    );
+    assert!(
+        why.contains("C3 has no observed run on this candidate"),
+        "{why}"
+    );
+    assert!(!why.contains("C1 has no observed run"), "{why}");
+}
+
 /// G50: with only jobs still running, every one is named, and the next stop in the turn waits
 /// as G27 does for one.
 #[test]
@@ -581,6 +605,22 @@ fn a_long_refusal_list_is_bounded() {
     assert!(
         matches!(&refusal, Decision::Block(why) if why.contains("K7 latest execution")
             && !why.contains("K8 latest execution") && why.contains("and 2 more unmet")),
+        "{refusal:?}"
+    );
+}
+
+/// G50: the checks never run, named after a missing receipt, are bounded the same way.
+#[test]
+fn a_long_list_of_checks_never_run_is_bounded() {
+    let criteria: Vec<Value> = (0..10)
+        .map(|i| json!({"id":format!("K{i}"),"check":"test","mandatory":true,"command":format!("check-{i}")}))
+        .collect();
+    let (_fixture, mut env) = setup_with(json!(criteria));
+    let refusal = stop(&mut env);
+    assert!(
+        matches!(&refusal, Decision::Block(why) if why.contains("missing K0")
+            && why.contains("K8 has no observed run") && !why.contains("K9 has no observed run")
+            && why.contains("and 1 more unmet")),
         "{refusal:?}"
     );
 }
