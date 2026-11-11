@@ -2053,16 +2053,20 @@ fn git_subcommand<'a>(words: &[&'a str]) -> Option<&'a str> {
     None
 }
 
-/// A path that exists but cannot be resolved: a symlink or junction whose target is missing.
-/// Its name proves nothing, since a write through it lands wherever the target is.
+/// A path that cannot be placed: a symlink or junction whose target is missing, or a `..` that
+/// `fold_dotdots` cannot fold. Its name proves nothing, since a write through it lands
+/// wherever the target, or the writer's reading of the `..`, puts it.
 struct Unresolvable;
 
 /// `path` relative to the canonical `project` (see `location::canonical_project`), in git's
 /// `/`-separated form; `Ok(None)` outside the project. The deepest existing ancestor is
 /// resolved, so a new file under a symlinked or short-name spelling of the project still
-/// matches.
+/// matches. A `..` that no link can redirect is folded first (`fold_dotdots`), so a `..`
+/// through a directory that does not exist is judged where it lands; any other `..` cannot be
+/// placed.
 fn project_relative(project: &str, path: &Path) -> Result<Option<String>, Unresolvable> {
-    let mut existing = path;
+    let folded = fold_dotdots(path)?;
+    let mut existing = folded.as_path();
     let mut missing = Vec::new();
     let resolved = loop {
         if let Ok(dir) = std::fs::canonicalize(existing) {
@@ -2092,6 +2096,28 @@ fn project_relative(project: &str, path: &Path) -> Result<Option<String>, Unreso
         .strip_prefix('/')
         .filter(|_| same)
         .map(str::to_owned))
+}
+
+/// `path` with each `..` folded into the entry before it when that entry does not exist or is
+/// a plain directory: no link sits there, so the text says where the path lands, while Linux
+/// (and Windows for a `\\?\` path) cannot resolve a `..` through a missing directory. A `..`
+/// after a link, a file or the root is `Unresolvable`: a writer that folds the text and one
+/// that leaves it to the OS land in different places. `Path::components` already drops inner
+/// `.` segments.
+fn fold_dotdots(path: &Path) -> Result<PathBuf, Unresolvable> {
+    let mut folded = PathBuf::new();
+    for component in path.components() {
+        if component != Component::ParentDir {
+            folded.push(component);
+        } else if matches!(folded.components().next_back(), Some(Component::Normal(_)))
+            && !matches!(std::fs::symlink_metadata(&folded), Ok(meta) if !meta.is_dir())
+        {
+            folded.pop();
+        } else {
+            return Err(Unresolvable);
+        }
+    }
+    Ok(folded)
 }
 
 /// Refuse everywhere a refusal is possible; gate.json is left exactly as found.
@@ -3845,6 +3871,92 @@ mod deny_path_tests {
         let _ = fs::remove_dir(&link);
         let _ = fs::remove_dir_all(&root);
         assert_eq!(effect.as_deref(), Some("deny_path:src/"));
+    }
+
+    /// A `..` through a directory that does not exist is judged where it lands. The paths use
+    /// the canonical spelling (on Windows `\\?\`, which the OS does not fold), so the case
+    /// fails here as the plain spelling does on Linux.
+    #[test]
+    fn deny_path_refuses_a_dotdot_through_a_missing_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "supervisor-deny-path-dotdot-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("project").join("src")).unwrap();
+        fs::create_dir_all(root.join("project").join("docs")).unwrap();
+        let project = fs::canonicalize(root.join("project")).unwrap();
+        let effect = |rest: &str| {
+            let sep = std::path::MAIN_SEPARATOR_STR;
+            let path = format!("{}{sep}{}", project.display(), rest.replace('/', sep));
+            let payload = json!({"tool_name":"Write","cwd":project,
+                "tool_input":{"file_path":path,"content":"x"}});
+            forbidden_effect(&payload, &["deny_path:src/".to_owned()])
+        };
+        let into_src = effect("nope/../src/x.rs");
+        let into_docs = effect("src/nope/../../docs/x.rs");
+        let outside = effect("nope/../../outside/x.rs");
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(into_src.as_deref(), Some("deny_path:src/"));
+        assert_eq!(into_docs, None);
+        assert_eq!(outside, None);
+    }
+
+    /// A `..` after a file, after a link, or after an earlier fold followed by a link lands where
+    /// the writer decides (a writer that folds the text and the OS can disagree), so every
+    /// `deny_path` refuses it. Canonical spelling as above.
+    #[test]
+    fn deny_path_refuses_a_dotdot_it_cannot_fold() {
+        let root = std::env::temp_dir().join(format!(
+            "supervisor-deny-path-unfolded-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let (project, outside) = (root.join("project"), root.join("outside"));
+        fs::create_dir_all(project.join("src").join("generated")).unwrap();
+        fs::create_dir_all(project.join("docs")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(project.join("README.md"), "x").unwrap();
+        let project = fs::canonicalize(project).unwrap();
+        let link = |at: &std::path::Path, to: &std::path::Path| {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(to, at).unwrap();
+            #[cfg(windows)]
+            {
+                let made = std::process::Command::new("cmd")
+                    .args(["/C", "mklink", "/J"])
+                    .arg(at)
+                    .arg(to)
+                    .output()
+                    .unwrap();
+                assert!(made.status.success(), "mklink /J failed");
+            }
+        };
+        let (out, gen_link) = (project.join("src").join("out"), project.join("gen"));
+        link(&out, &outside);
+        link(&gen_link, &project.join("src").join("generated"));
+        let effect = |rest: &str| {
+            let sep = std::path::MAIN_SEPARATOR_STR;
+            let path = format!("{}{sep}{}", project.display(), rest.replace('/', sep));
+            let payload = json!({"tool_name":"Write","cwd":project,
+                "tool_input":{"file_path":path,"content":"x"}});
+            forbidden_effect(&payload, &["deny_path:src/".to_owned()])
+        };
+        let after_file = effect("README.md/../src/x.rs");
+        let after_link = effect("src/out/../x.rs");
+        let after_fold = effect("nope/../gen/../x.rs");
+        let folded = effect("src/nope/../../docs/x.rs");
+        #[cfg(windows)]
+        for at in [&out, &gen_link] {
+            let _ = fs::remove_dir(at);
+        }
+        let _ = fs::remove_dir_all(&root);
+        let denied = Some("deny_path:src/".to_owned());
+        assert_eq!(
+            [after_file, after_link, after_fold],
+            [denied.clone(), denied.clone(), denied]
+        );
+        assert_eq!(folded, None);
     }
 }
 
