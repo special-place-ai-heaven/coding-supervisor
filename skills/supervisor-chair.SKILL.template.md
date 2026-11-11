@@ -83,9 +83,10 @@ When `task_state` identifies an active task, do not call `task_start` again;
 resume that task or use the supported explicit rollover command.
 
 Keep the returned generated `task_id` and send it on MCP mutations. Never
-substitute the contract's caller-owned id. Explicit `supervisor task start`,
-`task resume`, `task next`, `task deactivate` and `task rebind` remain recovery
-interfaces for pre-existing manual tasks, not steps to assign to the user.
+substitute the contract's caller-owned id. `supervisor task start`,
+`task next`, `task deactivate` and `task rebind` are commands a person runs in
+their own terminal for pre-existing manual tasks; the gate refuses them from
+agents, so do not run them. `task resume` only reads.
 An unfinished task needs an explicit disposition; do not delete its history.
 
 1. Run each criterion's command exactly as the contract names it, on its

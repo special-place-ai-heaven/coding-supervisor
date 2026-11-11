@@ -33,7 +33,7 @@
   },
   {
     "name": "task_start",
-    "description": "Activate one explicitly shared worktree task from a contract. Returns a generated task_id distinct from contract id. Refuses an existing task; use supervisor task next for rollover and supervisor task deactivate to return inactive. Receipts remain caller-asserted.",
+    "description": "Activate one explicitly shared worktree task from a contract. Returns a generated task_id distinct from contract id. Refuses an existing task; rollover (supervisor task next) and returning inactive (supervisor task deactivate) are a person's commands, which the gate refuses from agents. Receipts remain caller-asserted.",
     "inputSchema": {
       "type": "object",
       "properties": {

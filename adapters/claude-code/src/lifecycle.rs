@@ -578,7 +578,7 @@ pub fn with_task(
             let bindings = sessions.as_object_mut().ok_or("invalid session bindings")?;
             match bindings.get(session).and_then(Value::as_str) {
                 Some(bound) if bound != active.task_id => return Err(
-                    "session belongs to an earlier task; explicitly task rebind before continuing"
+                    "session belongs to an earlier task; a person runs `supervisor task rebind` from their own terminal before this session continues"
                         .to_owned(),
                 ),
                 Some(_) => {}
