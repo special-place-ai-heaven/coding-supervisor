@@ -1,0 +1,5 @@
+command: cargo test -p supervisor-claude-code --test autonomy --test lifecycle -- concurrent_duplicate_delivery_creates_one_task_and_restart_replays_it rollover_freezes_evidence_separates_ids_and_deactivates duplicate_events_are_idempotent_and_stale_sessions_cannot_write --exact --nocapture
+exit: 0
+command: cargo test -p supervisor --test worktree_create -- one_task_per_worktree_and_the_path_is_free_again_after_cleanup an_existing_path_is_refused_and_nothing_starts a_replayed_start_with_another_worktree_setting_is_refused --exact --nocapture
+exit: 0
+overall exit: 0

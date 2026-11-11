@@ -1,0 +1,22 @@
+$ cargo test -p supervisor-claude-code --test replay -- replay_r28_out_of_scope_path_refuses --exact --nocapture
+    Finished `test` profile [unoptimized] target(s) in 0.29s
+     Running tests\replay.rs (<target>\debug\deps\replay-7b6e4835345a58d8.exe)
+
+running 1 test
+test replay_r28_out_of_scope_path_refuses ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 1.60s
+[exit 0]
+
+$ cargo test -p supervisor --test level -- hook_at_ultra_denies_writes_outside_the_contract_scope ultra_file_scope_is_exact_not_a_prefix --exact --nocapture
+   Compiling supervisor-mcp v0.20.0 (<worktree>\adapters\mcp)
+   Compiling supervisor v0.20.0 (<worktree>\cli)
+    Finished `test` profile [unoptimized] target(s) in 4.44s
+     Running tests\level.rs (<target>\debug\deps\level-50bab6f5a60d52b0.exe)
+
+running 2 tests
+test hook_at_ultra_denies_writes_outside_the_contract_scope ... ok
+test ultra_file_scope_is_exact_not_a_prefix ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 6.07s
+[exit 0]

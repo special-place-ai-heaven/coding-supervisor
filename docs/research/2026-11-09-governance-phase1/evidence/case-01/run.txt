@@ -1,0 +1,2 @@
+command: cargo test -p supervisor-claude-code --test autonomous_completion --test replay -- prompt_gates_mutation_but_keeps_inspection_and_proposal_usable discussion_cannot_be_used_to_edit_without_a_scoped_task no_contract_is_advisory_only --exact --nocapture
+exit: 0

@@ -1,0 +1,2 @@
+command: cargo test -p supervisor-claude-code --test review_record --test gate_usability -- an_inconclusive_or_empty_review_stores_nothing_and_still_refuses required_review_with_none_refuses_and_teaches_the_protocol stop_is_not_judged_while_a_background_agent_is_outstanding an_old_delegation_no_longer_holds_stop_back --exact --nocapture
+exit: 0

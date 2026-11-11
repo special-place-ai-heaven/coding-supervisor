@@ -1,0 +1,13 @@
+$ cargo test -p supervisor --test worktree_create -- creates_the_worktree_on_its_own_branch_at_the_base_and_clean a_worktree_left_dirty_at_checkout_is_refused_and_no_task_starts an_existing_path_is_refused_and_nothing_starts a_path_inside_the_main_checkout_is_refused a_repository_without_a_commit_is_refused --exact --nocapture
+    Finished `test` profile [unoptimized] target(s) in 0.59s
+     Running tests\worktree_create.rs (<target>\debug\deps\worktree_create-db13fff7c4e7ebf3.exe)
+
+running 5 tests
+test a_path_inside_the_main_checkout_is_refused ... ok
+test a_repository_without_a_commit_is_refused ... ok
+test a_worktree_left_dirty_at_checkout_is_refused_and_no_task_starts ... ok
+test an_existing_path_is_refused_and_nothing_starts ... ok
+test creates_the_worktree_on_its_own_branch_at_the_base_and_clean ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 7.45s
+[exit 0]

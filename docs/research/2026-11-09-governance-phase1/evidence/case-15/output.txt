@@ -1,0 +1,20 @@
+$ cargo test -p supervisor --test receipt_verify --test receipt_sign -- a_changed_signature_is_invalid an_unknown_or_revoked_key_is_invalid a_changed_signature_byte_is_invalid no_sidecar_is_unsigned_exit_three an_unlisted_key_or_an_unusable_keys_file_is_invalid a_revoked_key_is_invalid --exact --nocapture
+    Finished `test` profile [unoptimized] target(s) in 0.53s
+     Running tests\receipt_sign.rs (<target>\debug\deps\receipt_sign-42aab2f08c0ccb38.exe)
+
+running 4 tests
+test a_changed_signature_byte_is_invalid ... ok
+test a_revoked_key_is_invalid ... ok
+test an_unlisted_key_or_an_unusable_keys_file_is_invalid ... ok
+test no_sidecar_is_unsigned_exit_three ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 2.77s
+
+     Running tests\receipt_verify.rs (<target>\debug\deps\receipt_verify-0e64f271ef6a52d8.exe)
+
+running 2 tests
+test a_changed_signature_is_invalid ... ok
+test an_unknown_or_revoked_key_is_invalid ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 12.20s
+[exit 0]

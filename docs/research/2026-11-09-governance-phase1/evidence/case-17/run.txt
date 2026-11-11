@@ -1,0 +1,2 @@
+command: cargo test -p supervisor-claude-code --test limits -- the_turn_limit_admits_exactly_its_number_of_judged_calls the_wall_clock_is_checked_at_stop_with_no_tool_call_in_between the_journal_is_only_appended_and_the_work_tree_is_kept an_autonomous_task_in_the_production_layout_stops_at_its_turn_limit --exact --nocapture
+exit: 0

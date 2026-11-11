@@ -140,3 +140,31 @@ Supervisor items it raised; none re-checked against `main` yet:
   only (owner), so CI's picker is to take any idle `fresh` runner.
 - The release workflow leaving a draft release after a failed release run is intended
   (release.yml says so); not changed.
+
+## Gaps recorded by the results matrix (2026-11-12)
+
+Open work from `docs/research/2026-11-09-governance-phase1/RESULTS.md` (WP8): each case it marks
+partly shown or not built. Detail, tests and evidence are in that file's table and its section
+"Deferrals and gaps".
+
+- Case 1 (partly shown): with no registered prompt and no contract the gate is advisory; no test
+  sends a Write to such a project, and the denial reason is not asserted.
+- Case 2 (partly shown): contract approval is recorded, never checked; refusing an unapproved
+  contract is not built.
+- Case 4 (partly shown): traversal and link escapes are refused at strict only; nothing shows them
+  refused or caught later at enforce.
+- Case 5 (partly shown): no default protection for secrets or lockfiles; `deny_path` refuses
+  writes at strict only; `protected_paths` covers deletion only.
+- Case 6 (partly shown): only the four edit tools are refused in the base checkout; shell commands
+  and MCP write tools are not.
+- Case 8 (partly shown): no test makes the created worktree's base differ from the contract's
+  base; an agent proposal can bind an existing worktree.
+- Case 12 (partly shown): no reviewer timeout; an undecided review counts as no review; the
+  outstanding-reviewer path is tested only in pieces.
+- Case 13 (not built): no local commit barrier; export refuses and CI requires a receipt instead.
+- Case 14 (partly shown): no per-artifact hashes for the contract's `artifacts`.
+- Case 15 (partly shown): a bundle with its `signature` object removed is not tested.
+- Case 18 (partly shown): a crashed hook process gives no decision; Claude Code then lets a Stop
+  or SubagentStop through.
+- Case 19 (partly shown): an agent proposal can bind an existing worktree, also one a person's
+  start created.

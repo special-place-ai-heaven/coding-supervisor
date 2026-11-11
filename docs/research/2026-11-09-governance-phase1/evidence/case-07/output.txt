@@ -1,0 +1,11 @@
+$ cargo test -p supervisor --test worktree_create -- a_base_checkout_edit_is_refused_when_isolation_is_worktree a_person_task_is_judged_on_its_worktree_from_the_main_checkout a_bash_check_in_the_worktree_counts --exact --nocapture
+    Finished `test` profile [unoptimized] target(s) in 0.46s
+     Running tests\worktree_create.rs (<target>\debug\deps\worktree_create-db13fff7c4e7ebf3.exe)
+
+running 3 tests
+test a_base_checkout_edit_is_refused_when_isolation_is_worktree ... ok
+test a_bash_check_in_the_worktree_counts ... ok
+test a_person_task_is_judged_on_its_worktree_from_the_main_checkout ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 31 filtered out; finished in 17.45s
+[exit 0]

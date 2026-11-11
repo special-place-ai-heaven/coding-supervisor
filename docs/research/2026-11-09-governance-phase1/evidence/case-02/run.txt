@@ -1,0 +1,2 @@
+command: cargo test -p supervisor-claude-code --test fail_closed --test replay --test contract_v2 -- a_contract_error_naming_a_missing_field_is_denied_in_blocking_words contract_without_a_command_fails_closed_naming_the_criterion a_newer_schema_is_refused_naming_this_binary v2_field_shapes_are_validated v1_loads_through_the_migration_with_fixed_defaults --exact --nocapture
+exit: 0

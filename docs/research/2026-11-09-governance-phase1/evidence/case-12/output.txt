@@ -1,0 +1,19 @@
+$ cargo test -p supervisor-claude-code --test review_record --test gate_usability -- an_inconclusive_or_empty_review_stores_nothing_and_still_refuses required_review_with_none_refuses_and_teaches_the_protocol stop_is_not_judged_while_a_background_agent_is_outstanding an_old_delegation_no_longer_holds_stop_back --exact --nocapture
+   Compiling supervisor-claude-code v0.20.0 (<worktree>\adapters\claude-code)
+    Finished `test` profile [unoptimized] target(s) in 1.99s
+     Running tests\gate_usability.rs (<target>\debug\deps\gate_usability-45336a390bd92331.exe)
+
+running 2 tests
+test an_old_delegation_no_longer_holds_stop_back ... ok
+test stop_is_not_judged_while_a_background_agent_is_outstanding ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 30 filtered out; finished in 5.49s
+
+     Running tests\review_record.rs (<target>\debug\deps\review_record-57fffaa2531a8102.exe)
+
+running 2 tests
+test an_inconclusive_or_empty_review_stores_nothing_and_still_refuses ... ok
+test required_review_with_none_refuses_and_teaches_the_protocol ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 2.07s
+[exit 0]

@@ -1,228 +1,141 @@
-# HANDOVER — coding-supervisor, prepared 2026-10-28
+# HANDOVER — coding-supervisor, prepared 2026-11-12
 
-For the next Claude session in `E:\project\coding-supervisor`. Self-contained: everything here is verifiable from the paths and hashes given, without EverOS. Written by the session that prepared this repository (Claude Code session id `72bf98f4-4078-4efc-8359-058cb2302a19` on this machine). Hash values are SHA-256, shown as the first 16 hex characters unless a full value is needed.
+For the next session in this repository. It replaces the handover of 2026-10-28/29. `CLAUDE.md`
+is the live truth and wins where the two disagree. The earlier handover (lab paths and hashes,
+harness cohort numbers, Jev routing details, Phase A and B notes) is in git:
+`git show 4326a2f:HANDOVER.md`.
 
-## 1. Working definition and agreed direction
+## 1. The product
 
-> A portable coding-agent supervisor that coordinates delegation and requires verifiable, current evidence before accepting task completion.
+coding-supervisor is a completion gate for coding agents. It runs inside a harness (Claude Code
+today, through hooks) and accepts a task as done only when current, observed evidence shows every
+required check passed on the exact code being handed in. It can export that evidence as a signed
+receipt that CI checks again before a pull request is merged.
 
-Agreed on 2026-10-28 by the owner, this session and the owner's Codex research agent:
+## 2. Merged and released
 
-- The lab (research and measurement repository, section 3) is the proving ground, not the product.
-- First deployable slice: deterministic completion control. Core records: task, candidate, verification, finding, checkpoint. Freshness invalidation and bounded repair. No model inside the core.
-- Preserve the Duet contracts C1 to C4 and scenarios A18 to A20 (section 4).
-- Delegation stays advisory initially. Reuse the existing Python Jev engine where relevant; do not install another router or SDK.
-- Each adapter declares `enforcing` or `advisory/audit` on its first line.
-- Claude Code enforcement is unproven. The cause of Jev's 74 percent abstention is unmeasured.
+Latest release: 0.20.0 (tag `v0.20.0`, 2026-11-11; `CHANGELOG.md`). Governance Phase 1 plan:
+`docs/research/2026-11-09-governance-phase1/PLAN.md`. Ledger: `GATES.md` in the same folder.
 
-## 2. State by category
-
-| Category | Items |
-|---|---|
-| Implemented | Nothing in this repository. In the harness: revised agent briefs (section 5). In the lab: measurement scripts and evidence (section 3). |
-| Specified | Duet spec v1 (section 4); coding research package revision 2 with 50 acceptance scenarios (section 3); first implementation plan `docs/research/2026-10-28-completion-gate-first-slice/PLAN.md`. |
-| Measured | Before-cohort of the harness (section 6); Jev epoch-1 telemetry, payload proof and delegation linkage (section 7); commerce-package recompute and coding-package verification (section 3). |
-| Proposed | The completion gate (PLAN.md T1, T2); the Claude Code enforcement investigation (T3); the epoch-2 Jev roster correction (section 7). |
-| Unknown | Whether Claude Code can block an unsupported acceptance; the cause of the 74 percent abstention; the resolved Jev provider model id; the true follow-through rate behind timestamp-matched linkage; the after-cohort result. |
-
-## 3. The research and measurement repository (the lab)
-
-Path: `C:\Users\rakovnik\.claude\robert`. Git, branch `main`, single commit `7829ebe` ("Research records: agent-loop packages, coding review lens, harness measurement, Jev pilot epoch 1"), 92 tracked files, no remote. **Do not move it. Do not copy its evidence wholesale into this repository.** Cite by path and hash.
-
-Authoritative files inside it:
-
-| Item | Path (relative to the lab) | Identity |
-|---|---|---|
-| Coding research package, revision 2 (authoritative) | `Agentic-Coding-Research-2026-10-28/` | `evidence/package-manifest.json`, 32 entries, every hash verified on 2026-10-28; report `Agentic-Coding-Research-2026-10-28.md` hash `23ada9eb380ca59a`; brief `Claude-Implementation-Brief.md` hash `a0c4321eff608e3e`; 50 acceptance scenarios AC01 to AC50; cross-variant and adjudication templates under `evidence/` |
-| Stale revision-1 copies (do not cite) | `Agentic-Coding-Research-2026-10-28.md` (hash `f61e1631f198cd94`), `Claude-Implementation-Brief.md` (hash `e2d966c8d67d4462`) at the lab root | Superseded by the package above |
-| Commerce-domain predecessor package | `Agent-Loop-Research-2026-10-28/` | manifest 19 entries, verified; raw run records under `evidence/*.jsonl` |
-| Review lens applied to both packages | `REVIEW-LENS-CODING-2026-10-28.md` | 15 checks; recompute of the commerce runs per accepted task; the t01 correction |
-| Harness measurement scripts | `harness-measurement/scripts/` | `analyse.py`, `analyse2.py`, `headline.py`, `verdicts.py`, `adjudicate.py` |
-| Harness before-cohort evidence | `harness-measurement/evidence/` | `before-summary.json`, `before-analyse2-summary.json`, `before-headline-summary.json`, `adjudication-final.csv` and `.json`, `codex-agents-rules-2026-10-28.patch`, `quickstart-*` reproduction files, `typesafe-ai-SKILL-2026-09-21-backup.md` |
-| Jev pilot record | `jev-pilot/experiment.json` | epoch-1 fingerprints, payload proof, open items |
-| Jev pilot scripts and evidence | `jev-pilot/scripts/` (`payload_trace.py`, `test_j_checks.py`, `analyse_jev.py`), `jev-pilot/evidence/` (`jev-delegation-analysis.json`, `roster-names-epoch1.txt`) | |
-| Jev routing action plan (premise corrected, see section 7) | `Claude-Jev-Routing-Action-Plan.md` | |
-
-Verify access from a fresh session: `git -C C:\Users\rakovnik\.claude\robert log --oneline -1` must print `7829ebe`, and the manifest check in section 9 must report no differences.
-
-## 4. Inherited contracts (preserved in this repository)
-
-Preserved on 2026-10-28 as byte-identical copies under `E:\project\coding-supervisor\docs\archive\inherited-specs\`, hashes verified against the originals in `C:\Users\rakovnik\Downloads\` (originals are LF, so git stores them unchanged). Cite the repository copies; the Downloads copies are provenance only.
-
-| Document | Path | Hash | What to preserve |
+| WP | What | PR | Pinned by |
 |---|---|---|---|
-| Duet on Hermes Ultra harness spec v1 (2026-10-23) | `docs\archive\inherited-specs\Duet-Hermes-Ultra-Harness-Implementation-Spec-v1.md` (original: `C:\Users\rakovnik\Downloads\Duet-Hermes-Ultra-Harness-Implementation-Spec-v1.md`) | `5152b33988bc6041` | Section 9 Prepare: task contract with checks C1 baseline reproduces the failure, C2 candidate passes the reported test, C3 configured regression suite passes, C4 diff within scope; `max_repair_rounds`; states `queued, preparing, verifying, ready_for_review, repairing, blocked, cancelled, budget_exhausted, failed`. Section 13: A18 self-reported pass cannot mark ready; A19 candidate change makes a check stale; A20 resume keeps contract, budget, pending effects, candidate identity. |
-| Hermes harness research ledger (2026-10-23) | `docs\archive\inherited-specs\Hermes-Harness-Research-Ledger-2026-10-23.md` (original: `C:\Users\rakovnik\Downloads\Hermes-Harness-Research-Ledger-2026-10-23.md`) | `f068c894caf2a0ea` | H01 to H19 method cues; evaluation plan T01 to T16; per-accepted-task cost rule |
-| Build Your Own Duet (source PDF) | `C:\Users\rakovnik\Downloads\build-your-own-duet.pdf` | `a57db5d75700b3d1` | Background only |
+| 0 | CI reports every pull request; docs-only PRs skip the heavy jobs | #62 (one docs list: #64) | `GATES.md` W0.1, W0.2 (CI behaviour, no Rust test) |
+| D | Plan, ledger, `check.mjs` | #67 | — |
+| 1 | Adapter errors fail closed at `enforce` and `strict` | #74 | `adapters/claude-code/tests/fail_closed.rs`, `cli/tests/fail_closed_escape.rs` |
+| 2 | Contract v2 and the v1 migration | #76 | `adapters/claude-code/tests/contract_v2.rs` |
+| 3 | `task start --worktree` and `task cleanup` | #106 | `cli/tests/worktree_create.rs` |
+| 4 | Turn and wall-clock limits | #80 (MCP limit fix in #103) | `adapters/claude-code/tests/limits.rs`, `adapters/mcp/tests/protocol.rs` |
+| 5 | Reviewer record | #82 | `adapters/claude-code/tests/review_record.rs` |
+| 6 | Signed receipts | #87 (machine key: #93) | `cli/tests/receipt_sign.rs` |
+| 7 | Receipt bundles and the CI job `Verify supervisor receipts` | #96 (follow-ups: #99) | `cli/tests/receipt_verify.rs`, `cli/tests/receipt_in_tree.rs`, `cli/tests/receipt_exemption.rs` |
+| 8 | The 20-case results matrix, `RESULTS.md` | branch `test/barrier-matrix`, the change that brings this file | the tests named per case in `RESULTS.md` |
 
-No Rust or TypeScript product repository for "Hermes Ultra" exists on this machine. The only local Hermes material is the Nous Hermes Agent adapter under `C:\Users\rakovnik\.agents\`. The target of the research packages is therefore unnamed and unpinned; this repository is the product that fills that gap.
+Field fixes merged beside the plan: #73 (session takeover), #78, #79, #83, #91, #94, #103 (early
+gate feedback, limits and paths). `CHANGELOG.md` and `OPEN-ITEMS.md` describe them.
 
-## 5. Harness changes already made (live; do not revert, do not extend during the cohort)
+Ledger rows still open in `GATES.md`: W3.1, W3.2, W8.1, W8.2, F5 and F6. F6 needs one `ABANDON:`
+line per deferral listed in `RESULTS.md`.
 
-Applied 2026-10-28 before 12:08:18Z. Model and effort unchanged everywhere so the before and after cohorts isolate the brief change.
+## 3. How a code pull request gets merged
 
-| File | Change | Hash after |
-|---|---|---|
-| `C:\Users\rakovnik\.claude\plugins\marketplaces\fable-orchestration\agents\fresh-verifier.md` and `...\plugins\cache\fable-orchestration\fable-orchestration\1.0.0\agents\fresh-verifier.md` | Terminal Commander tools added; every check must run and be cited by exit code; "would run" counts as not run; no runnable check means `VERDICT: UNVERIFIED`; fixed first two lines `VERDICT:` and `CHECKS RUN:` | `826287f59e3fb26820b685bfeeff0f5e70108a107ea2b357273bce932bc81db7` (full, both copies identical) |
-| `C:\Users\rakovnik\.claude\agents\*.md` (17 of 26 changed) | Command rule plus Terminal Commander tools in 15 command-running agents; verdict header in 6 judges (code-reviewer, security-reviewer, test-runner, browser-tester, impeccable-finish-reviewer, unlazy-master) | code-reviewer `aee456c6b59690ab`, test-runner `ff7b016a538800bf`, security-reviewer `3010651dd78f4a88`, browser-tester `9a3ed2104c3e9808` |
-| `C:\Users\rakovnik\.codex\agents\*.toml` (13 of 26 changed) | Same two rules in the instruction body; all 26 files parse | diff in the lab at `harness-measurement/evidence/codex-agents-rules-2026-10-28.patch` |
-| `C:\Users\rakovnik\.claude\skills\typesafe-ai\SKILL.md` (junction to `.agents\skills\typesafe-ai`) | Updated to upstream typesafe-ai/skills release v0.6.2, 288 lines, LF | `d1513cb2e0f72f58`; previous copy in the lab evidence folder |
+Every pull request needs a verified receipt bundle in `supervisor-receipts/`, unless:
 
-Known pre-existing issues, left as found: four agent files have frontmatter that a strict YAML parser rejects but Claude Code loads (performance-engineer, tech-researcher, ui-designer, vite-pro).
+- every changed path is on the docs list `.github/docs-paths.txt` (docs-only), or
+- it is release-please's version-only pull request, or
+- the owner applied the `receipt-exempt` label after the last push (then re-run the job).
 
-## 6. Harness measurement: before-cohort and the after-cohort procedure
+The rule is `supervisor receipt required`; the CI job is `Verify supervisor receipts`. Details and
+limits: the WP7 bullet in `CLAUDE.md` and `docs/adopting-receipt-verification.md`.
 
-Before-cohort (newest 200 session transcripts, all pre-change, computed 2026-10-28; sources in the lab `harness-measurement/evidence/`):
+Signing key: Windows Credential Manager entry `coding-supervisor/receipt-signing-key`, key id
+`56fefcdc588ccb5b`, listed in `supervisor-keys.json`. CI reads that list from `main`.
 
-| Measure | Value |
-|---|---|
-| Judge dispatches (fresh-verifier 140, code-reviewer 54, browser-tester 28, security-reviewer 22, test-runner 2) | 246 |
-| Completed with compliant header / without / interrupted / worker file missing | 0 / 237 / 6 / 3 |
-| Linked command receipts / unlinked commands | 14 / 5,581 |
-| Median judge wall time | 369 s |
-| Judge share of session tokens | 3.4 percent |
-| Fresh-verifier headline verdicts (n 140): accept / reject / none | 81 / 22 / 37 |
-| Of 22 rejections (provisional, excerpt-based): valid acted / valid deferred / false positive / undetermined | 13 / 3 / 0 / 6; receipt-backed 2 |
-| Accepts with no command run (the risk cell) | 19 |
+Recipe that has worked (bundles for #99, #103 and #106 are in `supervisor-receipts/`; `GATES.md`
+W7.8 records a pass without the label):
 
-Readings agreed: the verifier is not the fold target, its rejections were right where determinable; the gap is unsupported accepts and uncited commands. Follow-through and linkage numbers are indicative because matching is by timestamp.
+1. Make a worktree at the merge base of the branch and `main`, with the branch content as
+   uncommitted changes. CI compares from the merge base.
+2. Run a headless governed Claude Code session there.
+3. Run every check through Terminal Commander, with the same `CARGO_TARGET_DIR` in the session's
+   environment as the hook sees. A different value is refused at `enforce` and `strict`.
+4. Close each job with a `command_status` call that returns its exit code. An exit seen only
+   through `bucket_wait` is not recorded.
+5. Run `supervisor receipt export` before the work is committed. After the commit it refuses.
+6. Run `supervisor receipt verify --bundle <file>` locally and expect `valid`, exit 0.
+7. Commit the work, then the bundle (so far as its own `chore: add the supervisor receipt ...`
+   commit), then open the pull request.
 
-After-cohort rules: sessions started after `2026-10-28T12:08:18Z` on a restarted Claude Code whose loaded `fresh-verifier.md` hashes to `826287f5…`. Exclude session `72bf98f4-4078-4efc-8359-058cb2302a19` (resumed across the cutoff) or filter by dispatch timestamp. **Also exclude every transcript under the fixture project path `C:\Users\rakovnik\.claude\projects\E--project-coding-supervisor-fixtures-claude-code-enforcement\`** (added 2026-10-29): the T3 and T4 fixture sessions ran with user-level hooks disabled, controlled fake workers and a different verifier contract, so they are neither before nor after cohort. The lab scripts have no exclusion option; copy the corpus without that directory, or drop those rows by transcript path after `analyse2.py` runs, and say which in the evidence file. Gate-derived measures from the adapter's own journals (T6, `supervisor-claude-code measure`) are reported in their own table and are never merged with these transcript-derived numbers.
+`docs/research/2026-11-09-governance-phase1/WP7-LIVE-RUN.md` records the first attempt. It
+produced no receipt. Read it for the setup (merge-base worktree, hooks from a settings file), how
+a Terminal Commander job links to a criterion, and the time-limit failures on a loaded machine.
 
-Adapter deployment note (added 2026-10-29): gate state files written before the hash chain existed (any `gate.json` without `checkpoint_hash`, under `%LOCALAPPDATA%\coding-supervisor\state\<project key>\` or a project's `.supervisor\`) read as tampered and must be deleted by hand before the adapter is used on a real project. Jev policy must stay unchanged during the cohort. Success: compliant headers dominate, zero passes without a linked receipt, UNVERIFIED reasons listed, interruptions reported separately, verifier token share reported with absolute tokens, latency and retries.
+Owner's rules:
 
-Exact commands (run from the lab root; Python 3.14; outputs must be outside the corpus):
+- No branch protection is used. The owner vets every committer.
+- No agent merges while a check is red. A red result is fixed until the merge is clean.
+- Only the owner applies the `receipt-exempt` label.
 
-```powershell
-cd C:\Users\rakovnik\.claude\robert
-python harness-measurement\scripts\analyse2.py "C:\Users\rakovnik\.claude\projects" "C:\temp\after-cohort\out" --since 2026-10-28T12:08:18Z --newest 200
-# positional: corpus, out; options: --since <ISO UTC ending Z>, --newest N, --types a,b,c
-# headline verdict pass over an existing verdicts.csv:
-python harness-measurement\scripts\headline.py <source verdicts.csv> <output.csv> <output.json>
-# earlier pass (per-dispatch census; --count N):
-python harness-measurement\scripts\analyse.py "C:\Users\rakovnik\.claude\projects" "C:\temp\after-cohort\out1" --count 200
-```
+## 4. The results matrix
 
-`C:\temp` is cleared by the owner; copy results into the lab's `harness-measurement/evidence/` with an `after-` prefix.
+`docs/research/2026-11-09-governance-phase1/RESULTS.md` records the 20 cases of spec section 9,
+each run as named existing tests on Windows, all with exit 0. 8 cases are shown (3, 7, 9, 10, 11,
+16, 17, 20), 11 are partly shown (1, 2, 4, 5, 6, 8, 12, 14, 15, 18, 19) and 1 is not built (13:
+no local commit barrier). Exit 0 means the named tests held, not that the barrier is complete.
+The gaps are in its section "Deferrals and gaps". Most evidence is replay, not a live session.
 
-## 7. Jev routing: epoch 1 findings, fingerprints, limitations, epoch 2
+## 5. Open work, in priority order
 
-The action plan `Claude-Jev-Routing-Action-Plan.md` assumed Jev was not installed and proposed piloting BillionsBobby/JevRouter. That premise was wrong and is corrected: a home-grown TypeSafe Jev adapter exists at `C:\Users\rakovnik\.agents\jev` (not a git repository; transport `jev_core` 1.1.0, README stale at 1.0.1), wired as the Claude Code `UserPromptSubmit` hook (`hooks\prompt_hook.py --harness claude`, 10 s timeout) and into Codex, Cursor, Grok and OMP via `policies\<harness>.yaml`. No second router is to be installed.
+1. Friction fixes from field use (`docs/research/2026-11-11-open-items/OPEN-ITEMS.md`; the
+   follow-up brief's items are not approved by the owner yet):
+   - a read-only shell allow-list before an intent and in discussion turns;
+   - an acceptance line telling the session its task was accepted (task id, state, receipts);
+   - "pending: job <id> still running" instead of a refusal while a check runs;
+   - a `Workflow` launch counted as outstanding background work, like `Agent`;
+   - a teammate's message mid-turn not treated as a changed prompt;
+   - clearer wording than "advisory" in `intent_apply` answers.
+2. Re-test the items of the 2026-11-06 friction report (A1.1 to A3 in `OPEN-ITEMS.md`) against
+   `main`. None has been re-checked.
+3. The matrix gaps, listed in `OPEN-ITEMS.md` section "Gaps recorded by the results matrix
+   (2026-11-12)". Biggest: approval is not checked (2), base-checkout writes by shell or MCP are
+   not refused (6), no local commit barrier (13), no per-artifact hashes (14), an agent proposal
+   can bind an existing worktree (8, 19).
+4. One task per git worktree, so two sessions can work in one project (decided 2026-11-11, option
+   b; not built beyond a person's `task start --worktree`).
+5. Decided 2026-11-11 (`OPEN-ITEMS.md`): empty scope for a task that changes nothing (not built:
+   an empty scope is still refused); one built-in list of harmless environment variables and
+   clearer `revise` messages (check `main` before starting).
+6. Smaller: CI has no job timeout; `supervisor status` shows `registration: not_configured` while
+   hooks fire; the receipt job re-runs every bundled command (WP7-LIVE-RUN follow-up 2); the
+   hook's own 20 s limit under load.
+7. Other harnesses: Codex, Cursor and Grok live-model runs were never done
+   (`docs/research/2026-10-29-installable/`).
 
-Epoch 1 (current production configuration; fingerprints in the lab `jev-pilot/experiment.json`):
+## 6. Limits that matter most
 
-| Fact | Value |
-|---|---|
-| Mode | `policies\claude.yaml`: `mode: advisory`, `allow_live: true`; key env present in the Claude process; about 741 ms per prompt |
-| Payload | state contains only `request`; code blocks stripped; cut to 600 **characters** (611 bytes for the fixture) at `jev_router.py:448`, before serialisation (`jev_router.py:778` precedes `jev_core\transport.py:309`); receipts log `input_len` raw and `sent_len` sent. Proven with a stubbed transport (`jev-pilot/scripts/payload_trace.py`, exit 0). Not a live transmission test. |
-| Gate | usable requires confidence ≥ 0.65 and selected-option probability ≥ 0.35 (`jev_router.py:255`; policy lines 52 to 53). Behaves as an abstention rule, consistent with TypeSafe skill v0.6.2 lines 191 to 196. **Unchanged and not validated.** |
-| Telemetry, persona route, all time (n 4,375) | abstained at gate 3,228 (74 percent); explicit none 604; recommended 258; table-resolved 282; provider failures 3 |
-| Follow-through on 258 recommendations | matched 143: followed 10, diverged 63, not followed 70; unmatched 115 (unobservable) |
-| Roster | persona registry loads `~/.claude/agents` only (policy line 24 to 29, six exclusions). The workers actually dispatched after a "none" (opus-builder 146, fresh-verifier 107, sonnet-worker 92, general-purpose 76) are plugin or built-in agents outside that roster. |
-| Receipts | `C:\Users\rakovnik\.agents\jev\telemetry\claude\shadow.jsonl`, identifier-only, no model id recorded |
-| Fingerprints (epoch 1) | `jev_router.py` `ed03314d22863ebd`; `policies\claude.yaml` `b6702727e87dd56d`; `policies\_common.yaml` `8a1198bb2d8a37ff`; `jev_core\transport.py` `332581fb3c0197f2`; roster of 26 agent names `ed0014491386c782`; resolved provider model: unknown |
-| Open engine defect | `jev_router.py:658`: an unusable skill rerank falls to the default and reports `usable=true`, so abstention is indistinguishable from an affirmative none |
-| Known failing test | `test_harnesses.py:349` (run via `test_jev.py`): pins the `impeccable` skill description, changed 2026-10-22; unrelated to this project. **The full engine suite has not been run** (pytest absent; one test executed directly). |
-| Manifest mismatch | `check-cases` reports a policy SHA-256 mismatch between the live `policies\claude.yaml` and `eval\claude\MANIFEST.json`: the frozen v3-e1 evaluation describes an earlier policy. Original manifest preserved. |
+- Same OS user: an agent running as the person can read the signing key and, past the guard,
+  edit the state. The guard matches command text, so a command spelled another way gets past it.
+  Known misses: `npx coding-supervisor@<version>`, `node bin/launcher.js` inside the package
+  folder, and exempt names that resolve to a prepared shim. A signature is an attestation, not
+  proof; the CI re-run is the check that counts.
+- With `isolation: worktree`, only Write, Edit, MultiEdit and NotebookEdit into the base checkout
+  are refused. Shell commands and MCP write tools are not.
+- Write-time scope refusal is at `strict` only; at `enforce` an out-of-scope path refuses the
+  handback and the Stop instead.
+- A hook that crashes or hangs at Stop or SubagentStop lets the stop through (Claude Code ignores
+  `onFailure` there).
+- Most features have replay tests only, no live Claude Code run.
+- Linux paths (symlinks, file modes) are mostly witnessed only by CI. The matrix ran on Windows.
 
-Epoch 2 (deferred): extend the persona registry so the candidate set includes the workers this host can actually call, nothing else; mandatory verification stays outside optional delegation; new fingerprint and a new eval manifest; receipts labelled separately. Conditions: only after the brief-after cohort is measured; compared with epoch 1 as a changed-policy experiment, never as equivalent cohorts. The 74 percent abstention is measured; its cause (missing candidates versus the 600-character request-only state) is to be tested separately, not assumed.
+## 7. Environment notes that bite
 
-## 8. Decisions already made (do not reopen)
-
-1. Product definition and build order as in section 1; completion control first, delegation advisory.
-2. No second router, no SDK, no replacement adapter; the Python Jev engine is reused if routing is needed.
-3. Adapters declare their mode on the first line; enforcement claims are scoped to proven paths.
-4. The lab stays where it is; this repository references it by path and hash.
-5. The revised agent briefs stay as applied; model and effort unchanged until the after-cohort is read.
-6. The dual gate in Jev stays unchanged; alternatives are evaluated only on the pre-registered dev split after the roster fix.
-7. Per-accepted-task cost, failed attempts in the numerator, four repetitions or a cross-variant table before attributing a flip; these are the measurement rules for every comparison.
-8. Terminal Commander for every long command; the verdict header for every judge.
-9. Naming and GitHub location are decided: `coding-supervisor` at `https://github.com/special-place-ai-heaven/coding-supervisor`, local `E:\project\coding-supervisor`.
-10. Implementation language is Rust, latest stable, standard library only for the first slice, tests through `cargo test`. Updated and pinned on 2026-10-28: rustc 1.99.1 (58cf8f9c3), cargo 1.99.1, via `rust-toolchain.toml`. The Python Jev engine stays Python and unchanged.
-
-## 9. Verification commands for the next session
-
-```powershell
-# this repository
-git -C E:\project\coding-supervisor log --oneline -3
-# the lab is reachable and unchanged
-git -C C:\Users\rakovnik\.claude\robert log --oneline -1          # expect 7829ebe
-git -C C:\Users\rakovnik\.claude\robert status --short            # expect empty
-# the authoritative coding package matches its manifest
-cd C:\Users\rakovnik\.claude\robert\Agentic-Coding-Research-2026-10-28
-python -c "import json,hashlib,os; m=json.load(open('evidence/package-manifest.json')); bad=[e['path'] for e in m if hashlib.sha256(open(e['path'],'rb').read()).hexdigest()!=e['sha256']]; print('manifest entries',len(m),'mismatches',bad)"
-# the live verifier brief is the epoch-1 one
-Get-FileHash C:\Users\rakovnik\.claude\plugins\cache\fable-orchestration\fable-orchestration\1.0.0\agents\fresh-verifier.md -Algorithm SHA256   # expect 826287F5...
-# Jev engine fingerprint
-Get-FileHash C:\Users\rakovnik\.agents\jev\policies\claude.yaml -Algorithm SHA256   # expect B6702727...
-```
-
-## 10. What the next session should do first
-
-Read `CLAUDE.md`, then `docs/research/2026-10-28-completion-gate-first-slice/PLAN.md`, run section 9, confirm `rustc --version` and set `CARGO_TARGET_DIR=C:\Target\coding-supervisor\main\target`, then start PLAN T1 and T2 (Rust core records, state machine, `cargo test` scenarios with fake providers). Do not touch the live harness, the Jev policy, the agent briefs or the running cohort. Delegate execution to Codex workers in background mode with Terminal Commander for any long command; keep the chair for decisions and verification.
-
-## Phase A (2026-10-29)
-
-Sections 1 to 10 above were written on 2026-10-28. Where they disagree with `CLAUDE.md` (for example section 10, which starts at PLAN T1 and T2), `CLAUDE.md` is current. This section records Phase A, "installable".
-
-**Branch:** `phase-a-installable`, local commits only (no remote-tracking ref exists locally), based on `9cff50c` (the README commit). Working tree at the time of writing: untracked `fixtures/codex-enforcement/`, `fixtures/cursor-enforcement/`, `fixtures/grok-enforcement/`, `fixtures/omp-enforcement/` belonging to the Phase B investigations in progress (not committed, not part of Phase A).
-
-**Commits** (`git log --oneline 9cff50c..HEAD`, oldest first):
-
-| Commit | What it did |
-|---|---|
-| `96322bc` | Research: harness capability survey for Codex CLI, Cursor, OMP and Grok Build (`docs/research/2026-10-29-harness-capability-survey/SURVEY.md`) |
-| `8eaf0c8` | A1: the `supervisor-mcp` advisory server over the core, and the first `supervisor` CLI skeleton |
-| `c170ea8` | A4: `ci.yml` (checks on push) and `release.yml` (binaries on tag), plus `HARNESS-LOCATIONS.md` |
-| `293c83a` | A1: the enforcing hook adapter ignores caller-asserted MCP receipts when deciding acceptance |
-| `0ff9dc7` | A1: `Stop` re-checks observed receipts on a task that was completed through MCP |
-| `0cafd04` | A2-A3: `supervisor init` and `supervisor install` render the two skills and register the gate per harness |
-| `6528a92` | A3: the MCP registration pins `--project`; LF for Rust and TOML sources |
-| `b482a51` | A: first live Claude Code sessions through the installed configuration (`A-RESULTS.md`, S1 to S3b) |
-| `6a6f129` | A: install writes `permissions.allow` `mcp__supervisor`; `candidate_observe` derives the candidate from git when given no identity; `measure` separates advisory MCP acceptance from hook acceptance |
-| `a882ec4` | A: live rerun of the MCP path through the installed configuration alone (S3c) |
-| `60234ff` | A3: install prints the folder-trust prerequisite for Claude Code as its manual step |
-
-**Verified (seen, with the evidence file):**
-
-- Claude Code 2.1.312, throwaway project, installed configuration only (no `--settings`, no `--mcp-config`): S1 fake worker and S2 cited worker reproduce the fixture's decision texts and gate states exactly; S3b (MCP completion, then a completion claim) is refused at `Stop` with `--allowedTools mcp__supervisor` added on the command line. `docs/research/2026-10-29-installable/A-RESULTS.md`.
-- `supervisor init` and `supervisor install --dry-run` for all five harnesses ran on 2026-10-29 against the throwaway project with exit 0; their printed output is quoted in the README section "Install and use". Claude Code reports `no changes`; Codex, Cursor, OMP and Grok show the chair-skill update as a diff because they were installed before `6a6f129`.
-- The core has no dependencies; `serde_json` is the only dependency of the adapter, the server and the CLI (read from the `Cargo.toml` files).
-
-**Not verified:**
-
-- The CI and release workflows have never run. Nothing was pushed and no tag exists.
-- S3c: with the installed configuration alone, Claude Code denied the gate's tool call because the folder was untrusted. The same run in a trusted folder, without `--allowedTools`, has not been done; trusting the folder writes to the real Claude Code user state, which this work did not do.
-- Codex CLI, Cursor, OMP and Grok Build: the files install writes follow their documentation (`HARNESS-LOCATIONS.md`); no harness has been recorded loading them. Phase B in progress.
-- Fixture cases L2b, L3, L4 and L6 were not rerun through the installed configuration; interactive approval of the project MCP server was not tested.
-- The test counts in the README come from `#[test]` attributes; `cargo test --workspace` was not rerun for the documentation edit that added them.
-
-**Throwaway location:** `C:\temp\sup-throwaway` (`proj` is a git repository with the installed files for all five harnesses, `home` is empty, `state` holds the gate state). `C:\temp` is cleared by the owner; delete the folder by hand when it is no longer needed. Its Claude Code session transcripts are under `C:\Users\rakovnik\.claude\projects\C--temp-sup-throwaway-proj\`; like the fixture transcripts in section 6, they are neither before nor after cohort and must be excluded from any after-cohort run.
-
-**Rule:** nothing was written into the live harness configuration on this machine. Install writes only under the project directory (checked in `cli/src/install.rs`), the installs went to the throwaway project, the throwaway `home` directory is empty, and the folder-trust check in S3c was deliberately not performed because it writes to `~/.claude.json`. Claude Code itself still writes its ordinary session records under `~/.claude/projects` for every `claude -p` run. Keep to the rule: every manual step `install` prints is for the person who owns the machine to perform.
-
-**Open gaps** (numbering as in `docs/research/2026-10-29-installable/HARNESS-LOCATIONS.md`, as of 2026-10-29):
-
-- G1. Grok Build's current version and release dates come from secondary trackers; the official changelog page returned HTTP 403.
-- G2. Codex documents `$HOME/.agents/skills` and `/etc/codex/skills`, not `~/.codex/skills`; no Codex page read says Codex scans the latter.
-- G3. Codex project trust: the config key `projects.<path>.trust_level` is documented, but the interactive dialog was not read and the Windows path spelling follows this machine's config, not a documented rule.
-- G4. Cursor: (a) the MCP approval step is documented only through `mcp enable` and `--approve-mcps`, not its scope or the headless behaviour; (b) `CURSOR_CONFIG_DIR` is documented only for `cli-config.json`; (c) the docs call the command `agent`, which is shadowed on this machine; (d) the hooks page is shared with the editor; (e) the headless page contradicts itself on whether `-p` writes files without `--force`.
-- G5. Grok: `--trust` is on the hooks page but not in the CLI reference; project `.agents/skills` is undocumented; the role of `description` in skill loading is implied; Stop and SubagentStop cannot block; a second `agent.exe` reporting `grok 0.1.210` is on `PATH` and was not investigated.
-- G6. OMP: documentation was read from the repository, not a site; the context-file merge order was not read to the end; no blocking subagent-completion event was found; whether `~/.agents/skills` loads without opting the `agents` provider in is unclear; hooks are code modules, so install cannot write a declarative hook file.
-- G7. Claude Code: the hand-written shape of user-scope servers in `~/.claude.json` is not documented (use `claude mcp add --scope user`); no `--cwd` flag; under `-p` project `.mcp.json` servers and settings-file hooks load without a trust prompt unless `--bare`.
-- G8. Windows: the binary must resolve as `supervisor` on `PATH`, or each file must carry an absolute path (install writes the absolute path of the running binary); none of the five docs promises `.cmd` or `.bat` resolution for stdio MCP commands; not tested.
-- G9. Enterprise and managed layers of each harness that can override or disable all of the above were not read.
-
-## Phase B (2026-10-29)
-
-Four investigations, one isolated fixture each, committed as `202910e` (OMP), `a90c015` (Codex CLI), `d86d9c3` (Cursor), `544d94e` (Grok Build). Each results file declares its mode on its first lines; CLAUDE.md "Current truth" repeats them. What each still needs:
-
-- **Codex CLI**: a live-model run once the ChatGPT usage limit resets (2026-11-04 10:32); persisted trust needs a `[projects.'<fixture path>'] trust_level = "trusted"` entry in `~/.codex/config.toml` and hook trust through `/hooks`, both home changes not made. An `OPENAI_API_KEY` exists in the environment and was not used because it bills a different account.
-- **Cursor**: nothing measured; the weekly limit resets about 2026-10-31. Re-run commands are in `cursor-T3-RESULTS.md`; the first run with an empty home syncs account plugins for about seven minutes and starts their MCP servers. The marker skill under `.agents/` is hidden by `.git/info/exclude` and was committed with `git add -f`.
-- **Grok Build**: a live xAI session needs a sign-in; `GROK_HOME=<temp> grok login --device-code` keeps the credential out of the real home. Note `--trust` writes `trusted_folders.toml` for the whole repository root. Grok's own startup rewrote bookkeeping files under `~/.grok` at 11:02 (metadata, bundled docs, lock, search database, log); no config, trust, login or session folder was created there.
-- **OMP**: user-level MCP servers could not be switched off without a home change, so two sessions show them; OMP wrote its own logs, caches and session markers under `~/.omp`.
-- **Port clash**: the Codex and Grok stand-in models briefly shared port 18765; the affected Grok runs are kept under `captures/discarded-port-collision/` and were re-run.
-
-Open items only the owner can clear: the release tag is done: `v0.1.0-rc2` (release run 40876811539, 2026-10-29): both archives published with checksums; `sha256sum -c SHA256SUMS` passed on the downloaded files and the Windows `supervisor.exe` started; the Linux binaries were not executed; tags are owner-pushed under a ruleset. Still open: Codex and Cursor quotas, Grok sign-in. The Claude Code MCP path through the installed files alone is proven in `A-RESULTS.md` S3d using a separate `CLAUDE_CONFIG_DIR`. The throwaway at `C:/temp/sup-throwaway` and its transcripts under `~/.claude/projects/C--temp-sup-throwaway-proj/` are to be deleted or excluded by hand.
-
-Installed-configuration checks (2026-10-29, after the investigations): OMP live (`9e598a9`), Codex scripted (`4fc4b4c`, registration fix `4d88843`), Grok scripted (`454459a`), Claude Code live S3d (`605171f`). Cursor: registration read and eight tools listed without a model turn (`f114deb`); a model-driven run waits for the quota. A Grok hook adapter is possible future work since 1.0.60 refuses at PreToolUse, Stop and SubagentStop; none is built.
+- Windows host, Linux targets. `.gitattributes` forces LF; the "LF will be replaced by CRLF"
+  warning is expected.
+- Set `CARGO_TARGET_DIR=C:\Target\coding-supervisor\main\target` (or a per-branch slot under
+  `C:\Target\coding-supervisor\`) before any cargo command. Never build inside the checkout.
+- Run builds and tests through Terminal Commander, one full suite at a time.
+- `cargo test --workspace` takes about 25 to 30 minutes locally and is the reliable local run.
+  `cargo nextest run --workspace` hit time limits on a loaded machine (WP7-LIVE-RUN.md).
+- The dogfood gate in the main checkout refuses a shell command whose text names a person-only
+  command or the gate's state folder. Put such text into files with the file-writing tools, not
+  through shell.
+- This checkout's root is also the Claude Code plugin: no root `.mcp.json` (see `CLAUDE.md`).

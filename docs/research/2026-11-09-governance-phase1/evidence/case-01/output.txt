@@ -1,0 +1,17 @@
+$ cargo test -p supervisor-claude-code --test autonomous_completion --test replay -- prompt_gates_mutation_but_keeps_inspection_and_proposal_usable discussion_cannot_be_used_to_edit_without_a_scoped_task no_contract_is_advisory_only --exact --nocapture
+    Finished `test` profile [unoptimized] target(s) in 0.30s
+     Running tests\autonomous_completion.rs (<target>\debug\deps\autonomous_completion-3e5875d7415978a5.exe)
+
+running 2 tests
+test discussion_cannot_be_used_to_edit_without_a_scoped_task ... ok
+test prompt_gates_mutation_but_keeps_inspection_and_proposal_usable ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.36s
+
+     Running tests\replay.rs (<target>\debug\deps\replay-7b6e4835345a58d8.exe)
+
+running 1 test
+test no_contract_is_advisory_only ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.08s
+[exit 0]

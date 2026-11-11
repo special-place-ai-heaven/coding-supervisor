@@ -1,0 +1,31 @@
+$ cargo test -p supervisor --test receipt_verify --test receipt_in_tree --test receipt_exemption --test worktree_create -- export_refuses_an_unfinished_task export_after_committing_the_completed_work_is_refused_with_the_way_out a_code_change_to_main_needs_a_receipt cleanup_refuses_committed_work_without_a_receipt --exact --nocapture
+   Compiling supervisor v0.20.0 (<worktree>\cli)
+    Finished `test` profile [unoptimized] target(s) in 3.74s
+     Running tests\receipt_exemption.rs (<target>\debug\deps\receipt_exemption-b0e865e9f23fc9c0.exe)
+
+running 1 test
+test a_code_change_to_main_needs_a_receipt ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.12s
+
+     Running tests\receipt_in_tree.rs (<target>\debug\deps\receipt_in_tree-2a7f9d52500f0217.exe)
+
+running 1 test
+test export_after_committing_the_completed_work_is_refused_with_the_way_out ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 5.44s
+
+     Running tests\receipt_verify.rs (<target>\debug\deps\receipt_verify-0e64f271ef6a52d8.exe)
+
+running 1 test
+test export_refuses_an_unfinished_task ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 7.22s
+
+     Running tests\worktree_create.rs (<target>\debug\deps\worktree_create-db13fff7c4e7ebf3.exe)
+
+running 1 test
+test cleanup_refuses_committed_work_without_a_receipt ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 2.97s
+[exit 0]

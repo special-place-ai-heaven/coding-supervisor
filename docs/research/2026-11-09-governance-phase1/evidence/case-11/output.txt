@@ -1,0 +1,12 @@
+$ cargo test -p supervisor-claude-code --test review_record -- a_rejection_by_a_reader_refuses_until_the_content_changes a_rejection_spends_a_repair_round_and_an_absent_review_does_not a_loose_rejection_counts_and_a_loose_approval_does_not --exact --nocapture
+   Compiling supervisor-claude-code v0.20.0 (<worktree>\adapters\claude-code)
+    Finished `test` profile [unoptimized] target(s) in 2.06s
+     Running tests\review_record.rs (<target>\debug\deps\review_record-57fffaa2531a8102.exe)
+
+running 3 tests
+test a_loose_rejection_counts_and_a_loose_approval_does_not ... ok
+test a_rejection_by_a_reader_refuses_until_the_content_changes ... ok
+test a_rejection_spends_a_repair_round_and_an_absent_review_does_not ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 22.74s
+[exit 0]
