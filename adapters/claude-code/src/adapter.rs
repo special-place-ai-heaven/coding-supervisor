@@ -1052,10 +1052,25 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     // WP3 review r4: an agent's start does not archive a person's task.
                     call["action"] = "discussion".into();
                     let id = intent["task_id"].as_str().unwrap_or_default();
-                    format!(
-                        "The active task {id} was started by a person, and the session that made it prompt-managed has ended; an agent's start does not archive it. If the user asked to resume that task, send \"action\":\"resume\". Otherwise call intent_apply {call} and tell the user that the task waits for them: their direct resume prompt takes it over, or {}.",
-                        crate::autonomy::person_cancel(&intent, id)
-                    )
+                    let cancel = crate::autonomy::person_cancel(&intent, id);
+                    // A hook prompt resumes only a task a hook prompt made prompt-managed.
+                    let hook_managed =
+                        lifecycle::active_task(&root)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|active| {
+                                crate::autonomy::requires_observed_completion(&active.dir)
+                                    == Ok(true)
+                            });
+                    if hook_managed {
+                        format!(
+                            "The active task {id} was started by a person, and the session that made it prompt-managed has ended; an agent's start does not archive it. If the user asked to resume that task, send \"action\":\"resume\". Otherwise call intent_apply {call} and tell the user that the task waits for them: their direct resume prompt takes it over, or {cancel}."
+                        )
+                    } else {
+                        format!(
+                            "The active task {id} was started by a person, and the session that made it prompt-managed through a caller-asserted prompt has ended; an agent's start does not archive it and a prompt here cannot resume it. Call intent_apply {call} and tell the user that the task waits for them: {cancel}."
+                        )
+                    }
                 } else if foreign_owner_ended(&root, payload) == Some(true) {
                     // The owner reported its end: this session may start the next task.
                     call["action"] = "start".into();

@@ -1636,8 +1636,14 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
             let work = uncommitted != Some((active.task_id.clone(), false));
             // WP3 review r4: a person's task is ended by the person's own choice only.
             if persons_task(&active.dir)? {
+                // A resume needs a prompt of the source that made the task prompt-managed.
+                let resume = if metadata["source"] == event["source"] {
+                    "The user's direct resume prompt takes it over (a direct cancel prompt then ends it), or "
+                } else {
+                    "Only "
+                };
                 return Err(format!(
-                    "unfinished task {} was started by a person (`supervisor task start`) and the session that made it prompt-managed has ended{}; an agent's start does not archive a person's task, and \"abandon_previous\" is not accepted for it. The user's direct resume prompt takes it over (a direct cancel prompt then ends it), or {}",
+                    "unfinished task {} was started by a person (`supervisor task start`) and the session that made it prompt-managed has ended{}; an agent's start does not archive a person's task, and \"abandon_previous\" is not accepted for it. {resume}{}",
                     active.task_id,
                     if work {
                         ", leaving uncommitted changes in its working tree"
@@ -1787,7 +1793,17 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 && metadata["source"] == event["source"])
         {
             return Err(
-                if metadata.get("session_ended").is_some() && persons_task(&active.dir)? {
+                if metadata.get("session_ended").is_some()
+                    && persons_task(&active.dir)?
+                    && metadata["source"] != event["source"]
+                {
+                    format!(
+                        "proposal belongs to another task session, which has ended; the task was started by a person and made prompt-managed by a {} prompt, so a {} prompt cannot resume it; {}",
+                        metadata["source"].as_str().unwrap_or("different"),
+                        event["source"].as_str().unwrap_or("different"),
+                        person_cancel(&event, &active.task_id)
+                    )
+                } else if metadata.get("session_ended").is_some() && persons_task(&active.dir)? {
                     format!(
                         "proposal belongs to another task session, which has ended; the task was started by a person, so the user's direct resume prompt takes it over, or {}",
                         person_cancel(&event, &active.task_id)

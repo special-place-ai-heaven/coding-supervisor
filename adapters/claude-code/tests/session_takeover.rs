@@ -244,10 +244,11 @@ fn worktree_of(project: &Path) -> PathBuf {
 }
 
 /// WP3 review r3: a person's worktree task (binding in task.json) that a prompt made
-/// prompt-managed keeps its worktree's uncommitted work out of a takeover; the main checkout is
-/// clean because edits there were refused.
+/// prompt-managed is judged by its worktree's uncommitted work, not the main checkout's, which
+/// is clean because edits there were refused. Since round 4 an agent's start refuses a person's
+/// task outright; the refusal names the work it found in the worktree.
 #[test]
-fn an_ended_owners_worktree_task_with_uncommitted_work_in_its_worktree_needs_a_choice() {
+fn an_ended_owners_person_worktree_task_refusal_names_its_worktrees_uncommitted_work() {
     let mut f = Fixture::repository();
     let worktree = worktree_of(&f.project);
     f.task = lifecycle::start_in_worktree(
@@ -273,8 +274,133 @@ fn an_ended_owners_worktree_task_with_uncommitted_work_in_its_worktree_needs_a_c
         .propose(&event, "start", json!({"contract": contract()}))
         .unwrap_err();
     assert!(
-        error.contains("uncommitted") && error.contains("abandon_previous"),
+        error.contains("leaving uncommitted changes in its working tree")
+            && error.contains("\"abandon_previous\" is not accepted"),
         "{error}"
+    );
+    assert_eq!(f.active(), f.task);
+}
+
+/// WP3 review r5: an agent's task bound to a worktree (`"worktree"` in its start) whose session
+/// ended with uncommitted work in that worktree is archived only on the user's choice: the next
+/// start is refused with the offer of `abandon_previous`, and succeeds with it.
+#[test]
+fn an_ended_owners_agent_worktree_task_with_uncommitted_work_needs_a_choice() {
+    let mut f = Fixture::repository();
+    let worktree = worktree_of(&f.project);
+    git(
+        &f.project,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "agent-wt",
+            &worktree.to_string_lossy(),
+        ],
+    );
+    let event = f.prompt("owner", "first");
+    f.task = f
+        .propose(
+            &event,
+            "start",
+            json!({"contract": contract(), "worktree": worktree.to_string_lossy()}),
+        )
+        .unwrap()["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fs::write(worktree.join("unfinished.rs"), "// work in progress\n").unwrap();
+    f.end_session("owner");
+    let event = f.prompt("replacement", "new");
+    let error = f
+        .propose(&event, "start", json!({"contract": contract()}))
+        .unwrap_err();
+    assert!(
+        error.contains("uncommitted changes")
+            && error.contains("repeat this start with \"abandon_previous\":true")
+            && !error.contains("is not accepted"),
+        "{error}"
+    );
+    assert_eq!(f.active(), f.task);
+    let started = f
+        .propose(
+            &event,
+            "start",
+            json!({"contract": contract(), "abandon_previous": true}),
+        )
+        .unwrap();
+    assert_eq!(f.active(), started["task_id"].as_str().unwrap());
+    let archive = f.archive();
+    assert_eq!(archive["disposition"], "abandoned", "{archive}");
+    assert_eq!(archive["uncommitted_work"], true, "{archive}");
+}
+
+/// WP3 review r5: a person's task that a caller-asserted prompt made prompt-managed cannot be
+/// resumed by a hook prompt (the sources differ), so once that session ends neither the start
+/// refusal, the refusal of another session's proposal nor the prompt hook offers a resume; each
+/// names the person's cancel.
+#[test]
+fn a_persons_task_converted_by_a_caller_asserted_prompt_names_only_the_cancel() {
+    let mut f = Fixture::repository();
+    f.task = lifecycle::start_as(
+        &f.root,
+        &supervisor_claude_code::state::Writer::task_start(Some(&f.project)),
+        &contract(),
+        false,
+        None,
+        None,
+    )
+    .unwrap()["task_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let event = autonomy::record_intent(
+        &f.root,
+        &f.project,
+        &json!({"session_id":"owner","prompt_id":"first","prompt":"Implement a small change"}),
+    )
+    .unwrap();
+    f.propose(&event, "continue", json!({"task_id": f.task}))
+        .unwrap();
+    f.end_session("owner");
+    let event = f.prompt("replacement", "new");
+    let error = f
+        .propose(&event, "start", json!({"contract": contract()}))
+        .unwrap_err();
+    assert!(
+        error.contains("started by a person")
+            && error.contains("supervisor task cancel --project")
+            && !error.contains("resume"),
+        "{error}"
+    );
+    let error = f
+        .propose(&event, "continue", json!({"task_id": f.task}))
+        .unwrap_err();
+    assert!(
+        error.contains("cannot resume it")
+            && error.contains("supervisor task cancel --project")
+            && !error.contains("resume prompt"),
+        "{error}"
+    );
+    let advice = f.advice("replacement", "advice");
+    assert!(
+        advice.contains("started by a person")
+            && advice.contains("supervisor task cancel --project")
+            && !advice.contains("\"action\":\"resume\"")
+            && !advice.contains("resume prompt"),
+        "{advice}"
+    );
+    // The premise: the hook prompt's resume is refused.
+    let resume = autonomy::record_prompt(
+        &f.root,
+        &f.project,
+        &json!({"session_id":"replacement","prompt_id":"resume","prompt":"resume"}),
+    )
+    .unwrap();
+    assert!(
+        f.propose(&resume, "resume", json!({"task_id": f.task}))
+            .is_err()
     );
     assert_eq!(f.active(), f.task);
 }
