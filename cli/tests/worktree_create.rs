@@ -248,6 +248,58 @@ fn creates_the_worktree_on_its_own_branch_at_the_base_and_clean() {
     assert!(status.contains(&normalized(&wt)), "{status}");
 }
 
+/// `supervisor task start --contract <file>` with `--worktree <path>` when one is given.
+fn start_file(f: &Fixture, file: &Path, worktree: Option<&Path>) -> Output {
+    let mut command = f.command(BIN);
+    command.args(["task", "start", "--contract"]).arg(file);
+    if let Some(worktree) = worktree {
+        command.arg("--worktree").arg(worktree);
+    }
+    command.arg("--project").arg(&f.project).output().unwrap()
+}
+
+/// WP3 review r3: a replayed start (same event ID and contract text) must not drop `--worktree`
+/// silently; the same worktree replays as before.
+#[test]
+fn a_replayed_start_with_another_worktree_setting_is_refused() {
+    let f = Fixture::new("wt-replay");
+    let file = contract_file(&f, json!({"event_id":"start-1"}));
+    let out = start_file(&f, &file, None);
+    assert!(out.status.success(), "{out:?}");
+    let out = start_file(&f, &file, Some(&wt(&f)));
+    assert!(!out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("different worktree setting"), "{stderr}");
+    assert!(!wt(&f).exists());
+
+    let g = Fixture::new("wt-replay-same");
+    let file = contract_file(&g, json!({"event_id":"start-1"}));
+    let first = start_file(&g, &file, Some(&wt(&g)));
+    assert!(first.status.success(), "{first:?}");
+    let again = start_file(&g, &file, Some(&wt(&g)));
+    assert!(again.status.success(), "{again:?}");
+    let v: Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(v["replayed"], true, "{v}");
+    let other = start_file(&g, &file, Some(&g.root.join("wt2")));
+    assert!(!other.status.success(), "{other:?}");
+    assert!(!g.root.join("wt2").exists());
+}
+
+/// WP3 review r3: the warning for a caller's `isolation` names what the gate stored.
+#[test]
+fn a_worktree_start_over_a_callers_isolation_none_says_worktree() {
+    let f = Fixture::new("wt-warn");
+    let file = contract_file(&f, json!({"isolation":"none"}));
+    let out = start_file(&f, &file, Some(&wt(&f)));
+    assert!(out.status.success(), "{out:?}");
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let warnings = v["warnings"].to_string();
+    assert!(
+        warnings.contains("isolation worktree") && !warnings.contains("isolation none"),
+        "{v}"
+    );
+}
+
 #[test]
 fn a_plain_start_keeps_isolation_none_and_no_binding() {
     let f = Fixture::new("wt-plain");

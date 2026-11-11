@@ -225,7 +225,7 @@ pub(crate) fn plan_start(
     if !next && let Some(event_id) = contract.get("event_id").and_then(Value::as_str) {
         let digest = crate::sha256::hex(contract.to_string().as_bytes());
         let tasks = root.join("tasks");
-        let mut replay: Option<(ActiveTask, String)> = None;
+        let mut replay: Option<(ActiveTask, String, Option<String>)> = None;
         match fs::read_dir(&tasks) {
             Ok(entries) => {
                 for entry in entries {
@@ -254,13 +254,23 @@ pub(crate) fn plan_start(
                         .and_then(Value::as_str)
                         .ok_or("task metadata has no contract ID")?
                         .to_owned();
-                    replay = Some((ActiveTask { task_id, dir }, contract_id));
+                    let earlier = metadata["worktree"].as_str().map(str::to_owned);
+                    replay = Some((ActiveTask { task_id, dir }, contract_id, earlier));
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.to_string()),
         }
-        if let Some((previous, contract_id)) = replay {
+        if let Some((previous, contract_id, earlier)) = replay {
+            // WP3: a replay must not drop a requested worktree silently.
+            if let Some(path) = worktree
+                && earlier.as_deref() != Some(crate::location::normalize(path).as_str())
+            {
+                return Err(format!(
+                    "task-start event ID reused with a different worktree setting: the earlier start had {}; nothing was created",
+                    earlier.map_or("no worktree".to_owned(), |w| format!("the worktree {w}"))
+                ));
+            }
             return Ok((
                 json!({"schema":2,"task_id":previous.task_id,"contract_id":contract_id,"state":state_of(&previous.dir)?,"replayed":true}),
                 Vec::new(),
@@ -349,8 +359,13 @@ pub(crate) fn plan_start(
         })
         .collect();
     if !replaced.is_empty() {
+        let isolation = if bound.is_some() {
+            "isolation worktree (set by --worktree)"
+        } else {
+            "isolation none (only `supervisor task start --worktree` sets isolation worktree)"
+        };
         warnings.push(format!(
-            "{} replaced by the writer's own record: the gate stores who started the task, the repository head and isolation none (only `supervisor task start --worktree` sets isolation worktree)",
+            "{} replaced by the writer's own record: the gate stores who started the task, the repository head and {isolation}",
             replaced.join(", ")
         ));
     }
