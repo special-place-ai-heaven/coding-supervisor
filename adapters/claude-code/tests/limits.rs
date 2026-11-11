@@ -1192,6 +1192,11 @@ fn an_agent_cannot_replace_a_converted_persons_task_completed_without_observed_e
         .unwrap();
         let why = propose_start(&mut env, &d).unwrap_err();
         assert!(why.contains("started by a person"), "{why}");
+        // `task next` refuses a prompt-managed task, so the way out named is the cancel.
+        assert!(
+            why.contains("supervisor task cancel --project") && why.contains(&id),
+            "{why}"
+        );
         assert_eq!(
             lifecycle::active_task(&env.state_dir)
                 .unwrap()

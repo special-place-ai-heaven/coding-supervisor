@@ -1672,16 +1672,24 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
         }
         // WP4: a person's task completed without observed evidence, e.g. on caller-asserted MCP
         // receipts, is not replaced by an agent's start, which would shed the limits the person
-        // set; the person moves on with `task next`. A hook prompt's conversion already keeps MCP
-        // from completing the task, and its unverifiable completion rolls over as above (G22).
+        // set; the person moves on with `task next` (or, once a prompt manages the task, which
+        // `task next` refuses, `task cancel`). A hook prompt's conversion already keeps MCP from
+        // completing the task, and its unverifiable completion rolls over as above (G22).
         if let Some(active) = &active
             && persons_task(&active.dir)?
             && !requires_observed_completion(&active.dir)?
             && observed_completion(&active.dir, &active.task_id, project).is_err()
         {
+            let way = if is_autonomous_task(&active.dir)? {
+                person_cancel(&event, &active.task_id)
+            } else {
+                format!(
+                    "a person runs `supervisor task next --task {} --contract <file>`",
+                    active.task_id
+                )
+            };
             return Err(format!(
-                "the active task was started by a person and its completion rests on no hook-observed evidence, so an agent cannot replace it; a person runs `supervisor task next --task {} --contract <file>`",
-                active.task_id
+                "the active task was started by a person and its completion rests on no hook-observed evidence, so an agent cannot replace it; {way}"
             ));
         }
         let mut contract = add_floor(
