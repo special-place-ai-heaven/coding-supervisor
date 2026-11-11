@@ -1,0 +1,136 @@
+{
+  "base_sha": "454b5a377cb192f7a9c21b7ddac05605019a8157",
+  "bundle_version": 1,
+  "candidate": {
+    "base_commit": "454b5a377cb192f7a9c21b7ddac05605019a8157",
+    "dirty_digest": "910c8018a66616266de991ab01791b8db34e7df01340f23b7296edd19634efe6"
+  },
+  "chain_head": "bef9159928de55b32609f82e9ed11a64eb850f59633c140bebf2b33a6eba13e6",
+  "changed_paths": [
+    ".github/workflows/ci.yml",
+    "adapters/claude-code/src/adapter.rs",
+    "adapters/claude-code/src/git.rs",
+    "adapters/claude-code/src/observation.rs",
+    "adapters/claude-code/tests/contract_v2.rs",
+    "adapters/claude-code/tests/execution_context.rs",
+    "adapters/claude-code/tests/replay.rs",
+    "adapters/claude-code/tests/tree_transfer.rs",
+    "adapters/mcp/src/lib.rs",
+    "adapters/mcp/tests/protocol.rs",
+    "cli/src/status.rs",
+    "cli/src/verdict.rs",
+    "cli/tests/verdict.rs"
+  ],
+  "contract": "{\"approval\":{\"at\":1794415819,\"by\":null,\"via\":\"agent-proposal\"},\"base_sha\":\"454b5a377cb192f7a9c21b7ddac05605019a8157\",\"criteria\":[{\"check\":\"repository_validation\",\"command\":\"cargo test -p supervisor-claude-code --test execution_context\",\"id\":\"C1\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"cargo fmt --all -- --check\",\"id\":\"AUTO_FMT\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"cargo clippy --workspace --all-targets -- -D warnings\",\"id\":\"AUTO_LINT\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":[\"cargo test --workspace\",\"cargo nextest run --workspace\"],\"id\":\"AUTO_TEST\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"npm --prefix npm run test\",\"id\":\"AUTO_NPM_TEST_NPM\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"git diff --check\",\"id\":\"AUTO_DIFF\",\"mandatory\":true}],\"event_id\":\"autonomy-7a71214937d2d93884c535a6fd98fc178e02423066d4cc215ef07aa82a8a5c32\",\"forbidden_effects\":[],\"goal\":\"Verify the finished change: earlier and fuller gate refusals, MCP refusal at a reached task limit, dot-dot path folding, pinned cargo-nextest download in CI\",\"id\":\"gate-feedback-and-limits\",\"isolation\":\"none\",\"max_repair_rounds\":3,\"schema_version\":2,\"scope\":[\".github/\",\"adapters/\",\"cli/\",\"docs/\",\"CLAUDE.md\",\"README.md\"]}",
+  "exported_at": "2026-11-11T17:20:20.000Z",
+  "exported_contract_sha256": "72b44e481ffaa77fcc8a93b26ecc53a4b50060f63aa33c520aaf1d9d150eb49c",
+  "gate_state": "completed",
+  "receipts": [
+    {
+      "candidate": {
+        "base_commit": "454b5a377cb192f7a9c21b7ddac05605019a8157",
+        "dirty_digest": "910c8018a66616266de991ab01791b8db34e7df01340f23b7296edd19634efe6"
+      },
+      "claim_supported": true,
+      "command": "cargo test -p supervisor-claude-code --test execution_context",
+      "criterion": "C1",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794415876,
+      "output_ref": "observed:task-18e70bae3bc2f4a8-8ce4-0:toolu_01EWmdumW8uwuH9ZpUqQDb5B",
+      "provenance": "observed",
+      "started_at": 1794415823
+    },
+    {
+      "candidate": {
+        "base_commit": "454b5a377cb192f7a9c21b7ddac05605019a8157",
+        "dirty_digest": "910c8018a66616266de991ab01791b8db34e7df01340f23b7296edd19634efe6"
+      },
+      "claim_supported": true,
+      "command": "cargo fmt --all -- --check",
+      "criterion": "AUTO_FMT",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794415894,
+      "output_ref": "observed:task-18e70bae3bc2f4a8-8ce4-0:toolu_01QNw1xRvgAat5hnBgqir6di",
+      "provenance": "observed",
+      "started_at": 1794415885
+    },
+    {
+      "candidate": {
+        "base_commit": "454b5a377cb192f7a9c21b7ddac05605019a8157",
+        "dirty_digest": "910c8018a66616266de991ab01791b8db34e7df01340f23b7296edd19634efe6"
+      },
+      "claim_supported": true,
+      "command": "cargo clippy --workspace --all-targets -- -D warnings",
+      "criterion": "AUTO_LINT",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794415914,
+      "output_ref": "observed:task-18e70bae3bc2f4a8-8ce4-0:toolu_01KNS6PxY5EFCY2sdkdaQD11",
+      "provenance": "observed",
+      "started_at": 1794415897
+    },
+    {
+      "candidate": {
+        "base_commit": "454b5a377cb192f7a9c21b7ddac05605019a8157",
+        "dirty_digest": "910c8018a66616266de991ab01791b8db34e7df01340f23b7296edd19634efe6"
+      },
+      "claim_supported": true,
+      "command": "cargo test --workspace",
+      "criterion": "AUTO_TEST",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794417557,
+      "output_ref": "observed:task-18e70bae3bc2f4a8-8ce4-0:toolu_01MZgaEzAQ7DB4voR4UbrCjz",
+      "provenance": "observed",
+      "started_at": 1794415918
+    },
+    {
+      "candidate": {
+        "base_commit": "454b5a377cb192f7a9c21b7ddac05605019a8157",
+        "dirty_digest": "910c8018a66616266de991ab01791b8db34e7df01340f23b7296edd19634efe6"
+      },
+      "claim_supported": true,
+      "command": "npm --prefix npm run test",
+      "criterion": "AUTO_NPM_TEST_NPM",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794417576,
+      "output_ref": "observed:task-18e70bae3bc2f4a8-8ce4-0:toolu_01Tfe4V8nponGb87z36GG9b7",
+      "provenance": "observed",
+      "started_at": 1794417563
+    },
+    {
+      "candidate": {
+        "base_commit": "454b5a377cb192f7a9c21b7ddac05605019a8157",
+        "dirty_digest": "910c8018a66616266de991ab01791b8db34e7df01340f23b7296edd19634efe6"
+      },
+      "claim_supported": true,
+      "command": "git diff --check",
+      "criterion": "AUTO_DIFF",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794417590,
+      "output_ref": "observed:task-18e70bae3bc2f4a8-8ce4-0:toolu_01YFWeTVLdgd3uzGHo1mzxd7",
+      "provenance": "observed",
+      "started_at": 1794417580
+    }
+  ],
+  "repository": {
+    "root_commits": [
+      "a447f728ba58c655393a75fe16af4a1456cb5a04"
+    ]
+  },
+  "reviews": [],
+  "signature": {
+    "body_sha256": "d867c90a6c2978802194c2932c8405208705fadea58c74f14e66e23534a917f9",
+    "key_id": "56fefcdc588ccb5b",
+    "signature": "81654d8100e703d7176b3354987bde4a7b4055a85e9995050e1b3c4be7d58cbeaad77c6bf61b991f98c2e5f26d71af5c05744dd053afa0e4564bff2ae3ab300c",
+    "statement": "coding-supervisor receipt bundle v2",
+    "storage": "windows-credential-manager"
+  },
+  "stored_contract_sha256": "ac266ecf53e83c11f0660cac24fdc3b7a3ef3b4c58109d78d03b4b317637b4ef",
+  "task_id": "task-18e70bae3bc2f4a8-8ce4-0",
+  "tree": "40fc81a71d1e6b8f9bf14b1488f0f6bf3be862fe"
+}
