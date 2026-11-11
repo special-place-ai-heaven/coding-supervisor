@@ -45,6 +45,9 @@ fn python_cmd() -> &'static str {
     if cfg!(windows) { "python" } else { "python3" }
 }
 fn setup(required: &str) -> (Fixture, Env) {
+    setup_with(json!([{"id":"C2","check":"test","mandatory":true,"command":required}]))
+}
+fn setup_with(criteria: Value) -> (Fixture, Env) {
     let fixture = Fixture(std::env::temp_dir().join(format!(
         "supervisor-execution-context-{}-{}",
         std::process::id(),
@@ -60,8 +63,7 @@ fn setup(required: &str) -> (Fixture, Env) {
     fs::write(
         state.join("contract.json"),
         json!({"id":"context", "goal":"check the root candidate", "scope":["src/"],
-            "forbidden_effects":[], "max_repair_rounds":2,
-            "criteria":[{"id":"C2","check":"test","mandatory":true,"command":required}]})
+            "forbidden_effects":[], "max_repair_rounds":2, "criteria":criteria})
         .to_string(),
     )
     .unwrap();
@@ -366,4 +368,147 @@ fn approved_target_identity_is_bound_across_hook_processes() {
         assert!(output.status.success());
     }
     assert!(matches!(stop(&mut env), Decision::Block(_)));
+}
+
+/// Five checks at once, so one refusal can be read for each of them.
+fn checks() -> Value {
+    json!([{"id":"C1","check":"format","mandatory":true,"command":"cargo fmt"},
+        {"id":"C2","check":"lint","mandatory":true,"command":"cargo clippy"},
+        {"id":"C3","check":"test","mandatory":true,"command":"cargo test"},
+        {"id":"C4","check":"whitespace","mandatory":true,"command":"git diff --check"},
+        {"id":"C5","check":"npm","mandatory":true,"command":"npm test"}])
+}
+fn start(env: &Env, id: &str, argv: Value) -> Value {
+    let mut event = payload(env, "command_start_combed", id);
+    event["tool_input"]["argv"] = argv;
+    event
+}
+fn with_node_options(mut event: Value) -> Value {
+    event["tool_input"]["env"] = json!([{"key":"NODE_OPTIONS", "value":"--no-warnings"}]);
+    event
+}
+
+/// G49 (live sessions 2026-11-11): a required check started with an environment the gate does
+/// not approve is refused before it runs, in the Stop refusal's words, naming the variable and
+/// never its value. A command no criterion accepts is untouched, and an approved rerun counts.
+#[test]
+fn an_unapproved_environment_is_refused_before_the_run() {
+    let (_fixture, mut env) = setup("cargo test");
+    let event = with_node_options(payload(&env, "command_start_combed", "early"));
+    let decision = handle(&event, &mut env);
+    assert!(
+        matches!(&decision, Decision::Deny(why) if why.starts_with("GATE: C2 would not count")
+            && why.contains("unapproved or legacy execution context (it set NODE_OPTIONS)")
+            && why.contains("rerun it without extra environment or shell")
+            && why.contains("CARGO_TARGET_DIR passed to the command counts only")
+            && !why.contains("--no-warnings")),
+        "{decision:?}"
+    );
+    let other = with_node_options(start(&env, "other", json!(["cargo", "build"])));
+    assert_eq!(handle(&other, &mut env), Decision::None);
+    let rerun = payload(&env, "command_start_combed", "rerun");
+    finish(&mut env, rerun, "exited", Some(0));
+    assert_eq!(stop(&mut env), Decision::None);
+}
+
+/// G49 at `audit`: the same words are reported and the call goes ahead; the run still does not
+/// count, so the Stop is reported as refused.
+#[test]
+fn at_audit_an_unapproved_environment_is_reported_and_runs() {
+    let (_fixture, mut env) = setup("cargo test");
+    env.level.level = supervisor_claude_code::level::Level::Audit;
+    let event = with_node_options(payload(&env, "command_start_combed", "audit"));
+    let decision = handle(&event, &mut env);
+    assert!(
+        matches!(&decision, Decision::System(why) if why.starts_with("GATE: C2 would not count")
+            && why.contains("(it set NODE_OPTIONS)")),
+        "{decision:?}"
+    );
+    finish(&mut env, event, "exited", Some(0));
+    assert!(matches!(stop(&mut env), Decision::System(why) if why.contains("execution context")));
+}
+
+/// G50 (live session 2 of 2026-11-11): the Stop refusal lists every unmet mandatory criterion
+/// with its own reason: an unapproved run, a job whose exit was seen only through bucket_wait
+/// (with the command_status action), and a check never run. The long remedy is stated once.
+#[test]
+fn the_stop_refusal_lists_every_unmet_criterion() {
+    let (_fixture, mut env) = setup_with(checks());
+    let fmt = with_node_options(start(&env, "fmt", json!(["cargo", "fmt"])));
+    finish(&mut env, fmt, "exited", Some(0));
+    let mut lint = start(&env, "lint", json!(["cargo", "clippy"]));
+    handle(&lint, &mut env);
+    lint["hook_event_name"] = "PostToolUse".into();
+    lint["tool_response"] = json!({"job_id":"job-lint", "bucket_id":"bucket-lint"});
+    handle(&lint, &mut env);
+    let root = env.state_dir.parent().unwrap().to_path_buf();
+    handle(
+        &json!({"hook_event_name":"PostToolUse", "cwd":root, "session_id":"session",
+            "agent_id":"main", "tool_use_id":"wait", "tool_name":"mcp__terminal_commander__bucket_wait",
+            "tool_input":{"bucket_id":"bucket-lint", "cursor":0},
+            "tool_response":{"bucket_id":"bucket-lint", "events":[{"kind":"command_exited",
+                "captures":{"exit_code":"0"}, "source":{"job_id":"job-lint"}}], "heartbeat":false}}),
+        &mut env,
+    );
+    let test = start(&env, "test", json!(["cargo", "test"]));
+    finish(&mut env, test, "exited", Some(0));
+    let diff = with_node_options(start(&env, "diff", json!(["git", "diff", "--check"])));
+    finish(&mut env, diff, "exited", Some(0));
+    let refusal = stop(&mut env);
+    let Decision::Block(why) = &refusal else {
+        panic!("{refusal:?}");
+    };
+    assert!(
+        why.contains(
+            "C1 latest execution has unapproved or legacy execution context (it set NODE_OPTIONS)"
+        ),
+        "{why}"
+    );
+    assert!(
+        why.contains("C2 latest execution has no observed completion: call command_status for Terminal Commander job job-lint"),
+        "{why}"
+    );
+    assert!(
+        why.contains(
+            "C4 latest execution has unapproved or legacy execution context (it set NODE_OPTIONS)"
+        ),
+        "{why}"
+    );
+    assert!(
+        why.contains("C5 has no observed run on this candidate"),
+        "{why}"
+    );
+    assert!(!why.contains("C3"), "{why}");
+    assert_eq!(why.matches("CARGO_BUILD_JOBS").count(), 1, "{why}");
+}
+
+/// G50: with only jobs still running, every one is named, and the next stop in the turn waits
+/// as G27 does for one.
+#[test]
+fn every_pending_job_is_named_and_the_next_stop_waits() {
+    let (_fixture, mut env) = setup_with(json!([
+        {"id":"C1","check":"format","mandatory":true,"command":"cargo fmt"},
+        {"id":"C3","check":"test","mandatory":true,"command":"cargo test"}]));
+    for (id, argv) in [
+        ("fmt", json!(["cargo", "fmt"])),
+        ("test", json!(["cargo", "test"])),
+    ] {
+        let mut event = start(&env, id, argv);
+        handle(&event, &mut env);
+        event["hook_event_name"] = "PostToolUse".into();
+        event["tool_response"] =
+            json!({"job_id":format!("job-{id}"), "bucket_id":format!("bucket-{id}")});
+        handle(&event, &mut env);
+    }
+    let first = stop(&mut env);
+    assert!(
+        matches!(&first, Decision::Block(why) if why.contains("job job-fmt") && why.contains("job job-test")),
+        "{first:?}"
+    );
+    let second = stop(&mut env);
+    assert!(
+        matches!(&second, Decision::System(note) if note.starts_with("GATE: waiting")
+            && note.contains("job-fmt") && note.contains("job-test")),
+        "{second:?}"
+    );
 }

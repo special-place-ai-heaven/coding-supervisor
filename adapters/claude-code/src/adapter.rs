@@ -49,6 +49,26 @@ pub fn receipts_observed(
         .collect())
 }
 
+/// G51: the latest hook-journaled run of `criterion` on `candidate` that no receipt of
+/// `receipts` counts yet, for `supervisor verdict` and `status`. Runs become receipts only when
+/// a Stop or SubagentStop is judged, so before that a finished run is reported, never counted.
+pub fn latest_uncounted_run(
+    dir: &Path,
+    task_id: &str,
+    criterion: &Criterion,
+    candidate: &coding_supervisor::CandidateId,
+    receipts: &[VerificationReceipt],
+) -> Result<Option<Value>, String> {
+    let run = observation::latest_run(dir, task_id, criterion, candidate)?;
+    Ok(run.filter(|run| {
+        !receipts.iter().any(|r| {
+            r.criterion == criterion.id
+                && r.candidate == *candidate
+                && Some(r.output_ref.as_str()) == run["reference"].as_str()
+        })
+    }))
+}
+
 /// A hook completion in `runs` matches every material field of `receipt`.
 fn journaled(receipt: &VerificationReceipt, runs: &[observation::Run]) -> bool {
     runs.iter().any(|run| {
@@ -542,6 +562,8 @@ fn proposal_command(payload: &Value) -> bool {
 
 /// Ends the refusal for a Terminal Commander job whose exit is not recorded yet (G27).
 const PENDING_JOB: &str = " after it ends to record its exit";
+/// Ends a refusal entry for a mandatory criterion with no run on the candidate (G50).
+const NOT_RUN: &str = " has no observed run on this candidate";
 
 /// What the pre-intent gate lets through while the current prompt is unclassified.
 fn inspection(payload: &Value) -> bool {
@@ -2484,27 +2506,37 @@ impl Session {
 
     /// The latest dispatch wins even when it has no valid completion. An older success
     /// must not hide a newer failed, interrupted, pending, or invalidated execution.
-    fn latest_attempts(&self, dir: &Path, project: &Path) -> Result<(), String> {
-        crate::autonomy::validate_entrypoints(dir, project)?;
+    /// G50: every unmet mandatory criterion gets its own entry; a criterion never run is named
+    /// only when there is already something to refuse, so it adds words, never a refusal.
+    fn latest_attempts(&self, dir: &Path, project: &Path) -> Vec<String> {
+        if let Err(why) = crate::autonomy::validate_entrypoints(dir, project) {
+            return vec![why];
+        }
         let Ok(current) = &self.observed else {
-            return Err("candidate identity could not be observed".to_owned());
+            return vec!["candidate identity could not be observed".to_owned()];
         };
         let rows = match std::fs::read_to_string(dir.join("runs.jsonl")) {
-            Ok(text) => text
+            Ok(text) => match text
                 .lines()
                 .map(serde_json::from_str::<Value>)
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| "invalid command observation journal".to_owned())?,
+            {
+                Ok(rows) => rows,
+                Err(_) => return vec!["invalid command observation journal".to_owned()],
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(_) => return Err("command observation journal unavailable".to_owned()),
+            Err(_) => return vec!["command observation journal unavailable".to_owned()],
         };
         let mut current_rows = Vec::new();
         for row in rows {
             if text(&row, "kind") == Some("dispatch") {
-                let dispatch =
-                    text(&row, "dispatch_id").ok_or("command dispatch has no identity")?;
-                if !crate::autonomy::dispatch_is_current(dir, dispatch)? {
-                    continue;
+                let Some(dispatch) = text(&row, "dispatch_id") else {
+                    return vec!["command dispatch has no identity".to_owned()];
+                };
+                match crate::autonomy::dispatch_is_current(dir, dispatch) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(why) => return vec![why],
                 }
             }
             current_rows.push(row);
@@ -2512,6 +2544,9 @@ impl Session {
         // Current criteria are project-root checks. Nested observations retain their
         // actual cwd, but explicit nested criterion contexts need a separate contract API.
         let execution_root = crate::binding::execution_root(dir, project);
+        let mut problems = Vec::new();
+        let mut never_run = Vec::new();
+        let mut remedy_stated = false;
         for criterion in self.criteria.iter().filter(|c| c.mandatory) {
             let latest = current_rows.iter().rev().find(|row| {
                 text(row, "kind") == Some("dispatch")
@@ -2537,18 +2572,31 @@ impl Session {
                         .is_some()
                     })
             });
-            let Some(latest) = latest else { continue };
+            let Some(latest) = latest else {
+                if !criterion.is_baseline() && !self.passing_on_checkpoint(criterion) {
+                    never_run.push(format!("{}{NOT_RUN}", criterion.id.0));
+                }
+                continue;
+            };
             if !observation::approved_context(latest) {
-                let set = observation::unapproved_env(latest)
-                    .map(|names| format!(" (it set {names})"))
-                    .unwrap_or_default();
-                return Err(format!(
-                    "{} latest execution has unapproved or legacy execution context{set}: rerun it without extra environment or shell; job and thread counts, colour and progress variables are approved ({}); a CARGO_TARGET_DIR passed to the command counts only when the hook's own environment has the same value (set it in the harness settings env or cargo's [build] target-dir instead)",
+                // The long remedy once; a later criterion points back to it.
+                let remedy = if remedy_stated {
+                    "rerun it the same way".to_owned()
+                } else {
+                    remedy_stated = true;
+                    observation::context_remedy()
+                };
+                problems.push(format!(
+                    "{} latest execution has unapproved or legacy execution context{}: {remedy}",
                     criterion.id.0,
-                    observation::HARMLESS_ENV.join(", ")
+                    observation::context_set(latest),
                 ));
+                continue;
             }
-            let dispatch = text(latest, "dispatch_id").ok_or("command dispatch has no identity")?;
+            let Some(dispatch) = text(latest, "dispatch_id") else {
+                problems.push("command dispatch has no identity".to_owned());
+                continue;
+            };
             let observed = format!("observed:{}:{dispatch}", self.task_id);
             let reconstructed = format!("tc-reconstructed:{}:{dispatch}", self.task_id);
             let receipt = self.gate.receipts.iter().rev().find(|r| {
@@ -2559,12 +2607,10 @@ impl Session {
             });
             match receipt.and_then(|r| r.exit_code) {
                 Some(0) => {}
-                Some(exit) => {
-                    return Err(render(&GateError::FailingReceipt {
-                        criterion: criterion.id.clone(),
-                        exit_code: exit,
-                    }));
-                }
+                Some(exit) => problems.push(render(&GateError::FailingReceipt {
+                    criterion: criterion.id.clone(),
+                    exit_code: exit,
+                })),
                 None => {
                     // A Terminal Commander job is recorded only from its final command_status;
                     // an exit seen through bucket_wait carries no structured exit state.
@@ -2574,20 +2620,30 @@ impl Session {
                         .then(|| text(row, "job_id"))
                         .flatten()
                     });
-                    return Err(match job {
-                        Some(job) => format!(
-                            "{} latest execution has no observed completion: call command_status for Terminal Commander job {job}{PENDING_JOB}",
-                            criterion.id.0
-                        ),
-                        None => format!(
-                            "{} latest execution has no observed completion",
-                            criterion.id.0
-                        ),
-                    });
+                    problems.push(match job {
+                            Some(job) => format!(
+                                "{} latest execution has no observed completion: call command_status for Terminal Commander job {job}{PENDING_JOB}",
+                                criterion.id.0
+                            ),
+                            None => format!(
+                                "{} latest execution has no observed completion",
+                                criterion.id.0
+                            ),
+                        });
                 }
             }
         }
-        Ok(())
+        if !problems.is_empty() {
+            problems.extend(never_run);
+        }
+        // shortcut: a fixed cap keeps the refusal readable; contracts hold a handful of criteria.
+        const LISTED: usize = 8;
+        if problems.len() > LISTED {
+            let more = problems.len() - LISTED;
+            problems.truncate(LISTED);
+            problems.push(format!("and {more} more unmet"));
+        }
+        problems
     }
 
     /// WP4: a PreToolUse at a reached limit that is not [`limit_exempt`] is refused whatever the
@@ -2781,10 +2837,7 @@ impl Session {
             return Ok(Decision::None);
         }
         self.note_asserted(reasons);
-        if let Err(why) = self.latest_attempts(dir, Path::new(text(payload, "cwd").unwrap_or(".")))
-        {
-            problems.push(why);
-        }
+        problems.extend(self.latest_attempts(dir, Path::new(text(payload, "cwd").unwrap_or("."))));
         let completed = self.task.state() == TaskState::Completed;
         let accepted = if completed || self.task.state() == TaskState::ReadyForReview {
             self.observed_evidence()
@@ -2993,15 +3046,17 @@ impl Session {
         // A repair round is spent only on a candidate judged wrong, never on absent evidence.
         // A redefined check entrypoint is a defect in the candidate.
         let mut judged_wrong = crate::autonomy::validate_entrypoints(dir, project).is_err();
-        if let Err(why) = self.latest_attempts(dir, project) {
-            problems.push(why);
-        }
+        problems.extend(self.latest_attempts(dir, project));
         // M6 rides on strict, which is when reproduction is required.
         if self.task.requires_reproduction() {
             problems.extend(self.too_few_tests(dir)?);
         }
-        // G27: the only gap is a job still running; refuse it once per turn, then wait.
-        let only_pending_job = problems.len() == 1 && problems[0].ends_with(PENDING_JOB);
+        // G27: the only gaps are jobs still running; refuse once per turn, then wait. A check
+        // never run did not stop that wait before G50 listed it, and does not now.
+        let only_pending_job = problems.iter().any(|p| p.ends_with(PENDING_JOB))
+            && problems
+                .iter()
+                .all(|p| p.ends_with(PENDING_JOB) || p.ends_with(NOT_RUN));
         // WP5: `Some(rejected)` when the review rule refused; the refusal then teaches it.
         let mut review_gap = None;
         let result = if problems.is_empty() {
@@ -3320,6 +3375,19 @@ impl Session {
                     criterion.id.0
                 ),
             });
+        }
+        // G49: a required check whose run environment is not approved never counts; say so
+        // before the run, in the Stop refusal's words. `audit` reports it and lets it run.
+        if !self.task.state().is_terminal()
+            && let Some((criterion, record)) =
+                observation::unapproved_dispatch(payload, &self.criteria)
+        {
+            return Ok(Decision::Deny(format!(
+                "GATE: {} would not count: this run has unapproved or legacy execution context{}: {}",
+                criterion.id.0,
+                observation::context_set(&record),
+                observation::context_remedy()
+            )));
         }
         if !matches!(tool, "Write" | "Edit" | "Agent") {
             return Ok(Decision::None);
