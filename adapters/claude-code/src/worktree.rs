@@ -74,7 +74,17 @@ pub(crate) fn create(
         &["worktree", "add", "-q", "-b", branch, &target, base],
     )
     .map_err(|why| format!("the worktree could not be created: {why}"))?;
-    verify(project, path, stored, branch, base).map_err(|why| rollback(project, path, branch, &why))
+    verify(project, path, stored, branch, base)
+        .and_then(|()| {
+            // A session in the new worktree finds a task started from a linked worktree only
+            // through this record; the primary checkout it finds from the worktree's `.git`.
+            let checkout = canonical_project(project);
+            match crate::location::linked_main_checkout(Path::new(&checkout)) {
+                Some(_) => crate::location::record_started_from(path, &checkout),
+                None => Ok(()),
+            }
+        })
+        .map_err(|why| rollback(project, path, branch, &why))
 }
 
 fn verify(

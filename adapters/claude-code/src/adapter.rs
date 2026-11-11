@@ -119,7 +119,7 @@ impl Env {
     }
 
     /// [`Env::real`] for a hook payload: a call from the linked worktree its session's task is
-    /// bound to uses the main checkout's state, where that task lives.
+    /// bound to uses the state of the checkout that task was started from, where it lives.
     pub fn for_hook(cwd: &Path, session: &str) -> Self {
         Self::build(
             &crate::binding::redirect(cwd, session).unwrap_or_else(|| cwd.to_path_buf()),

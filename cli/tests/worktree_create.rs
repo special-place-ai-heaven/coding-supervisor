@@ -160,13 +160,17 @@ fn stop_at(f: &Fixture, cwd: &Path) -> Value {
     )
 }
 
+/// Whether `task` is completed, in whichever state root holds it.
 fn completed(f: &Fixture, task: &str) -> bool {
-    let gate = state_root(f)
-        .unwrap()
-        .join("tasks")
-        .join(task)
-        .join("gate.json");
-    fs::read_to_string(gate).is_ok_and(|g| g.contains("\"state\":\"completed\""))
+    fs::read_dir(&f.state).unwrap().any(|root| {
+        let gate = root
+            .unwrap()
+            .path()
+            .join("tasks")
+            .join(task)
+            .join("gate.json");
+        fs::read_to_string(gate).is_ok_and(|g| g.contains("\"state\":\"completed\""))
+    })
 }
 
 /// Start in a worktree, edit `src/lib.rs` there from the main checkout and pass the check
@@ -576,6 +580,104 @@ fn a_start_from_a_linked_worktree_guards_it_and_the_primary_checkout() {
     }
     let inside = write_at(&f, &linked, &wt(&f).join("src").join("lib.rs"), "wt-1");
     assert!(!denied(&inside), "{inside}");
+}
+
+/// A session working in the new worktree of a task started from a linked worktree finds that
+/// task in the linked worktree's state: edits in both checkouts are refused and its Bash check
+/// counts. Before the fix it looked only in the primary checkout's state and found nothing.
+#[test]
+fn a_session_in_the_worktree_of_a_start_from_a_linked_worktree_finds_its_task() {
+    let f = Fixture::new("wt-linked-session");
+    let linked = f.root.join("linked");
+    f.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "fixture-linked",
+        linked.to_str().unwrap(),
+        "HEAD",
+    ]);
+    let out = start_in(&f, &linked, &wt(&f));
+    assert!(out.status.success(), "{out:?}");
+    let response: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let task = response["task_id"].as_str().unwrap().to_owned();
+    let wt = wt(&f);
+    for (file, id) in [
+        (linked.join("src").join("lib.rs"), "linked-1"),
+        (f.project.join("src").join("lib.rs"), "primary-1"),
+    ] {
+        let decision = write_at(&f, &wt, &file, id);
+        assert!(denied(&decision), "{decision}");
+        assert!(reason(&decision).contains("base checkout"), "{decision}");
+    }
+    let file = wt.join("src").join("lib.rs");
+    assert!(!denied(&write_at(&f, &wt, &file, "edit-1")));
+    fs::write(&file, "// two\n").unwrap();
+    let mut payload = json!({"hook_event_name":"PreToolUse","tool_use_id":"bash-1",
+        "agent_id":"main","tool_name":"Bash","tool_input":{"command":"cargo test -p fixture"}});
+    assert!(!denied(&hook_at(&f, &wt, payload.clone())));
+    payload["hook_event_name"] = "PostToolUse".into();
+    payload["tool_response"] = json!({"stdout":"ok","stderr":"","interrupted":false});
+    hook_at(&f, &wt, payload);
+    let stop = stop_at(&f, &wt);
+    assert_ne!(stop["decision"], "block", "{stop}");
+    assert!(completed(&f, &task));
+}
+
+/// An agent's revise cannot move a person's worktree task: neither a path inside the main
+/// checkout (which resolves to the checkout itself) nor one that does not exist yet. Before the
+/// fix either was accepted and the base-checkout refusal stopped applying.
+#[test]
+fn an_agent_revise_cannot_move_a_worktree_task() {
+    let f = Fixture::new("wt-revise");
+    let task = start(&f)["task_id"].as_str().unwrap().to_owned();
+    let contract = task_file(&f, &task, "contract.json");
+    for (n, requested) in ["src", "zz"].into_iter().enumerate() {
+        let intents = || -> Value {
+            serde_json::from_str(
+                &fs::read_to_string(state_root(&f).unwrap().join("intents.json"))
+                    .unwrap_or_else(|_| "{\"events\":{}}".to_owned()),
+            )
+            .unwrap()
+        };
+        let before: Vec<String> = intents()["events"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        hook_at(
+            &f,
+            &f.project,
+            json!({"hook_event_name":"UserPromptSubmit","prompt_id":format!("p{n}"),
+                "prompt":"Implement the change"}),
+        );
+        let store = intents();
+        let (id, event) = store["events"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(id, _)| !before.contains(id))
+            .unwrap();
+        let proposal = json!({"event_id":id,"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],
+            "action":"revise","task_id":task,"contract":contract,"worktree":requested});
+        let out = f.run(&["intent", "apply", "--proposal", &proposal.to_string()]);
+        assert!(!out.status.success(), "{requested}: {out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("isolation worktree"),
+            "{requested}: {out:?}"
+        );
+        // The prompt is classified without a move, so the next edit reaches the task gate.
+        let proposal = json!({"event_id":id,"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],
+            "action":"continue","task_id":task});
+        let out = f.run(&["intent", "apply", "--proposal", &proposal.to_string()]);
+        assert!(out.status.success(), "{requested}: {out:?}");
+        let base = f.project.join("src").join("lib.rs");
+        let decision = write_at(&f, &f.project, &base, &format!("base-{n}"));
+        assert!(denied(&decision), "{requested}: {decision}");
+        assert!(reason(&decision).contains("base checkout"), "{decision}");
+    }
 }
 
 #[test]

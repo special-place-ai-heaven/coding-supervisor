@@ -1831,6 +1831,12 @@ pub fn propose(root: &Path, project: &Path, proposal: &Value) -> Result<Value, S
                 {
                     expected.entry(name).or_insert_with(|| digest.clone());
                 }
+                // WP3: a person's worktree task stays in the worktree its start created.
+                if proposal.get("worktree").is_some()
+                    && old.get("isolation").and_then(Value::as_str) == Some("worktree")
+                {
+                    return Err("this task has isolation worktree: it stays in the worktree `supervisor task start --worktree` created for it, so a revise cannot name a worktree".into());
+                }
                 // A revise naming the project itself moves the task back: the binding is cleared.
                 match worktree.clone()? {
                     Some(worktree) => metadata["worktree"] = worktree.into(),
