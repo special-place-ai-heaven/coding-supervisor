@@ -96,8 +96,8 @@ pub struct Gate {
     pub starting: Option<Box<CandidateId>>,
     /// WP5: every review recorded, each bound to its candidate. Written only when not empty.
     pub reviews: Vec<StoredReview>,
-    /// G58: the last judged Stop was the hold for a job with no recorded exit, so a stop the
-    /// harness continued after it is released. Written only when set.
+    /// G58: the last judged Stop was the hold for a job with no recorded exit, so the next judged
+    /// stop is released; a prompt from the task's session clears it. Written only when set.
     pub pending_hold: bool,
 }
 

@@ -835,7 +835,7 @@ fn a_pending_terminal_commander_job_refuses_stop_once_then_waits() {
 
 /// G58: a stop held only for a job with no recorded exit is not a numbered refusal, and a tool
 /// call between it and the next stop (which resets the refusal count) does not make the gate
-/// refuse again: the harness's continuation flag releases that stop with the note.
+/// refuse again: the stop right after the hold is released with the note.
 #[test]
 fn a_pending_job_refusal_is_not_counted_and_tool_calls_do_not_rearm_it() {
     let (_d, mut env, _) = autonomous();
@@ -899,8 +899,8 @@ fn start_job(env: &mut Env, id: &str, job: &str) {
     );
 }
 
-/// G58 review: the continuation flag releases a pending-only stop only when the gate's own
-/// pending hold came before it. After a numbered refusal, an edit and a restarted check, the
+/// G58 review: a pending-only stop is released only when the gate's own pending hold came
+/// before it. After a numbered refusal, an edit and a restarted check, the
 /// continued stop is held and names the job and the `command_status` call.
 #[test]
 fn a_continued_stop_after_a_numbered_refusal_is_held_for_a_pending_job() {
