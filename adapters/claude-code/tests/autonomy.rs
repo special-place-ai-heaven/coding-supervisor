@@ -2009,6 +2009,10 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "cat \"C:\\a\\\"",
         // One `-C` directory word `x\ status y/..`, then `push`, which is not a read.
         "git -C \"x\\ status y/..\" push origin",
+        // A `{...}` without a `,` does not close the brace: `{x}y,z}` becomes `x}y` and `z`.
+        "git log {x}y,z}",
+        "git diff {--output=o}x,HEAD}",
+        "git ls-remote origin {x}y,--upload-pack=p}",
         "git log \"x",
         "git log --grep=\"a\nb\"",
         // Bash reads an unquoted word starting with `#` and the rest of the line as a comment.

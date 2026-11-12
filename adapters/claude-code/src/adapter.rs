@@ -595,13 +595,15 @@ fn shell_words(command: &str) -> Option<Vec<(String, bool)>> {
 }
 
 /// Whether Bash may turn these unquoted characters of a word into other words: a glob, a `~` at
-/// the start or after `=` or `:`, or a `,` or `..` inside a brace pair, an unclosed one counting
-/// (`{owner}`, `@{u}..HEAD` and `HEAD~1` stay as written).
+/// the start or after `=` or `:`, a `,` anywhere after a `{` (a `}` between does not close a
+/// brace without a `,`: Bash reads `{x}y,z}` as `x}y z`), or a `..` inside an open brace, an
+/// unclosed one counting (`{owner}`, `@{u}..HEAD` and `HEAD~1` stay as written).
 fn expands(bare: &str) -> bool {
     if bare.contains(['*', '?', '['])
         || bare.starts_with('~')
         || bare.contains("=~")
         || bare.contains(":~")
+        || bare.find('{').is_some_and(|at| bare[at..].contains(','))
     {
         return true;
     }
@@ -610,7 +612,6 @@ fn expands(bare: &str) -> bool {
         match c {
             '{' => depth += 1,
             '}' => depth = depth.saturating_sub(1),
-            ',' if depth > 0 => return true,
             '.' if depth > 0 && dot => return true,
             _ => {}
         }
@@ -4144,7 +4145,7 @@ mod fail_closed_tests {
 
 #[cfg(test)]
 mod shell_words_tests {
-    use super::{exempt_from_failing_closed, inspection, limit_exempt, shell_words};
+    use super::{exempt_from_failing_closed, inspection, shell_words};
 
     /// G53: no caller of the read-only checks takes a write that splitting at the spaces
     /// inside a double-quoted `-C` directory read as `git status` (it did on main).
@@ -4157,7 +4158,6 @@ mod shell_words_tests {
             let payload = serde_json::json!({"tool_name":"Bash","tool_input":{"command":command}});
             assert!(!exempt_from_failing_closed(&payload), "{command}");
             assert!(!inspection(&payload), "{command}");
-            assert!(!limit_exempt(&payload), "{command}");
         }
     }
 
@@ -4189,6 +4189,11 @@ mod shell_words_tests {
             ])
         );
         assert_eq!(words("\"C:\\a\\b\""), Some(vec![w("C:\\a\\b", false)]));
+        // Bash: `{x}y,z}` is `x}y z`; `{a}1..3}`, `{x}..{y}` and `a,{b}` stay as written.
+        assert_eq!(words("{x}y,z}"), Some(vec![w("{x}y,z}", true)]));
+        for kept in ["{a}1..3}", "{x}..{y}", "a,{b}", "@{u}..HEAD", "{\"a,b\"}"] {
+            assert!(!words(kept).unwrap()[0].1, "{kept}");
+        }
         for refused in [
             "\"x",
             "'x",
