@@ -23,7 +23,7 @@ source changes need the full check floor; hooks stay fail-closed for mutation.
    refusal should tell the session to start in a worktree. Seen refused under 0.19.1 in a
    discussion turn: `git stash list`, `gh api ... --jq ...`, and any `cd X && git ...` compound of
    read-only commands. Built on branch `fix/session-friction` (2026-11-12, ledger G53, not
-   merged): all of these run (`cd X &&` only with X relative, without `..`, inside the same
+   merged): all of these run (`cd X &&` only with X relative, without `..`, `\` or `"`, inside the same
    project), and the other-session refusal names a worktree a person creates with a new session
    there. Pipes into readers (`git status | head`) stay refused. Left open: after an accepted
    intent a plain `cd` into another project still moves later hook calls to a state with no

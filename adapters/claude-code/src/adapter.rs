@@ -517,7 +517,8 @@ fn read_only_command(payload: &Value) -> bool {
 /// G53: whether `cd <dir>` leaves the shell in the project the hooks judge now. Later hook calls
 /// take their state from the shell's directory, so a nested repository, a parent or a directory
 /// outside a repository would move them to another state. Only a relative existing directory
-/// going down: a leading `-` (`cd -`), `/` (Git Bash reads `/c` as `C:\`) or `\`, a drive letter
+/// going down: a leading `-` (`cd -`) or `/` (Git Bash reads `/c` as `C:\`), a `\` or `"`
+/// anywhere (Bash drops them from an unquoted word: `cd sub\x` enters `subx`), a drive letter
 /// and a `..` (Bash drops `link/..` as text, the file system follows the link) resolve unlike here.
 // shortcut: a CDPATH set in the session's shell can send a relative `cd` elsewhere; refuse
 // words without `./` if that is seen.
@@ -526,8 +527,8 @@ fn same_project(payload: &Value, dir: &str) -> bool {
         return false;
     };
     if dir.is_empty()
-        || dir.starts_with(['-', '/', '\\'])
-        || dir.contains(':')
+        || dir.starts_with(['-', '/'])
+        || dir.contains([':', '\\', '"'])
         || Path::new(dir)
             .components()
             .any(|c| c == Component::ParentDir)

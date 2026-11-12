@@ -1828,10 +1828,16 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
     let mut env = hook_env(&f);
     // A `cd` into a directory of the same repository keeps the state the hooks read; one into a
     // nested repository or out of the project would move later hook calls to another state.
-    for dir in ["sub", "a b", "nested"] {
+    // `sub/x` is a plain directory beside the nested repository `subx`: Bash runs `cd sub\x`
+    // as `cd subx`.
+    for dir in ["sub/x", "a b", "nested", "subx"] {
         fs::create_dir_all(f.project.join(dir)).unwrap();
     }
-    for dir in [f.project.clone(), f.project.join("nested")] {
+    for dir in [
+        f.project.clone(),
+        f.project.join("nested"),
+        f.project.join("subx"),
+    ] {
         assert!(run_process("git", &["init", "-q"], &dir).status.success());
     }
     let as_session = |session: &str, id: String, tool: &str, input: Value| {
@@ -1853,6 +1859,7 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "cd sub && git status",
         "cd 'a b' && git log -1",
         "git log -1 --format='%h %s'",
+        "git log --grep='a&b'",
     ];
     let denied = [
         "git ls-remote --upload-pack=x origin",
@@ -1880,10 +1887,20 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "gh api --input f x",
         "gh api https://x/y",
         "gh api repos/o/r extra",
+        // `sub` exists, so these reach the rules for what follows the `cd`.
+        "cd sub && cd b && git status",
+        "cd sub && cd x",
+        "cd sub && git status && touch x",
+        "cd sub && touch x",
+        "cd sub && git log --grep='a&b'",
+        // `a` does not exist.
         "cd a && cd b && git status",
         "cd a && git status && touch x",
         "cd a && touch x",
         "cd a b && git status",
+        // Bash drops a backslash or double quote inside an unquoted word.
+        "cd sub\\x && git status",
+        "cd sub\"x\" && git status",
         "cd nested && pwd",
         "cd .. && pwd",
         "cd sub/.. && pwd",
