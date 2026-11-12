@@ -1791,6 +1791,214 @@ fn pending_prompt_allows_tool_search_and_single_read_only_commands() {
     );
 }
 
+/// The project's task, then: session `pending` with an unclassified prompt, session `talk` in a
+/// discussion turn, and the task's first owner `session` after `replacement` resumed the task.
+fn three_sessions_beside_a_task() -> (Fixture, String) {
+    let f = Fixture::new();
+    let task = f.start();
+    autonomy::record_prompt(
+        &f.root,
+        &f.project,
+        &json!({"session_id":"pending","prompt_id":"p","prompt":"Look at the remote"}),
+    )
+    .unwrap();
+    let talk = autonomy::record_prompt(
+        &f.root,
+        &f.project,
+        &json!({"session_id":"talk","prompt_id":"t","prompt":"What does this do?"}),
+    )
+    .unwrap();
+    f.apply(&talk, "discussion", None, None).unwrap();
+    let resume = autonomy::record_prompt(
+        &f.root,
+        &f.project,
+        &json!({"session_id":"replacement","prompt_id":"r","prompt":"resume task"}),
+    )
+    .unwrap();
+    f.apply(&resume, "resume", Some(&task), None).unwrap();
+    (f, task)
+}
+
+/// Follow-up brief item 2 (G53): read-only shell reads seen refused under 0.19.1 run before an
+/// intent, in a discussion turn and beside another session's task; mutations stay refused.
+#[test]
+fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sessions_task() {
+    use supervisor_claude_code::adapter::{Decision, handle};
+    let (f, task) = three_sessions_beside_a_task();
+    let mut env = hook_env(&f);
+    let as_session = |session: &str, id: String, tool: &str, input: Value| {
+        let mut payload = pre_tool(&f, &id, tool, input);
+        payload["session_id"] = session.into();
+        payload
+    };
+    let allowed = [
+        "git ls-remote",
+        "git ls-remote --heads origin",
+        "git ls-remote --tags --sort=version:refname origin 'v1*'",
+        "git stash list",
+        "cat Cargo.toml",
+        "which cargo",
+        "gh repo view",
+        "gh api repos/o/r/pulls --jq '.[] | .number'",
+        "gh api repos/o/r/pulls --paginate -X GET",
+        "cd sub && git status",
+        "cd 'a b' && git log -1",
+        "git log -1 --format='%h %s'",
+    ];
+    let denied = [
+        "git ls-remote --upload-pack=x origin",
+        "git ls-remote origin --upload-pack=x",
+        "git ls-remote -u x origin",
+        "git ls-remote --exec=x origin",
+        "git ls-remote ext::sh",
+        "git ls-remote https://x/y",
+        "git ls-remote ../other",
+        "git ls-remote .",
+        // An unquoted glob could expand to a file named like a flag.
+        "git ls-remote origin v1*",
+        "gh api repos/o/r --jq .[]",
+        "gh api x{1..3}",
+        "git stash",
+        "git stash pop",
+        "gh api -X POST repos/o/r/issues",
+        "gh api repos/o/r -X POST",
+        "gh api --method=POST repos/o/r",
+        "gh api repos/o/r -f a=b",
+        "gh api repos/o/r -F a=b",
+        "gh api graphql -f query=x",
+        "gh api --hostname h x",
+        "gh api --input f x",
+        "gh api https://x/y",
+        "gh api repos/o/r extra",
+        "cd a && cd b && git status",
+        "cd a && git status && touch x",
+        "cd a && touch x",
+        "cd a b && git status",
+        "cd $(x) && ls",
+        "cd a; ls",
+        "git log \\'; rm x; \\'",
+        "git log 'x",
+        "git log 'a\nb'",
+        "git diff '--output=x'",
+        "git diff --out'put=x'",
+        "git diff \"--output=x\"",
+        "git diff -\\-output=x",
+        "git branch '-D' main",
+        "cat x > y",
+        "git status | head -3",
+        // Every command the first read-only list already refused.
+        "git status; rm -rf x",
+        "git status -sb | head -3",
+        "git status && touch x",
+        "git log > out.txt",
+        "git show $(touch x)",
+        "git branch -D main",
+        "git diff --output=out.txt",
+        "touch x",
+        "./build.sh --version",
+        "tools\\run.exe --version",
+        "node --version -e x",
+        "{node,x.js} --version",
+        "node* --version",
+        "~/x --version",
+        "'./x' --version",
+        "gh pr merge 59 --merge",
+        "gh api -X DELETE repos/o/r/git/refs/heads/b",
+        "gh pr checkout 59",
+        "git worktree remove x",
+        "git -C C:/x branch -D main",
+        "git -C C:/x push",
+        "git branch newbranch",
+        "git remote add o u",
+        "npm install -g coding-supervisor",
+    ];
+    for session in ["pending", "talk", "session"] {
+        for (n, command) in allowed.iter().enumerate() {
+            let payload = as_session(
+                session,
+                format!("{session}-a{n}"),
+                "Bash",
+                json!({ "command": command }),
+            );
+            assert_eq!(
+                handle(&payload, &mut env),
+                Decision::None,
+                "{session}: {command}"
+            );
+        }
+        for (n, command) in denied.iter().enumerate() {
+            let payload = as_session(
+                session,
+                format!("{session}-d{n}"),
+                "Bash",
+                json!({ "command": command }),
+            );
+            assert!(
+                matches!(handle(&payload, &mut env), Decision::Deny(_)),
+                "{session}: {command} must stay denied"
+            );
+        }
+        let write = as_session(
+            session,
+            format!("{session}-w"),
+            "Write",
+            json!({"file_path":"src/x.rs","content":""}),
+        );
+        assert!(
+            matches!(handle(&write, &mut env), Decision::Deny(_)),
+            "{session}: Write"
+        );
+    }
+    assert!(autonomy::pending(&f.root, "pending").unwrap().is_some());
+    assert!(autonomy::discussion_turn(&f.root, "talk").unwrap());
+    assert_eq!(
+        lifecycle::active_task(&f.root).unwrap().unwrap().task_id,
+        task
+    );
+}
+
+/// Follow-up brief items 1 and 2 (G53): a session refused beside another session's live task is
+/// told what still runs and how a person sets up parallel work. One active task per project, so
+/// `supervisor task start --worktree` is not the way while that task is unfinished.
+#[test]
+fn a_session_locked_out_by_another_sessions_task_is_told_how_to_work_in_parallel() {
+    use supervisor_claude_code::adapter::{Decision, handle};
+    let (f, _task) = three_sessions_beside_a_task();
+    let mut env = hook_env(&f);
+    let mut write = pre_tool(
+        &f,
+        "locked-write",
+        "Write",
+        json!({"file_path":"src/x.rs","content":""}),
+    );
+    write["session_id"] = "session".into();
+    let Decision::Deny(why) = handle(&write, &mut env) else {
+        panic!("the Write of a session locked out was not denied");
+    };
+    for words in [
+        "belongs to another session",
+        "explicit user resume is required before mutation",
+        "read-only",
+        "git worktree add",
+        "own terminal",
+        "new Claude Code session",
+    ] {
+        assert!(why.contains(words), "{words}: {why}");
+    }
+    let prompt = json!({"hook_event_name":"UserPromptSubmit","cwd":f.project,
+        "session_id":"newcomer","prompt_id":"n","prompt":"Implement an unrelated change"});
+    let Decision::Context { text, .. } = handle(&prompt, &mut env) else {
+        panic!("the prompt hook gave no advice");
+    };
+    for words in [
+        "has not ended",
+        "git worktree add",
+        "new Claude Code session",
+    ] {
+        assert!(text.contains(words), "{words}: {text}");
+    }
+}
+
 #[test]
 fn pending_prompt_without_a_task_allows_read_only_commands() {
     use supervisor_claude_code::adapter::{Decision, handle};

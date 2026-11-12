@@ -462,7 +462,7 @@ fn simple_words(payload: &Value) -> Option<Vec<&str>> {
     let command = payload["tool_input"]["command"]
         .as_str()
         .unwrap_or_default();
-    if command.contains([';', '&', '|', '<', '>', '$', '`', '(', ')', '\n', '\r']) {
+    if command.contains(SHELL_SYNTAX) {
         return None;
     }
     let words: Vec<&str> = command.split_whitespace().collect();
@@ -493,12 +493,80 @@ fn limit_exempt(payload: &Value) -> bool {
         || simple_words(payload).is_some_and(|words| supervisor_read_only(&words))
 }
 
-/// One read-only shell command with no shell syntax, usable before the prompt is classified.
-/// It still passes the gate-state guard and the action policy, and is observed like any run.
+/// One read-only shell command with no shell syntax, usable before the prompt is classified,
+/// optionally after `cd <one word> &&` (G53). It still passes the gate-state guard and the
+/// action policy, and is observed like any run.
 fn read_only_command(payload: &Value) -> bool {
-    let Some(mut words) = simple_words(payload) else {
+    if text(payload, "tool_name") != Some("Bash") {
         return false;
-    };
+    }
+    let command = payload["tool_input"]["command"]
+        .as_str()
+        .unwrap_or_default();
+    if let Some((cd, rest)) = command.split_once(" && ") {
+        return !rest.contains('&')
+            && shell_words(cd).is_some_and(|w| matches!(w.as_slice(), [(c, _), _] if c == "cd"))
+            && shell_words(rest)
+                .is_some_and(|w| w.first().is_none_or(|(c, _)| c != "cd") && read_only_words(&w));
+    }
+    shell_words(command).is_some_and(|w| read_only_words(&w))
+}
+
+/// Shell syntax that makes a command more than one plain command.
+const SHELL_SYNTAX: [char; 11] = [';', '&', '|', '<', '>', '$', '`', '(', ')', '\n', '\r'];
+/// Characters Bash expands outside quotes into other words (globs, braces, `~`).
+const EXPANDED: [char; 5] = ['*', '?', '[', '{', '~'];
+
+/// G53: the words Bash passes for `command`, each with whether it holds a character Bash
+/// expands. Without a `'`, as [`simple_words`] splits them. With one, single quotes are removed
+/// as Bash removes them; outside them [`SHELL_SYNTAX`], `"` and `\` are refused, inside them
+/// only a line break, and an unclosed quote is refused.
+fn shell_words(command: &str) -> Option<Vec<(String, bool)>> {
+    if !command.contains('\'') {
+        if command.contains(SHELL_SYNTAX) {
+            return None;
+        }
+        let words = command.split_whitespace();
+        return Some(
+            words
+                .map(|w| (w.to_owned(), w.contains(EXPANDED)))
+                .collect(),
+        );
+    }
+    let (mut words, mut word, mut quoted) = (Vec::new(), None::<(String, bool)>, false);
+    for c in command.chars() {
+        match c {
+            '\n' | '\r' => return None,
+            '\'' => {
+                quoted = !quoted;
+                word.get_or_insert_default();
+            }
+            _ if quoted => word.get_or_insert_default().0.push(c),
+            '"' | '\\' => return None,
+            _ if SHELL_SYNTAX.contains(&c) => return None,
+            _ if c.is_whitespace() => words.extend(word.take()),
+            _ => {
+                let w = word.get_or_insert_default();
+                w.0.push(c);
+                w.1 |= EXPANDED.contains(&c);
+            }
+        }
+    }
+    words.extend(word.take());
+    (!quoted).then_some(words)
+}
+
+/// Whether the words of one command are a read-only command of the list.
+fn read_only_words(words: &[(String, bool)]) -> bool {
+    // `--output` writes a file; a quote or backslash inside the word does not hide it.
+    if words
+        .iter()
+        .any(|(w, _)| w.replace(['"', '\\'], "").starts_with("--output"))
+    {
+        return false;
+    }
+    let expanded = words.iter().any(|(_, e)| *e);
+    let mut words: Vec<&str> = words.iter().map(|(w, _)| w.as_str()).collect();
     if supervisor_read_only(&words) {
         return true;
     }
@@ -516,6 +584,13 @@ fn read_only_command(payload: &Value) -> bool {
     {
         return true;
     }
+    // G53: an expanded word could become a flag (a file named `--upload-pack=x`), so these two
+    // take only words Bash passes as written.
+    match words.as_slice() {
+        ["git", "ls-remote", args @ ..] => return !expanded && ls_remote(args),
+        ["gh", "api", args @ ..] => return !expanded && gh_api_get(args),
+        _ => {}
+    }
     matches!(
         words.as_slice(),
         ["git", "status" | "log" | "diff" | "show" | "rev-parse", ..]
@@ -523,13 +598,74 @@ fn read_only_command(payload: &Value) -> bool {
             | ["git", "worktree", "list", ..]
             | ["git", "remote"]
             | ["git", "remote", "-v"]
+            | ["git", "stash", "list", ..]
             // G40: read-only views of the forge and the npm registry.
             | ["gh", "pr" | "issue" | "release" | "run", "view" | "list" | "checks" | "diff" | "status", ..]
+            | ["gh", "repo", "view", ..]
             | ["npm", "view" | "ls" | "list", ..]
-            | ["ls", ..]
+            | ["ls" | "cat" | "which", ..]
             | ["pwd"]
     ) || matches!(words.as_slice(), ["git", "branch", flags @ ..]
         if flags.iter().all(|f| matches!(*f, "-a" | "-r" | "-v" | "-vv" | "--all" | "--remotes" | "--list" | "--verbose")))
+}
+
+/// G53: `git ls-remote` that only lists refs: listing flags anywhere, at most one remote name
+/// (not a URL or a path, which would choose the transport or another repository), then ref
+/// patterns. Any other flag is refused, `--upload-pack`, `-u` and `--exec` (a program) among them.
+fn ls_remote(args: &[&str]) -> bool {
+    let mut remote = false;
+    args.iter().all(|arg| {
+        if arg.starts_with('-') {
+            matches!(
+                *arg,
+                "--heads"
+                    | "--tags"
+                    | "--refs"
+                    | "-h"
+                    | "-t"
+                    | "-q"
+                    | "--quiet"
+                    | "--symref"
+                    | "--get-url"
+            ) || arg.strip_prefix("--sort=").is_some_and(|key| {
+                !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_'))
+            })
+        } else if !remote {
+            remote = true;
+            !arg.starts_with('.')
+                && arg
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        } else {
+            true
+        }
+    })
+}
+
+/// G53: `gh api <endpoint>` as a GET that only filters its output. A field or input makes it a
+/// POST and `graphql` is one, so only `--jq`/`-q` with its value, `--paginate`, `--slurp` and
+/// `-X GET`/`--method GET` are taken; a host, header or any other flag is refused.
+fn gh_api_get(args: &[&str]) -> bool {
+    let (mut endpoint, mut args) = (None, args.iter());
+    while let Some(arg) = args.next() {
+        match *arg {
+            "--jq" | "-q" if args.next().is_some() => {}
+            "-X" | "--method" if args.next() == Some(&"GET") => {}
+            "--paginate" | "--slurp" => {}
+            word if !word.starts_with('-') && endpoint.is_none() => endpoint = Some(word),
+            _ => return false,
+        }
+    }
+    endpoint.is_some_and(|e| {
+        e != "graphql"
+            && !e.contains("..")
+            && e.chars().all(|c| {
+                c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '.' | '{' | '}' | '-')
+            })
+    })
 }
 
 /// `supervisor intent apply ...` run alone from Bash: the MCP proposal for a session that has no
@@ -559,6 +695,11 @@ fn proposal_command(payload: &Value) -> bool {
     }
     !quoted
 }
+
+/// G53: what a session kept out by another session's task can still do, and how a person sets
+/// up parallel work. A project has one active task, so a second task needs its own worktree,
+/// whose gate state is its own.
+const PARALLEL_WORK: &str = "Read-only tools and read-only shell commands still run. To work in parallel, a person creates a separate git worktree in their own terminal (`git worktree add <path> -b <branch>`) and opens a new Claude Code session there, which has its own gate state; an agent cannot create it (`git worktree add` is not read-only), and `supervisor task start --worktree` applies only after the active task ends, because a project has one active task.";
 
 /// Ends the refusal for a Terminal Commander job whose exit is not recorded yet (G27).
 const PENDING_JOB: &str = " after it ends to record its exit";
@@ -1085,7 +1226,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     // ends the block, and the cancel is for a session known to be closed.
                     call["action"] = "discussion".into();
                     format!(
-                        "The active task {} belongs to another session that has not ended, so it may be live and stays protected; continue, start and cancel are refused from this one. If the user asked to resume that task, send \"action\":\"resume\". Otherwise call intent_apply {call} and tell the user that the task is protected while that session may be running and, only if that session is closed, {}.",
+                        "The active task {} belongs to another session that has not ended, so it may be live and stays protected; continue, start and cancel are refused from this one. If the user asked to resume that task, send \"action\":\"resume\". Otherwise call intent_apply {call} and tell the user that the task is protected while that session may be running and, only if that session is closed, {}. {PARALLEL_WORK}",
                         intent["task_id"].as_str().unwrap_or_default(),
                         crate::autonomy::person_cancel(
                             &intent,
@@ -1176,7 +1317,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     Err(_) => return adapter_error(payload, env, &root, "task lifecycle state unavailable"),
                     Ok(Some(active)) => match crate::autonomy::owns_session(&active.dir, text(payload, "session_id").unwrap_or_default()) {
                         Ok(true) => {},
-                        Ok(false) => return Decision::Deny("GATE: this task belongs to another session; explicit user resume is required before mutation".to_owned()),
+                        Ok(false) => return Decision::Deny(format!("GATE: this task belongs to another session; explicit user resume is required before mutation. {PARALLEL_WORK}")),
                         Err(_) => return adapter_error(payload, env, &root, "task session ownership unavailable"),
                     }
                 }
@@ -1300,7 +1441,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                 if !crate::autonomy::owns_session(dir, text(payload, "session_id").unwrap_or_default())?
                 {
                     return Ok(if event == "PreToolUse" && !inspection(payload) {
-                        Decision::Deny("GATE: task ownership changed; explicit user resume is required before mutation".to_owned()).to_json().unwrap_or(Value::Null)
+                        Decision::Deny(format!("GATE: task ownership changed; explicit user resume is required before mutation. {PARALLEL_WORK}")).to_json().unwrap_or(Value::Null)
                     } else {
                         Value::Null
                     });
