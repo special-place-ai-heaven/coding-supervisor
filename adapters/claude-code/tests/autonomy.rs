@@ -1886,6 +1886,8 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "cd a b && git status",
         "cd nested && pwd",
         "cd .. && pwd",
+        "cd sub/.. && pwd",
+        "cd '\\sub' && pwd",
         "cd missing && pwd",
         "cd - && pwd",
         "cd ~ && pwd",
