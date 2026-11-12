@@ -39,9 +39,12 @@ source changes need the full check floor; hooks stay fail-closed for mutation.
    reads the job's end itself, or says so earlier than Stop. G50 (2026-11-11) names the
    `command_status` action in the Stop refusal; reading the exit from the `bucket_wait` payload
    is not built. Built on branch `fix/session-friction-2` (G58, not merged): that hold is no
-   longer a numbered refusal ("a check has no recorded exit yet"), and a stop Claude Code
-   continued after it is released with a note even after tool calls in between. The gate still
-   cannot tell a job still running from one that ended unfetched.
+   longer a numbered refusal ("a check has no recorded exit yet") and is not counted, the stop
+   right after it is released with a note even after tool calls in between, and a new prompt
+   clears the hold. Also there (G60): a poll in a hook call that could not read the code
+   version no longer cancels the job's run, and a run cancelled by a real code change is named
+   as cancelled in `verdict` and the Stop list. The gate still cannot tell a job still running
+   from one that ended unfetched.
 
 ## SymForge report items still open
 
@@ -83,7 +86,7 @@ sub-agents with an unchanged tree (#78), 9 harmless environment variables (#83),
   G55.)
 - Plan of 2026-11-12 for the friction items: the acceptance line (follow-up item 4) and the
   pending-job Stop that spends no refusal (follow-up item 5) are built on branch
-  `fix/session-friction-2` (G59, G58, not merged; item 4 as the prompt-line fallback). Not built
+  `fix/session-friction-2` (G59, G58, G60, not merged; item 4 as the prompt-line fallback). Not built
   yet: Workflow launches and teammate messages (SymForge items 6 and 14), which need a captured
   payload first. Also left: the unix-only cleanup test of G56 has not run yet; the Linux CI job runs it.
 - On the home PC `supervisor status` shows `registration: not_configured` under 0.19.1 although
