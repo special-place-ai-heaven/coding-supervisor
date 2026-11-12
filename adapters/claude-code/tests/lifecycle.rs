@@ -674,4 +674,18 @@ fn a_stale_session_of_a_prompt_managed_task_is_not_told_to_rebind() {
         error.contains("resume") && error.contains(task) && error.contains("prompt-managed"),
         "{error}"
     );
+    // The advice works: the user's resume prompt binds the session to the task again.
+    let resume = autonomy::record_prompt(
+        &root,
+        &d.0,
+        &json!({"session_id":"session","prompt_id":"resume","prompt":"resume task"}),
+    )
+    .unwrap();
+    autonomy::propose(
+        &root,
+        &d.0,
+        &json!({"event_id":resume["event_id"],"nonce":resume["nonce"],"prompt_hash":resume["prompt_hash"],"action":"resume","task_id":task}),
+    )
+    .unwrap();
+    lifecycle::with_task(&root, None, Some("session"), None, |_| Ok(Value::Null)).unwrap();
 }

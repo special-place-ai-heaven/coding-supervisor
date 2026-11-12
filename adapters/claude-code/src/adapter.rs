@@ -514,26 +514,26 @@ fn read_only_command(payload: &Value) -> bool {
 
 /// Shell syntax that makes a command more than one plain command.
 const SHELL_SYNTAX: [char; 11] = [';', '&', '|', '<', '>', '$', '`', '(', ')', '\n', '\r'];
-/// Characters Bash expands outside quotes into other words (globs, braces, `~`).
-const EXPANDED: [char; 5] = ['*', '?', '[', '{', '~'];
 
-/// G53: the words Bash passes for `command`, each with whether it holds a character Bash
-/// expands. Without a `'`, as [`simple_words`] splits them. With one, single quotes are removed
-/// as Bash removes them; outside them [`SHELL_SYNTAX`], `"` and `\` are refused, inside them
-/// only a line break, and an unclosed quote is refused.
+/// G53: the words Bash passes for `command`, each with whether Bash may expand it into other
+/// words ([`expands`]). Without a `'`, as [`simple_words`] splits them. With one, single quotes
+/// are removed as Bash removes them; outside them [`SHELL_SYNTAX`], `"` and `\` are refused,
+/// inside them only a line break, and an unclosed quote is refused.
 fn shell_words(command: &str) -> Option<Vec<(String, bool)>> {
     if !command.contains('\'') {
         if command.contains(SHELL_SYNTAX) {
             return None;
         }
         let words = command.split_whitespace();
-        return Some(
-            words
-                .map(|w| (w.to_owned(), w.contains(EXPANDED)))
-                .collect(),
-        );
+        return Some(words.map(|w| (w.to_owned(), expands(w))).collect());
     }
-    let (mut words, mut word, mut quoted) = (Vec::new(), None::<(String, bool)>, false);
+    // Each word as Bash passes it, beside the characters of it that stood outside quotes.
+    let (mut words, mut word, mut quoted) = (Vec::new(), None::<(String, String)>, false);
+    let mut end = |word: &mut Option<(String, String)>| {
+        if let Some((text, bare)) = word.take() {
+            words.push((text, expands(&bare)));
+        }
+    };
     for c in command.chars() {
         match c {
             '\n' | '\r' => return None,
@@ -544,16 +544,23 @@ fn shell_words(command: &str) -> Option<Vec<(String, bool)>> {
             _ if quoted => word.get_or_insert_default().0.push(c),
             '"' | '\\' => return None,
             _ if SHELL_SYNTAX.contains(&c) => return None,
-            _ if c.is_whitespace() => words.extend(word.take()),
+            _ if c.is_whitespace() => end(&mut word),
             _ => {
                 let w = word.get_or_insert_default();
                 w.0.push(c);
-                w.1 |= EXPANDED.contains(&c);
+                w.1.push(c);
             }
         }
     }
-    words.extend(word.take());
+    end(&mut word);
     (!quoted).then_some(words)
+}
+
+/// Whether Bash may turn these unquoted characters of a word into other words: a glob, a `~`,
+/// or a brace with a `,` or `..` (`{owner}` alone stays as written).
+fn expands(bare: &str) -> bool {
+    bare.contains(['*', '?', '[', '~'])
+        || (bare.contains('{') && (bare.contains(',') || bare.contains("..")))
 }
 
 /// Whether the words of one command are a read-only command of the list.

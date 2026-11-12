@@ -1841,6 +1841,7 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "gh repo view",
         "gh api repos/o/r/pulls --jq '.[] | .number'",
         "gh api repos/o/r/pulls --paginate -X GET",
+        "gh api repos/{owner}/{repo}/pulls --jq '.[].number'",
         "cd sub && git status",
         "cd 'a b' && git log -1",
         "git log -1 --format='%h %s'",
@@ -1858,6 +1859,7 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "git ls-remote origin v1*",
         "gh api repos/o/r --jq .[]",
         "gh api x{1..3}",
+        "gh api repos/o/r/pulls?state=open",
         "git stash",
         "git stash pop",
         "gh api -X POST repos/o/r/issues",
@@ -1877,12 +1879,7 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "cd $(x) && ls",
         "cd a; ls",
         "git log \\'; rm x; \\'",
-        "git log 'x",
         "git log 'a\nb'",
-        "git diff '--output=x'",
-        "git diff --out'put=x'",
-        "git diff \"--output=x\"",
-        "git diff -\\-output=x",
         "git branch '-D' main",
         "cat x > y",
         "git status | head -3",
@@ -1955,6 +1952,33 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         lifecycle::active_task(&f.root).unwrap().unwrap().task_id,
         task
     );
+}
+
+/// G53: `--output` writes a file, and a quote or backslash inside the word does not hide it from
+/// the read-only check; a command with an unclosed quote is not read-only either.
+#[test]
+fn quoted_or_escaped_output_flags_and_unclosed_quotes_are_not_read_only() {
+    use supervisor_claude_code::adapter::{Decision, handle};
+    let f = Fixture::new();
+    f.prompt("first", "Look at the diff");
+    let mut env = hook_env(&f);
+    let allowed: Vec<&str> = [
+        "git diff '--output=x'",
+        "git diff --out'put=x'",
+        "git diff \"--output=x\"",
+        "git diff -\\-output=x",
+        "git log 'x",
+    ]
+    .into_iter()
+    .enumerate()
+    .filter(|(n, command)| {
+        let payload = pre_tool(&f, &format!("q{n}"), "Bash", json!({ "command": command }));
+        !matches!(handle(&payload, &mut env), Decision::Deny(_))
+    })
+    .map(|(_, command)| command)
+    .collect();
+    assert!(allowed.is_empty(), "allowed before an intent: {allowed:?}");
+    assert!(autonomy::pending(&f.root, "session").unwrap().is_some());
 }
 
 /// Follow-up brief items 1 and 2 (G53): a session refused beside another session's live task is
