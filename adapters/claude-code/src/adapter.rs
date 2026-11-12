@@ -619,6 +619,10 @@ fn read_only_words(words: &[(String, bool)]) -> bool {
     let expanded = words.iter().any(|(_, e)| *e);
     // An expanded word after the subcommand (past `git -C <dir>`), for the git reads below.
     let c_dir = matches!(words, [(g, _), (c, _), ..] if g == "git" && c == "-C");
+    // An expanded `-C` directory can become several words and shift the subcommand.
+    if c_dir && words.get(2).is_some_and(|(_, e)| *e) {
+        return false;
+    }
     let expanded_args = words
         .iter()
         .skip(if c_dir { 4 } else { 2 })

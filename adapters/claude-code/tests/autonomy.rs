@@ -1902,6 +1902,10 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "git diff ?-output=x",
         "git show *",
         "git status *",
+        // An expanded `-C` directory can become several words and shift the subcommand.
+        "git -C * stash list",
+        "git -C * log",
+        "git -C ~/x log",
         // Bash resolves a relative directory word without `./` through CDPATH.
         "cd sub && git status",
         "cd 'a b' && git log -1",

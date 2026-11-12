@@ -594,7 +594,7 @@ pub fn with_task(
                                 )
                             } else {
                                 format!(
-                                    "session belongs to an earlier task; the active task {id} is prompt-managed through caller-asserted intent, which a hook-observed prompt cannot resume: a caller-asserted resume (intent_record with the user's resume prompt, then intent_apply action resume for task {id}) binds this session to it, or a person ends the task with `supervisor task cancel --project \"{project}\" --task {id} --reason \"<why>\"`"
+                                    "session belongs to an earlier task; the active task {id} is prompt-managed through caller-asserted intent, which a hook-observed prompt cannot resume: in a session whose prompts the gate's hooks do not record, a caller-asserted resume (intent_record with the user's resume prompt, then intent_apply action resume for task {id}) binds that session to it; otherwise a person ends the task with `supervisor task cancel --project \"{project}\" --task {id} --reason \"<why>\"`"
                                 )
                             },
                         );
