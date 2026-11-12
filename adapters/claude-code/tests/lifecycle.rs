@@ -633,3 +633,45 @@ fn start_warns_that_forbidden_effects_are_not_enforced() {
         "{next}"
     );
 }
+
+/// G56: `supervisor task rebind` refuses a prompt-managed task, so a session bound to an earlier
+/// task is told the user's direct resume prompt for it instead.
+#[test]
+fn a_stale_session_of_a_prompt_managed_task_is_not_told_to_rebind() {
+    use supervisor_claude_code::autonomy;
+    let d = dir();
+    fs::write(
+        d.0.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let root = d.0.join("state");
+    let event = autonomy::record_prompt(
+        &root,
+        &d.0,
+        &json!({"session_id":"session","prompt_id":"first","prompt":"Implement a small change"}),
+    )
+    .unwrap();
+    let contract = json!({"id":"ordinary-task","goal":"implement requested change","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test -p fixture"}],"forbidden_effects":[],"scope":["src/"],"max_repair_rounds":2});
+    let started = autonomy::propose(
+        &root,
+        &d.0,
+        &json!({"event_id":event["event_id"],"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],"action":"start","contract":contract}),
+    )
+    .unwrap();
+    let task = started["task_id"].as_str().unwrap();
+    fs::write(
+        root.join("sessions.json"),
+        json!({"session":"an-earlier-task"}).to_string(),
+    )
+    .unwrap();
+    let error = lifecycle::with_task(&root, None, Some("session"), None, |_| {
+        panic!("a session bound to an earlier task reached the active one")
+    })
+    .unwrap_err();
+    assert!(!error.contains("rebind"), "{error}");
+    assert!(
+        error.contains("resume") && error.contains(task) && error.contains("prompt-managed"),
+        "{error}"
+    );
+}

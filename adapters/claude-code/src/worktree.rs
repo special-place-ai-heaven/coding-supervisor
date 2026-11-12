@@ -230,8 +230,7 @@ pub fn cleanup(root: &Path, project: &Path, task_id: &str) -> Result<Value, Stri
     let marked: Vec<&str> = entries
         .iter()
         .filter(|(tag, file)| {
-            (tag.is_ascii_lowercase() || *tag == 'S')
-                && fs::symlink_metadata(worktree.join(file)).is_ok()
+            (tag.is_ascii_lowercase() || *tag == 'S') && marked_file_present(&worktree, file)
         })
         .map(|(_, file)| *file)
         .collect();
@@ -275,6 +274,17 @@ pub fn cleanup(root: &Path, project: &Path, task_id: &str) -> Result<Value, Stri
     })?;
     git(project, &["worktree", "prune"])?;
     Ok(json!({"removed":path,"branch":branch,"links_unlinked":unlinked}))
+}
+
+/// Whether a marked file named `name` by `git ls-files` may be in `worktree`. Absent only when
+/// the lookup says "not found" for a name that decoded: a U+FFFD stands for bytes the lossy
+/// decode lost, so the name looked up is not the file's, and any other error proves nothing.
+fn marked_file_present(worktree: &Path, name: &str) -> bool {
+    name.contains('\u{FFFD}')
+        || !matches!(
+            fs::symlink_metadata(worktree.join(name)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound
+        )
 }
 
 /// Whether the worktree's last commit holds a receipt bundle naming `task_id`.
@@ -359,4 +369,37 @@ fn unlink(link: &Path, kind: fs::FileType) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// G56: only a lookup that says "not found" makes a marked file absent; a name git gave that
+    /// did not decode, or any other lookup error, keeps it present, so cleanup refuses.
+    #[test]
+    fn a_marked_file_is_absent_only_when_its_lookup_says_not_found() {
+        let dir = std::env::temp_dir().join(format!("supervisor-marked-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("kept.txt"), "kept").unwrap();
+        assert!(marked_file_present(&dir, "kept.txt"));
+        assert!(!marked_file_present(&dir, "gone.txt"));
+        // The lossy decode of a name that is not UTF-8: the file on disk has other bytes.
+        assert!(marked_file_present(&dir, "bad\u{FFFD}.txt"));
+        // A name this file system cannot hold: the lookup fails without saying "not found".
+        #[cfg(windows)]
+        assert!(marked_file_present(&dir, "a<b.txt"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let locked = dir.join("locked");
+            fs::create_dir_all(&locked).unwrap();
+            fs::write(locked.join("f.txt"), "kept").unwrap();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+            let present = marked_file_present(&dir, "locked/f.txt");
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(present);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

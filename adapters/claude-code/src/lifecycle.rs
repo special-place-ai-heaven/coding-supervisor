@@ -578,6 +578,13 @@ pub fn with_task(
             let bindings = sessions.as_object_mut().ok_or("invalid session bindings")?;
             match bindings.get(session).and_then(Value::as_str) {
                 Some(bound) if bound != active.task_id => {
+                    // G56: `rebind` refuses a prompt-managed task; a resume prompt binds it.
+                    if crate::autonomy::is_autonomous_task(&active.dir)? {
+                        return Err(format!(
+                            "session belongs to an earlier task; the active task {id} is prompt-managed, so the user's direct prompt to resume it (intent_apply action resume for task {id}) binds this session to it",
+                            id = active.task_id
+                        ));
+                    }
                     let project = read_json(&root.join("project.json"))
                         .ok()
                         .flatten()
