@@ -494,7 +494,7 @@ fn limit_exempt(payload: &Value) -> bool {
 }
 
 /// One read-only shell command with no shell syntax, usable before the prompt is classified,
-/// optionally after `cd <one word> &&` into the same project ([`same_project`], G53). It still
+/// optionally after `cd ./<dir> &&` into the same project ([`same_project`], G53). It still
 /// passes the gate-state guard and the action policy, and is observed like any run.
 fn read_only_command(payload: &Value) -> bool {
     if text(payload, "tool_name") != Some("Bash") {
@@ -516,19 +516,16 @@ fn read_only_command(payload: &Value) -> bool {
 
 /// G53: whether `cd <dir>` leaves the shell in the project the hooks judge now. Later hook calls
 /// take their state from the shell's directory, so a nested repository, a parent or a directory
-/// outside a repository would move them to another state. Only a relative existing directory
-/// going down: a leading `-` (`cd -`), `/` (Git Bash reads `/c` as `C:\`) or `#` (the rest is a
-/// comment, so a bare `cd` goes home), a `\` or `"`
-/// anywhere (Bash drops them from an unquoted word: `cd sub\x` enters `subx`), a drive letter
-/// and a `..` (Bash drops `link/..` as text, the file system follows the link) resolve unlike here.
-// shortcut: a CDPATH set in the session's shell can send a relative `cd` elsewhere; refuse
-// words without `./` if that is seen.
+/// outside a repository would move them to another state. Only an existing directory going
+/// down, written `./<dir>`, because Bash looks a relative word without `./` or `../` up in
+/// CDPATH first. A `\` or `"` anywhere (Bash drops them from an unquoted word: `cd ./sub\x`
+/// enters `./subx`), a drive letter and a `..` (Bash drops `link/..` as text, the file system
+/// follows the link) resolve unlike here; an absolute directory is refused.
 fn same_project(payload: &Value, dir: &str) -> bool {
     let Some(cwd) = text(payload, "cwd").map(Path::new) else {
         return false;
     };
-    if dir.is_empty()
-        || dir.starts_with(['-', '/', '#'])
+    if !dir.starts_with("./")
         || dir.contains([':', '\\', '"'])
         || Path::new(dir)
             .components()
@@ -584,11 +581,29 @@ fn shell_words(command: &str) -> Option<Vec<(String, bool)>> {
     (!quoted).then_some(words)
 }
 
-/// Whether Bash may turn these unquoted characters of a word into other words: a glob, a `~`,
-/// or a brace with a `,` or `..` (`{owner}` alone stays as written).
+/// Whether Bash may turn these unquoted characters of a word into other words: a glob, a `~` at
+/// the start or after `=` or `:`, or a `,` or `..` inside a brace pair, an unclosed one counting
+/// (`{owner}`, `@{u}..HEAD` and `HEAD~1` stay as written).
 fn expands(bare: &str) -> bool {
-    bare.contains(['*', '?', '[', '~'])
-        || (bare.contains('{') && (bare.contains(',') || bare.contains("..")))
+    if bare.contains(['*', '?', '['])
+        || bare.starts_with('~')
+        || bare.contains("=~")
+        || bare.contains(":~")
+    {
+        return true;
+    }
+    let (mut depth, mut dot) = (0usize, false);
+    for c in bare.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth > 0 => return true,
+            '.' if depth > 0 && dot => return true,
+            _ => {}
+        }
+        dot = c == '.';
+    }
+    false
 }
 
 /// Whether the words of one command are a read-only command of the list.
@@ -602,6 +617,12 @@ fn read_only_words(words: &[(String, bool)]) -> bool {
         return false;
     }
     let expanded = words.iter().any(|(_, e)| *e);
+    // An expanded word after the subcommand (past `git -C <dir>`), for the git reads below.
+    let c_dir = matches!(words, [(g, _), (c, _), ..] if g == "git" && c == "-C");
+    let expanded_args = words
+        .iter()
+        .skip(if c_dir { 4 } else { 2 })
+        .any(|(_, e)| *e);
     let mut words: Vec<&str> = words.iter().map(|(w, _)| w.as_str()).collect();
     if supervisor_read_only(&words) {
         return true;
@@ -620,11 +641,17 @@ fn read_only_words(words: &[(String, bool)]) -> bool {
     {
         return true;
     }
-    // G53: an expanded word could become a flag (a file named `--upload-pack=x`), so these two
-    // take only words Bash passes as written.
+    // G53: an expanded word could become a flag (a file named `--upload-pack=x`, or
+    // `--output=x`, which these git reads take and which writes the file), so these take only
+    // words Bash passes as written.
     match words.as_slice() {
         ["git", "ls-remote", args @ ..] => return !expanded && ls_remote(args),
         ["gh", "api", args @ ..] => return !expanded && gh_api_get(args),
+        ["git", "status" | "log" | "diff" | "show", ..] | ["git", "stash", "list", ..]
+            if expanded_args =>
+        {
+            return false;
+        }
         _ => {}
     }
     matches!(
@@ -645,9 +672,11 @@ fn read_only_words(words: &[(String, bool)]) -> bool {
         if flags.iter().all(|f| matches!(*f, "-a" | "-r" | "-v" | "-vv" | "--all" | "--remotes" | "--list" | "--verbose")))
 }
 
-/// G53: `git ls-remote` that only lists refs: listing flags anywhere, at most one remote name
-/// (not a URL or a path, which would choose the transport or another repository), then ref
-/// patterns. Any other flag is refused, `--upload-pack`, `-u` and `--exec` (a program) among them.
+/// G53: `git ls-remote` that only lists refs: listing flags anywhere, at most one plain word,
+/// which git reads as a remote name or else as a relative path to a repository (a URL, a `.`
+/// start or any other character is refused), then ref patterns. Git reads a flag after that word
+/// as a ref pattern; any flag outside the listing ones is refused wherever it stands,
+/// `--upload-pack`, `-u` and `--exec` (a program) among them.
 fn ls_remote(args: &[&str]) -> bool {
     let mut remote = false;
     args.iter().all(|arg| {
@@ -734,8 +763,9 @@ fn proposal_command(payload: &Value) -> bool {
 
 /// G53: what a session kept out by another session's task can still do, and how a person sets
 /// up parallel work. A project has one active task, so a second task needs its own worktree,
-/// whose gate state is its own.
-const PARALLEL_WORK: &str = "Read-only tools and read-only shell commands still run. To work in parallel, a person creates a separate git worktree in their own terminal (`git worktree add <path> -b <branch>`) and opens a new Claude Code session there, which has its own gate state; an agent cannot create it (`git worktree add` is not read-only), and `supervisor task start --worktree` applies only after the active task ends, because a project has one active task.";
+/// whose gate state is its own; a fresh worktree carries the project's hooks only when their
+/// settings are committed.
+const PARALLEL_WORK: &str = "Read-only tools and read-only shell commands still run. To work in parallel, a person creates a separate git worktree in their own terminal (`git worktree add <path> -b <branch>`) and opens a new Claude Code session there, which has its own gate state; when the project's hook settings are not committed, the person first runs `supervisor install --harness claude-code --project <path>` in that worktree, or the new session may run without the gate's hooks. An agent cannot create the worktree (`git worktree add` is not read-only), and `supervisor task start --worktree` applies only after the active task ends, because a project has one active task.";
 
 /// Ends the refusal for a Terminal Commander job whose exit is not recorded yet (G27).
 const PENDING_JOB: &str = " after it ends to record its exit";

@@ -212,8 +212,8 @@ fn only_read_only_tools_proposals_and_status_run_at_the_limit() {
         ("x4", bash(&env, "x4", "git show HEAD")),
         ("x5", bash(&env, "x5", "node --version")),
         // G53: the wider read-only shell list does not reach the limit's exemption.
-        ("x8", bash(&env, "x8", "cd src && supervisor status")),
-        ("x9", bash(&env, "x9", "cd src && git status")),
+        ("x8", bash(&env, "x8", "cd ./src && supervisor status")),
+        ("x9", bash(&env, "x9", "cd ./src && git status")),
         ("x10", bash(&env, "x10", "git stash list")),
         ("x11", bash(&env, "x11", "cat Cargo.toml")),
         (

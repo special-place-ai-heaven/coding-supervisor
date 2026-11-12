@@ -1856,10 +1856,18 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "gh api repos/o/r/pulls --jq '.[] | .number'",
         "gh api repos/o/r/pulls --paginate -X GET",
         "gh api repos/{owner}/{repo}/pulls --jq '.[].number'",
-        "cd sub && git status",
-        "cd 'a b' && git log -1",
+        // Only a directory word starting with `./` is safe from CDPATH.
+        "cd ./sub && git status",
+        "cd './a b' && git log -1",
         "git log -1 --format='%h %s'",
         "git log --grep='a&b'",
+        // Bash expands a brace only around a `,` or `..`, and a `~` only at the start of a word
+        // or after `=` or `:`; these words reach git as written.
+        "git log @{u}..HEAD",
+        "git diff stash@{0}..stash@{1}",
+        "git show HEAD~1",
+        "git log HEAD~3..HEAD",
+        "git log -- '*.rs'",
     ];
     let denied = [
         "git ls-remote --upload-pack=x origin",
@@ -1887,30 +1895,41 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "gh api --input f x",
         "gh api https://x/y",
         "gh api repos/o/r extra",
+        // A glob that does not start with `-` can still expand to a file named `--output=x`.
+        "git stash list *",
+        "git log *",
+        "git diff *",
+        "git diff ?-output=x",
+        "git show *",
+        "git status *",
+        // Bash resolves a relative directory word without `./` through CDPATH.
+        "cd sub && git status",
+        "cd 'a b' && git log -1",
         // `sub` exists, so these reach the rules for what follows the `cd`.
-        "cd sub && cd b && git status",
-        "cd sub && cd x",
-        "cd sub && cd --version",
-        "cd sub && git status && touch x",
-        "cd sub && touch x",
-        "cd sub && git log --grep='a&b'",
+        "cd ./sub && cd ./b && git status",
+        "cd ./sub && cd ./x",
+        "cd ./sub && cd --version",
+        "cd ./sub && git status && touch x",
+        "cd ./sub && touch x",
+        "cd ./sub && git log --grep='a&b'",
         // `a` does not exist.
-        "cd a && cd b && git status",
-        "cd a && git status && touch x",
-        "cd a && touch x",
-        "cd a b && git status",
+        "cd ./a && cd ./b && git status",
+        "cd ./a && git status && touch x",
+        "cd ./a && touch x",
+        "cd ./a b && git status",
         // Bash drops a backslash or double quote inside an unquoted word.
-        "cd sub\\x && git status",
-        "cd sub\"x\" && git status",
+        "cd ./sub\\x && git status",
+        "cd ./sub\"x\" && git status",
         "cd #sub && git status",
-        "cd nested && pwd",
+        "cd ./nested && pwd",
         "cd .. && pwd",
-        "cd sub/.. && pwd",
+        "cd ./.. && pwd",
+        "cd ./sub/.. && pwd",
         "cd '\\sub' && pwd",
-        "cd missing && pwd",
+        "cd ./missing && pwd",
         "cd - && pwd",
         "cd ~ && pwd",
-        "cd n* && pwd",
+        "cd ./n* && pwd",
         "cd / && pwd",
         "cd '' && pwd",
         "cd $(x) && ls",
@@ -1946,6 +1965,8 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "git remote add o u",
         "npm install -g coding-supervisor",
     ];
+    // Every mismatch at once, so one run shows each rule that is off.
+    let mut wrong = Vec::new();
     for session in ["pending", "talk", "session"] {
         for (n, command) in allowed.iter().enumerate() {
             let payload = as_session(
@@ -1954,11 +1975,12 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
                 "Bash",
                 json!({ "command": command }),
             );
-            assert_eq!(
-                handle(&payload, &mut env),
-                Decision::None,
-                "{session}: {command}"
-            );
+            let decision = handle(&payload, &mut env);
+            if decision != Decision::None {
+                wrong.push(format!(
+                    "{session}: {command} was not allowed: {decision:?}"
+                ));
+            }
         }
         for (n, command) in denied.iter().enumerate() {
             let payload = as_session(
@@ -1967,10 +1989,9 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
                 "Bash",
                 json!({ "command": command }),
             );
-            assert!(
-                matches!(handle(&payload, &mut env), Decision::Deny(_)),
-                "{session}: {command} must stay denied"
-            );
+            if !matches!(handle(&payload, &mut env), Decision::Deny(_)) {
+                wrong.push(format!("{session}: {command} must stay denied"));
+            }
         }
         let write = as_session(
             session,
@@ -1983,6 +2004,7 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
             "{session}: Write"
         );
     }
+    assert!(wrong.is_empty(), "{wrong:#?}");
     assert!(autonomy::pending(&f.root, "pending").unwrap().is_some());
     assert!(autonomy::discussion_turn(&f.root, "talk").unwrap());
     assert_eq!(
@@ -2048,6 +2070,9 @@ fn a_session_locked_out_by_another_sessions_task_is_told_how_to_work_in_parallel
         "git worktree add",
         "own terminal",
         "new Claude Code session",
+        // A fresh worktree carries the hooks only when the project's settings are committed.
+        "not committed",
+        "supervisor install --harness claude-code --project",
     ] {
         assert!(why.contains(words), "{words}: {why}");
     }
@@ -2060,6 +2085,20 @@ fn a_session_locked_out_by_another_sessions_task_is_told_how_to_work_in_parallel
         "has not ended",
         "git worktree add",
         "new Claude Code session",
+    ] {
+        assert!(text.contains(words), "{words}: {text}");
+    }
+}
+
+/// G57: the `enforcement` sentence of an `intent_apply` answer does not claim that `audit` and
+/// `off` refuse nothing: the gate's state and level files and the action policy hold at every level.
+#[test]
+fn the_enforcement_sentence_names_what_every_level_denies() {
+    let text = autonomy::INTENT_ENFORCEMENT;
+    for words in [
+        "at every level",
+        "gate's own state and level files",
+        "configured action policy",
     ] {
         assert!(text.contains(words), "{words}: {text}");
     }
