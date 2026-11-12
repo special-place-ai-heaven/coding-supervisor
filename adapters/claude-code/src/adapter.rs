@@ -3515,7 +3515,13 @@ impl Session {
                     }
                 }
                 let state = state_name(self.task.state());
-                if only_pending_job && self.gate.continuations >= 1 {
+                // G58: the harness's continuation flag survives the tool calls that reset the
+                // count, so a stop it continued after a pending hold is released too.
+                let continued = payload
+                    .get("stop_hook_active")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if only_pending_job && (continued || self.gate.continuations >= 1) {
                     return Ok(Decision::System(format!(
                         "GATE: waiting, task remains {state}; {why}; nothing is certified"
                     )));
@@ -3526,6 +3532,13 @@ impl Session {
                     )));
                 }
                 self.gate.continuations += 1;
+                // G58: a hold for a job with no recorded exit is not a numbered refusal; the
+                // count still rises, so a next stop without the harness flag waits as before.
+                if only_pending_job {
+                    return Ok(Decision::Block(format!(
+                        "GATE: pending, not a numbered refusal: a check has no recorded exit yet; state {state}{round}; {why}; nothing is certified; the next stop is released with a note."
+                    )));
+                }
                 let run_instead: String = instructions.iter().map(|i| format!(" {i}")).collect();
                 let next = match review_gap {
                     Some(rejected) => review_protocol(rejected, &self.task_id),

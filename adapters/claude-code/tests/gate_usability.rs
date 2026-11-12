@@ -833,6 +833,56 @@ fn a_pending_terminal_commander_job_refuses_stop_once_then_waits() {
     assert_ne!(gate(&env)["state"], "completed");
 }
 
+/// G58: a stop held only for a job with no recorded exit is not a numbered refusal, and a tool
+/// call between it and the next stop (which resets the refusal count) does not make the gate
+/// refuse again: the harness's continuation flag releases that stop with the note.
+#[test]
+fn a_pending_job_refusal_is_not_counted_and_tool_calls_do_not_rearm_it() {
+    let (_d, mut env, _) = autonomous();
+    let project = cwd(&env);
+    let input = json!({"argv":["cargo","test"],"cwd":project});
+    let name = "mcp__terminal_commander__command_start_combed";
+    assert_eq!(
+        tool(
+            &mut env,
+            "PreToolUse",
+            "session",
+            name,
+            "tc1",
+            input.clone()
+        ),
+        Decision::None
+    );
+    handle(
+        &json!({"hook_event_name":"PostToolUse","cwd":project,"session_id":"session",
+        "agent_id":"main","tool_use_id":"tc1","tool_name":name,"tool_input":input,
+        "tool_response":{"job_id":"job-1","bucket_id":"bucket-1"}}),
+        &mut env,
+    );
+    let Decision::Block(first) = stop_with(&mut env, "main", false) else {
+        panic!("the first stop must name the pending job");
+    };
+    assert!(
+        first.contains("job-1") && first.contains("no recorded exit yet"),
+        "{first}"
+    );
+    assert!(!first.contains("refusal 1 of 3"), "{first}");
+    // A judged tool call resets the refusal count, as before.
+    assert_eq!(
+        tool(&mut env, "PreToolUse", "session", "Write", "w1", json!({})),
+        Decision::None
+    );
+    let second = stop_with(&mut env, "main", true);
+    let Decision::System(note) = &second else {
+        panic!("the continued stop must be released, got {second:?}");
+    };
+    assert!(
+        note.contains("job-1") && note.contains("command_status"),
+        "{note}"
+    );
+    assert_ne!(gate(&env)["state"], "completed");
+}
+
 /// G25: the chair records the exit of a Terminal Commander job its worker started in the
 /// same session, and that run then counts for the chair's Stop.
 #[test]
