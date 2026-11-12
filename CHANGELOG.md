@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.20.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.20.0...v0.20.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* approve thread-count, colour and output-level variables on check runs ([9ae8356](https://github.com/special-place-ai-heaven/coding-supervisor/commit/9ae83566977c27f1bdab278cc91b8f927a1bf269))
+* compare only this session's own intent entries before a judged hook call ([d4687cd](https://github.com/special-place-ai-heaven/coding-supervisor/commit/d4687cda860d7a8123b55d1a45e42971048ce2f1))
+* count a comma anywhere after a brace as expanding in the read-only shell check ([4a58dab](https://github.com/special-place-ai-heaven/coding-supervisor/commit/4a58dabf0a2dbc408943d6f97ae33f8b97ea6209))
+* give a stale session of a caller-asserted task advice it can follow ([19a0c4e](https://github.com/special-place-ai-heaven/coding-supervisor/commit/19a0c4e2e286d1dfaa32fe9292ca145ba0008ae4))
+* judge shell expansion as Bash does and take only ./ directories after cd ([e791a7f](https://github.com/special-place-ai-heaven/coding-supervisor/commit/e791a7f4a863d2d637a87dfdf0eb850d10b92169))
+* keep a pre-intent cd inside the same project and refuse expanded words that could become --output ([837d87a](https://github.com/special-place-ai-heaven/coding-supervisor/commit/837d87ab1e5fa9d3ff8528fde26743e9863f1a14))
+* keep task cleanup from deleting marked files it could not look up and stop offering rebind for prompt-managed tasks ([daa989b](https://github.com/special-place-ai-heaven/coding-supervisor/commit/daa989b1e49b75f334724d2c16a6e63b1f1aae1f))
+* let read-only git, gh, cat and which commands run before an intent and say how to work in parallel ([c5dcea8](https://github.com/special-place-ai-heaven/coding-supervisor/commit/c5dcea82413b4fc9e73d9ce2ada4718dc01b4c27))
+* pin the quoted --output refusal, keep gh api placeholders and state the hooks' refusals by level ([4064514](https://github.com/special-place-ai-heaven/coding-supervisor/commit/406451472aa1a215cae2aadf8e1d0ac02ef8b1b3))
+* read a backslash inside double quotes as Bash does in the read-only shell check ([d531650](https://github.com/special-place-ai-heaven/coding-supervisor/commit/d53165050e7c5f8357017926362043f3de9136dd))
+* read double quotes and only space or tab as word breaks in the read-only shell check ([7230c2a](https://github.com/special-place-ai-heaven/coding-supervisor/commit/7230c2a76a8bacc9243f315300f47332496718e0))
+* read pre-task shell commands as Bash does and allow more read-only ones ([b41e494](https://github.com/special-place-ai-heaven/coding-supervisor/commit/b41e4945d7979a385f209e190789b99e6b64853e))
+* refuse a pre-intent cd into a directory word starting with # ([5880744](https://github.com/special-place-ai-heaven/coding-supervisor/commit/58807445f33b28708491bbee77f424eb70b0fdbc))
+* refuse a pre-intent cd whose directory word holds a backslash or double quote ([bb66fa0](https://github.com/special-place-ai-heaven/coding-supervisor/commit/bb66fa01515ab1adf4e2eba87a67026f97760861))
+* refuse a pre-intent cd with a .. part or a leading backslash and state the glob limit ([1107804](https://github.com/special-place-ai-heaven/coding-supervisor/commit/11078047ed1a6d97c47ba728634de61eb12aae85))
+* refuse a tab inside quotes in the read-only shell check ([b3c01b8](https://github.com/special-place-ai-heaven/coding-supervisor/commit/b3c01b8a2d7b054acd7d11ce7a25c11179d3b58d))
+* refuse an expanded git -C directory and say which session can resume a caller-asserted task ([3f120a8](https://github.com/special-place-ai-heaven/coding-supervisor/commit/3f120a88e00bc3d1f5c56b790b0967d9e26ecda3))
+* say that an intent_apply answer records the proposal and the hooks do the refusing ([6cf03c2](https://github.com/special-place-ai-heaven/coding-supervisor/commit/6cf03c2bbaaa18ddf151f35097213d68782d3265))
+
 ## [0.20.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.19.2...v0.20.0) (2026-11-11)
 
 
