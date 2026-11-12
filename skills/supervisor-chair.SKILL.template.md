@@ -58,10 +58,17 @@ task bound to another session that has not ended refuses `continue`, `start`
 and `cancel` from yours: follow the prompt hook's advice, and pass on the
 person's `supervisor task cancel` command only for a session the user says is
 closed. When the hook says that session has ended, `start` archives its task
-as abandoned; if the start is refused for uncommitted changes, ask the user
-whether to resume that task or abandon it, and send `"abandon_previous":true`
-only after they choose to abandon. A task a person started is never archived
-this way: the user's resume prompt takes it over, or the person cancels it.
+as abandoned; if the start is refused for uncommitted changes in that task's
+working tree (its bound worktree when it has one), ask the user whether to
+resume that task or abandon it, and send `"abandon_previous":true` only after
+they choose to abandon. A task a person started is never archived this way: if
+a prompt the hooks observed made it prompt-managed, the user's direct resume
+prompt takes it over, or the person cancels it; if a caller-asserted prompt
+did, a prompt the hooks observe cannot resume it and the person's
+`supervisor task cancel` ends it. Read-only tools and
+read-only shell commands still run beside another session's task; for parallel
+work a person creates a separate git worktree in their own terminal and opens a
+new session there.
 
 After restart, read `task_state.pending_jobs` and query those exact job IDs.
 Retain their original dispatch/candidate/session linkage. A scope revision can

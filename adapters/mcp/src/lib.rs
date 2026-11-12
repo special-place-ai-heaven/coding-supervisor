@@ -228,10 +228,18 @@ impl Server {
             return match result {
                 Ok(mut value) => {
                     if let Some(fields) = value.as_object_mut() {
-                        // F15: the authority of this answer, not the task's enforcement;
-                        // `mode` stays one release for callers that read it.
-                        fields.insert("answer_authority".to_owned(), "advisory".into());
-                        fields.insert("mode".to_owned(), "advisory".into());
+                        if tool == "intent_apply" {
+                            // F15, G57: the authority of this answer, not the task's enforcement.
+                            fields
+                                .insert("answer_authority".to_owned(), "proposal_recorded".into());
+                            fields.insert(
+                                "enforcement".to_owned(),
+                                supervisor_claude_code::autonomy::INTENT_ENFORCEMENT.into(),
+                            );
+                        } else {
+                            fields.insert("answer_authority".to_owned(), "advisory".into());
+                            fields.insert("mode".to_owned(), "advisory".into());
+                        }
                         fields.insert("source".to_owned(), "caller-asserted".into());
                     }
                     tool_result(&value.to_string(), false)

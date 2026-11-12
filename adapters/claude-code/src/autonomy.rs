@@ -1267,6 +1267,10 @@ fn within(path: &str, allowed: &str) -> bool {
     }
 }
 
+/// G57: what an `intent_apply` answer (MCP or `supervisor intent apply`) means, true on every
+/// harness: the answer only records the proposal; refusing is the hooks' job, at their level.
+pub const INTENT_ENFORCEMENT: &str = "this answer records the proposal; where the gate's Claude Code hooks are installed at enforce or strict, they refuse mutations the accepted intent and contract do not allow; at audit or off, and on a harness without those hooks, the gate reports and does not refuse; `supervisor status` shows the effective level";
+
 /// G34: the shape every refusal for a malformed contract shows, so one refusal is enough.
 pub const MINIMAL_CONTRACT: &str = r#"{"id":"<short-slug>","goal":"<the request>","scope":["<path>/"],"criteria":<required_criteria>,"forbidden_effects":[],"max_repair_rounds":3}"#;
 

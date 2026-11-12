@@ -299,7 +299,19 @@ fn a_pending_prompt_can_be_classified_from_the_shell() {
         "{}",
         String::from_utf8_lossy(&applied.stderr)
     );
-    assert_eq!(value(applied)["action"], "discussion");
+    let applied = value(applied);
+    assert_eq!(applied["action"], "discussion");
+    // G57: the same answer as MCP intent_apply.
+    assert_eq!(
+        applied["answer_authority"], "proposal_recorded",
+        "{applied}"
+    );
+    assert!(
+        applied["enforcement"]
+            .as_str()
+            .is_some_and(|e| e.contains("enforce or strict")),
+        "{applied}"
+    );
     let stop = f.hook(json!({"hook_event_name":"Stop","session_id":"s1","cwd":f.project,"stop_hook_active":false}));
     assert!(!stop.contains("intent_apply"), "{stop}");
 }
