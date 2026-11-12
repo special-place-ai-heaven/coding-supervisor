@@ -362,6 +362,88 @@ fn autonomous_stop_evaluates_evidence_without_completion_wording() {
     assert_eq!(gate(&env)["state"], "completed");
 }
 
+/// The prompt hook's context for a new prompt in `session`.
+fn prompt_context(env: &mut Env, session: &str, id: &str) -> String {
+    let Decision::Context { text, .. } = handle(
+        &json!({"hook_event_name":"UserPromptSubmit",
+        "cwd":env.state_dir.parent().unwrap(), "session_id":session,
+        "prompt_id":id,"prompt":"Now add the other thing"}),
+        env,
+    ) else {
+        panic!("a prompt gets its context");
+    };
+    text
+}
+
+/// G59: after the completing Stop (which still answers nothing), the next prompt says the task
+/// was accepted and on how many hook-observed receipts; a task completed on caller-asserted
+/// receipts gets no such clause.
+#[test]
+fn a_prompt_after_completion_reports_the_hook_observed_receipts() {
+    let (_d, mut env, task) = autonomous();
+    run_autonomous_checks(&mut env, "initial");
+    let active = supervisor_claude_code::lifecycle::active_task(&env.state_dir)
+        .unwrap()
+        .unwrap();
+    let (contract, _) = supervisor_claude_code::state::read_contract(&active.dir).unwrap();
+    let mandatory = contract
+        .unwrap()
+        .criteria
+        .iter()
+        .filter(|c| c.mandatory)
+        .count();
+    assert_eq!(stop(&mut env, "Stop", "main"), Decision::None);
+    assert_eq!(gate(&env)["state"], "completed");
+    let text = prompt_context(&mut env, "session", "after");
+    assert!(
+        text.contains(&format!(
+            "The active task {task} is completed and takes no more work (continue is refused); it was accepted on {mandatory} hook-observed receipts."
+        )),
+        "{text}"
+    );
+
+    // The same task shape completed on caller-asserted receipts only.
+    use coding_supervisor::{CriterionId, TaskState, VerificationReceipt};
+    use supervisor_claude_code::state::{Stored, load_gate, save_gate};
+    let (_d, mut env, _task) = autonomous();
+    let write = json!({"hook_event_name":"PreToolUse","cwd":env.state_dir.parent().unwrap(),
+        "session_id":"session","agent_id":"main","tool_use_id":"w1","tool_name":"Write",
+        "tool_input":{"file_path":"src/lib.rs","content":"x"}});
+    assert_eq!(handle(&write, &mut env), Decision::None);
+    let active = supervisor_claude_code::lifecycle::active_task(&env.state_dir)
+        .unwrap()
+        .unwrap();
+    let (contract, digest) = supervisor_claude_code::state::read_contract(&active.dir).unwrap();
+    let Stored::Valid(mut g) = load_gate(&active.dir, &digest).unwrap() else {
+        panic!("no stored gate");
+    };
+    for criterion in contract.unwrap().criteria.iter().filter(|c| c.mandatory) {
+        g.receipts.push(VerificationReceipt {
+            criterion: CriterionId(criterion.id.0.clone()),
+            candidate: g.checkpoint.candidate.clone().unwrap(),
+            command: criterion.command[0].clone(),
+            cwd: ".".into(),
+            exit_code: Some(0),
+            output_ref: format!(
+                "{}{}",
+                supervisor_claude_code::adapter::MCP_ASSERTED,
+                criterion.id.0
+            ),
+            claim_supported: true,
+            started_at: 1,
+            finished_at: 1,
+        });
+    }
+    g.checkpoint.state = TaskState::Completed;
+    save_gate(&active.dir, &g, &digest).unwrap();
+    let text = prompt_context(&mut env, "session", "after");
+    assert!(
+        text.contains("is completed and takes no more work"),
+        "{text}"
+    );
+    assert!(!text.contains("hook-observed"), "{text}");
+}
+
 #[test]
 fn autonomous_refusals_exhaust_repair_budget_across_followup_prompts() {
     let (_d, mut env, task) = autonomous();

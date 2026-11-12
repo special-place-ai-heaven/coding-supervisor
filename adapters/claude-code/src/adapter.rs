@@ -1266,8 +1266,23 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     // G47: a completed task takes no more work, whichever session owned it, so
                     // `continue` would be refused and a start from any session is accepted.
                     call["action"] = "start".into();
+                    // G59: how it was accepted, only when the hook-observed evidence still holds.
+                    let accepted = lifecycle::active_task(&root)
+                        .ok()
+                        .flatten()
+                        .and_then(|active| {
+                            crate::autonomy::observed_receipt_count(
+                                &active.dir,
+                                &active.task_id,
+                                &project,
+                            )
+                        })
+                        .map_or_else(
+                            || ".".to_owned(),
+                            |n| format!("; it was accepted on {n} hook-observed receipts."),
+                        );
                     format!(
-                        "The active task {} is completed and takes no more work (continue is refused). Next call for new work: intent_apply {call} plus \"contract\": a scoped contract, at least {}; for a question, the same fields with \"action\":\"discussion\".",
+                        "The active task {} is completed and takes no more work (continue is refused){accepted} Next call for new work: intent_apply {call} plus \"contract\": a scoped contract, at least {}; for a question, the same fields with \"action\":\"discussion\".",
                         intent["task_id"].as_str().unwrap_or_default(),
                         crate::autonomy::MINIMAL_CONTRACT
                     )
