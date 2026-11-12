@@ -1884,6 +1884,9 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "cd \"./a b\" && git log -1",
         // git gets the literal directory `~/repo`; the shell expands no `~` inside quotes.
         "git -C \"~/repo\" log",
+        // Inside double quotes a `\` before any other character is literal: Windows paths.
+        "git -C \"E:\\x\" status",
+        "cat \"C:\\a\\b\"",
     ];
     let denied = [
         "git ls-remote --upload-pack=x origin",
@@ -1999,6 +2002,13 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "git log \"$(id)\"",
         "git log \"`id`\"",
         "git log \"a\\\"b\"",
+        // A `\` that escapes `\`, `$`, a backtick or the closing `"` is refused, not interpreted.
+        "git log \"a\\\\b\"",
+        "git log \"a\\$b\"",
+        "git log \"a\\`b\"",
+        "cat \"C:\\a\\\"",
+        // One `-C` directory word `x\ status y/..`, then `push`, which is not a read.
+        "git -C \"x\\ status y/..\" push origin",
         "git log \"x",
         "git log --grep=\"a\nb\"",
         // Bash reads an unquoted word starting with `#` and the rest of the line as a comment.

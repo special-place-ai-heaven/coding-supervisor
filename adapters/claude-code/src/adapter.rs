@@ -544,20 +544,30 @@ const SHELL_SYNTAX: [char; 11] = [';', '&', '|', '<', '>', '$', '`', '(', ')', '
 /// G53: the words Bash passes for `command`, each with whether Bash may expand it into other
 /// words ([`expands`], from the characters outside quotes only). Quotes are removed as Bash
 /// removes them: inside `'` everything but a control character is literal; inside `"` also, but
-/// `$`, a backtick and `\` are refused. Outside quotes words end at a space or a tab only, and
+/// `$` and a backtick are refused, and a `\` is literal unless it comes before `$`, a backtick,
+/// `"`, `\` or a line break (refused, not interpreted). Outside quotes words end at a space or a tab only, and
 /// [`SHELL_SYNTAX`], `\`, any other whitespace or control character and a word starting with
 /// `#` (a comment) are refused; an unclosed quote is refused. A tab inside quotes is refused too.
 fn shell_words(command: &str) -> Option<Vec<(String, bool)>> {
     // Each word as Bash passes it, beside the characters of it that stood outside quotes.
     let (mut words, mut word) = (Vec::new(), None::<(String, String)>);
     let mut quote = None::<char>;
-    for c in command.chars() {
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
         if c.is_control() && (c != '\t' || quote.is_some()) {
             return None;
         }
         match (quote, c) {
             (Some(q), _) if c == q => quote = None,
-            (Some('"'), '$' | '`' | '\\') => return None,
+            // Bash keeps a `\` inside `"` unless it escapes one of these; that escape is refused.
+            (Some('"'), '\\')
+                if chars
+                    .peek()
+                    .is_none_or(|n| matches!(n, '$' | '`' | '"' | '\\' | '\n')) =>
+            {
+                return None;
+            }
+            (Some('"'), '$' | '`') => return None,
             (Some(_), _) => word.get_or_insert_default().0.push(c),
             (None, '\'' | '"') => {
                 quote = Some(c);
@@ -4170,9 +4180,34 @@ mod shell_words_tests {
             words("x#y \"#z\""),
             Some(vec![w("x#y", false), w("#z", false)])
         );
+        assert_eq!(
+            words("-C \"x\\ status y/..\" push"),
+            Some(vec![
+                w("-C", false),
+                w("x\\ status y/..", false),
+                w("push", false)
+            ])
+        );
+        assert_eq!(words("\"C:\\a\\b\""), Some(vec![w("C:\\a\\b", false)]));
         for refused in [
-            "\"x", "'x", "\"$x\"", "\"`x`\"", "\"a\\b\"", "a\\ b", "a\u{a0}b", "\"a\nb\"", "#x",
-            "a;b", "\"a\tb\"", "'a\tb'",
+            "\"x",
+            "'x",
+            "\"$x\"",
+            "\"`x`\"",
+            "a\\ b",
+            "a\u{a0}b",
+            "\"a\nb\"",
+            "#x",
+            "a;b",
+            "\"a\tb\"",
+            "'a\tb'",
+            "\"a\\\\b\"",
+            "\"a\\\"b\"",
+            "\"a\\$b\"",
+            "\"a\\`b\"",
+            "\"a\\\nb\"",
+            "\"C:\\a\\\"",
+            "\"a\\",
         ] {
             assert_eq!(words(refused), None, "{refused:?}");
         }
