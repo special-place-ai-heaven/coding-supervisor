@@ -2000,6 +2000,7 @@ fn process(
     let refusals = (
         session.gate.continuations,
         session.gate.handback_refusals.clone(),
+        session.gate.pending_hold,
     );
     let refused_for_limit = match reached {
         Some(reached) if event == "PreToolUse" && !limit_exempt(payload) => {
@@ -2033,6 +2034,7 @@ fn process(
         }
         "UserPromptSubmit" => {
             session.gate.continuations = 0;
+            session.gate.pending_hold = false;
             session.gate.prompt_id = text(payload, "prompt_id").map(str::to_owned);
             Decision::None
         }
@@ -2052,7 +2054,11 @@ fn process(
     let release = matches!(event, "Stop" | "SubagentStop") && uncertified && review_only.is_none();
     let decision = match (decision, reached, &usage) {
         (_, Some(reached), Some(usage)) if release => {
-            (session.gate.continuations, session.gate.handback_refusals) = refusals.clone();
+            (
+                session.gate.continuations,
+                session.gate.handback_refusals,
+                session.gate.pending_hold,
+            ) = refusals.clone();
             session.limit_release(event, reached, usage, &env.state_dir, reasons)?
         }
         (decision, ..) => decision,
@@ -2061,7 +2067,11 @@ fn process(
     {
         // Lite never blocks, so a stop refusal it only reports must not count toward the caps.
         if matches!(decision, Decision::Block(_)) {
-            (session.gate.continuations, session.gate.handback_refusals) = refusals;
+            (
+                session.gate.continuations,
+                session.gate.handback_refusals,
+                session.gate.pending_hold,
+            ) = refusals;
         }
         reasons.push("level audit: reported, not blocked".to_owned());
     }
@@ -3417,6 +3427,8 @@ impl Session {
         repair: bool,
         reasons: &mut Vec<String>,
     ) -> Result<Decision, String> {
+        // G58: a hold counts for the next judged stop only; every judged stop uses it up.
+        let held = std::mem::take(&mut self.gate.pending_hold);
         let message = text(payload, "last_assistant_message").unwrap_or_default();
         if crate::autonomy::is_paused(dir)? {
             reasons.push("task paused; no completion attempted".to_owned());
@@ -3531,12 +3543,13 @@ impl Session {
                 }
                 let state = state_name(self.task.state());
                 // G58: the harness's continuation flag survives the tool calls that reset the
-                // count, so a stop it continued after a pending hold is released too.
+                // count, so a stop it continued right after the gate's pending hold is released
+                // too; after any other block the flag alone releases nothing.
                 let continued = payload
                     .get("stop_hook_active")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                if only_pending_job && (continued || self.gate.continuations >= 1) {
+                if only_pending_job && ((continued && held) || self.gate.continuations >= 1) {
                     return Ok(Decision::System(format!(
                         "GATE: waiting, task remains {state}; {why}; nothing is certified"
                     )));
@@ -3550,6 +3563,7 @@ impl Session {
                 // G58: a hold for a job with no recorded exit is not a numbered refusal; the
                 // count still rises, so a next stop without the harness flag waits as before.
                 if only_pending_job {
+                    self.gate.pending_hold = true;
                     return Ok(Decision::Block(format!(
                         "GATE: pending, not a numbered refusal: a check has no recorded exit yet; state {state}{round}; {why}; nothing is certified; the next stop is released with a note."
                     )));

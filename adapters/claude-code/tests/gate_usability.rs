@@ -883,6 +883,83 @@ fn a_pending_job_refusal_is_not_counted_and_tool_calls_do_not_rearm_it() {
     assert_ne!(gate(&env)["state"], "completed");
 }
 
+/// Start `cargo test` as a Terminal Commander job whose exit is never fetched.
+fn start_job(env: &mut Env, id: &str, job: &str) {
+    let input = json!({"argv":["cargo","test"],"cwd":cwd(env)});
+    let name = "mcp__terminal_commander__command_start_combed";
+    assert_eq!(
+        tool(env, "PreToolUse", "session", name, id, input.clone()),
+        Decision::None
+    );
+    handle(
+        &json!({"hook_event_name":"PostToolUse","cwd":cwd(env),"session_id":"session",
+        "agent_id":"main","tool_use_id":id,"tool_name":name,"tool_input":input,
+        "tool_response":{"job_id":job,"bucket_id":"bucket-1"}}),
+        env,
+    );
+}
+
+/// G58 review: the continuation flag releases a pending-only stop only when the gate's own
+/// pending hold came before it. After a numbered refusal, an edit and a restarted check, the
+/// continued stop is held and names the job and the `command_status` call.
+#[test]
+fn a_continued_stop_after_a_numbered_refusal_is_held_for_a_pending_job() {
+    let (_d, mut env, _) = autonomous();
+    let Decision::Block(first) = stop(&mut env, "main") else {
+        panic!("a stop with no check run must be refused");
+    };
+    assert!(first.contains("refusal 1 of 3"), "{first}");
+    assert_eq!(
+        tool(&mut env, "PreToolUse", "session", "Write", "w1", json!({})),
+        Decision::None
+    );
+    start_job(&mut env, "tc1", "job-1");
+    let second = stop_with(&mut env, "main", true);
+    let Decision::Block(held) = &second else {
+        panic!("the continued stop must be held for the pending job, got {second:?}");
+    };
+    assert!(
+        held.contains("no recorded exit yet")
+            && held.contains("job-1")
+            && held.contains("command_status"),
+        "{held}"
+    );
+}
+
+/// G58 review: a released hold is used up, so a continued stop in a later turn, after a block
+/// the gate did not give, is held again rather than released.
+#[test]
+fn a_released_hold_does_not_release_a_later_continued_stop() {
+    let (_d, mut env, _) = autonomous();
+    start_job(&mut env, "tc1", "job-1");
+    let Decision::Block(first) = stop(&mut env, "main") else {
+        panic!("the first stop must name the pending job");
+    };
+    assert!(first.contains("no recorded exit yet"), "{first}");
+    assert_eq!(
+        tool(&mut env, "PreToolUse", "session", "Write", "w1", json!({})),
+        Decision::None
+    );
+    assert!(matches!(
+        stop_with(&mut env, "main", true),
+        Decision::System(_)
+    ));
+    assert!(matches!(
+        follow_up(&mut env, "session", "later", "Keep going on the same work"),
+        Decision::Context { .. }
+    ));
+    let later = stop_with(&mut env, "main", true);
+    let Decision::Block(held) = &later else {
+        panic!("a continued stop with no hold before it must be held, got {later:?}");
+    };
+    assert!(
+        held.contains("no recorded exit yet")
+            && held.contains("job-1")
+            && held.contains("command_status"),
+        "{held}"
+    );
+}
+
 /// G25: the chair records the exit of a Terminal Commander job its worker started in the
 /// same session, and that run then counts for the chair's Stop.
 #[test]
