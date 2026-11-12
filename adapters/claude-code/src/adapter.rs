@@ -518,9 +518,10 @@ fn read_only_command(payload: &Value) -> bool {
 /// take their state from the shell's directory, so a nested repository, a parent or a directory
 /// outside a repository would move them to another state. Only an existing directory going
 /// down, written `./<dir>`, because Bash looks a relative word without `./` or `../` up in
-/// CDPATH first. A `\` or `"` anywhere (Bash drops them from an unquoted word: `cd ./sub\x`
-/// enters `./subx`), a drive letter and a `..` (Bash drops `link/..` as text, the file system
-/// follows the link) resolve unlike here; an absolute directory is refused.
+/// CDPATH first. `dir` is the word as Bash passes it ([`shell_words`] refuses an unquoted `\` and
+/// removes quotes, so `cd ./sub"x"` is judged at `./subx`); a `\` or `"` left in it came from
+/// single quotes and is refused, as are a drive letter and a `..` (Bash drops `link/..` as text,
+/// the file system follows the link), which resolve unlike here; an absolute directory is refused.
 fn same_project(payload: &Value, dir: &str) -> bool {
     let Some(cwd) = text(payload, "cwd").map(Path::new) else {
         return false;
@@ -541,44 +542,46 @@ fn same_project(payload: &Value, dir: &str) -> bool {
 const SHELL_SYNTAX: [char; 11] = [';', '&', '|', '<', '>', '$', '`', '(', ')', '\n', '\r'];
 
 /// G53: the words Bash passes for `command`, each with whether Bash may expand it into other
-/// words ([`expands`]). Without a `'`, as [`simple_words`] splits them. With one, single quotes
-/// are removed as Bash removes them; outside them [`SHELL_SYNTAX`], `"` and `\` are refused,
-/// inside them only a line break, and an unclosed quote is refused.
+/// words ([`expands`], from the characters outside quotes only). Quotes are removed as Bash
+/// removes them: inside `'` everything but a control character is literal; inside `"` also, but
+/// `$`, a backtick and `\` are refused. Outside quotes words end at a space or a tab only, and
+/// [`SHELL_SYNTAX`], `\`, any other whitespace or control character and a word starting with
+/// `#` (a comment) are refused; an unclosed quote is refused. A tab inside quotes is literal.
 fn shell_words(command: &str) -> Option<Vec<(String, bool)>> {
-    if !command.contains('\'') {
-        if command.contains(SHELL_SYNTAX) {
+    // Each word as Bash passes it, beside the characters of it that stood outside quotes.
+    let (mut words, mut word) = (Vec::new(), None::<(String, String)>);
+    let mut quote = None::<char>;
+    for c in command.chars() {
+        if c.is_control() && c != '\t' {
             return None;
         }
-        let words = command.split_whitespace();
-        return Some(words.map(|w| (w.to_owned(), expands(w))).collect());
-    }
-    // Each word as Bash passes it, beside the characters of it that stood outside quotes.
-    let (mut words, mut word, mut quoted) = (Vec::new(), None::<(String, String)>, false);
-    let mut end = |word: &mut Option<(String, String)>| {
-        if let Some((text, bare)) = word.take() {
-            words.push((text, expands(&bare)));
-        }
-    };
-    for c in command.chars() {
-        match c {
-            '\n' | '\r' => return None,
-            '\'' => {
-                quoted = !quoted;
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (Some('"'), '$' | '`' | '\\') => return None,
+            (Some(_), _) => word.get_or_insert_default().0.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
                 word.get_or_insert_default();
             }
-            _ if quoted => word.get_or_insert_default().0.push(c),
-            '"' | '\\' => return None,
-            _ if SHELL_SYNTAX.contains(&c) => return None,
-            _ if c.is_whitespace() => end(&mut word),
-            _ => {
+            (None, ' ' | '\t') => {
+                if let Some((text, bare)) = word.take() {
+                    words.push((text, expands(&bare)));
+                }
+            }
+            (None, '#') if word.is_none() => return None,
+            (None, '\\') => return None,
+            (None, _) if SHELL_SYNTAX.contains(&c) || c.is_whitespace() => return None,
+            (None, _) => {
                 let w = word.get_or_insert_default();
                 w.0.push(c);
                 w.1.push(c);
             }
         }
     }
-    end(&mut word);
-    (!quoted).then_some(words)
+    if let Some((text, bare)) = word {
+        words.push((text, expands(&bare)));
+    }
+    quote.is_none().then_some(words)
 }
 
 /// Whether Bash may turn these unquoted characters of a word into other words: a glob, a `~` at
@@ -608,8 +611,8 @@ fn expands(bare: &str) -> bool {
 
 /// Whether the words of one command are a read-only command of the list.
 fn read_only_words(words: &[(String, bool)]) -> bool {
-    // `--output` writes a file; a quote or backslash inside the word does not hide it, and a
-    // brace list or a glob starting with `-` could expand into it.
+    // `--output` writes a file; the word is unquoted, so a quote does not hide it, and a brace
+    // list or a glob starting with `-` could expand into it.
     if words.iter().any(|(w, e)| {
         w.replace(['"', '\\'], "").starts_with("--output")
             || (*e && (w.contains('{') || w.starts_with('-')))
@@ -4126,6 +4129,53 @@ mod fail_closed_tests {
             blocking_words("x: No such file or directory; Missing field; NOT FOUND"),
             "x: no file or directory; absent field; absent"
         );
+    }
+}
+
+#[cfg(test)]
+mod shell_words_tests {
+    use super::{exempt_from_failing_closed, inspection, limit_exempt, shell_words};
+
+    /// G53: no caller of the read-only checks takes a write that splitting at the spaces
+    /// inside a double-quoted `-C` directory read as `git status` (it did on main).
+    #[test]
+    fn a_quoted_c_directory_does_not_hide_a_write_from_any_caller() {
+        for command in [
+            "git -C \"x status y/..\" push origin",
+            "git -C x\u{a0}status push",
+        ] {
+            let payload = serde_json::json!({"tool_name":"Bash","tool_input":{"command":command}});
+            assert!(!exempt_from_failing_closed(&payload), "{command}");
+            assert!(!inspection(&payload), "{command}");
+            assert!(!limit_exempt(&payload), "{command}");
+        }
+    }
+
+    /// G53: words as Bash passes them, with whether Bash may expand them.
+    #[test]
+    fn quotes_are_read_as_bash_reads_them() {
+        let words = shell_words;
+        let w = |t: &str, e: bool| (t.to_owned(), e);
+        assert_eq!(words("\"*.rs\""), Some(vec![w("*.rs", false)]));
+        assert_eq!(
+            words("\"a'b\" 'a\"b'"),
+            Some(vec![w("a'b", false), w("a\"b", false)])
+        );
+        assert_eq!(words("a\"b\"*"), Some(vec![w("ab*", true)]));
+        assert_eq!(
+            words("\"\" x\t\"a\tb\""),
+            Some(vec![w("", false), w("x", false), w("a\tb", false)])
+        );
+        assert_eq!(
+            words("x#y \"#z\""),
+            Some(vec![w("x#y", false), w("#z", false)])
+        );
+        for refused in [
+            "\"x", "'x", "\"$x\"", "\"`x`\"", "\"a\\b\"", "a\\ b", "a\u{a0}b", "\"a\nb\"", "#x",
+            "a;b",
+        ] {
+            assert_eq!(words(refused), None, "{refused:?}");
+        }
     }
 }
 

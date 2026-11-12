@@ -1830,13 +1830,22 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
     // nested repository or out of the project would move later hook calls to another state.
     // `sub/x` is a plain directory beside the nested repository `subx`: Bash runs `cd sub\x`
     // as `cd subx`. Bash reads `cd #sub && ...` as a bare `cd`, which goes home.
-    for dir in ["sub/x", "a b", "nested", "subx", "#sub"] {
+    // `sub\u{a0}` is a nested repository: Bash reads `cd ./sub\u{a0}` as one word, not `./sub`.
+    for dir in ["sub/x", "a b", "nested", "subx", "#sub", "sub\u{a0}"] {
+        fs::create_dir_all(f.project.join(dir)).unwrap();
+    }
+    // Plain directories of the project named as a rule would read the word if it took the
+    // characters literally, so removing that rule lets `is_dir` pass. Windows refuses `*`, `"`
+    // and `\` in a directory name, so there these cases are refused by `is_dir` as well.
+    #[cfg(unix)]
+    for dir in ["n*", "sub\"x\"", "sub\\x"] {
         fs::create_dir_all(f.project.join(dir)).unwrap();
     }
     for dir in [
         f.project.clone(),
         f.project.join("nested"),
         f.project.join("subx"),
+        f.project.join("sub\u{a0}"),
     ] {
         assert!(run_process("git", &["init", "-q"], &dir).status.success());
     }
@@ -1868,6 +1877,13 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "git show HEAD~1",
         "git log HEAD~3..HEAD",
         "git log -- '*.rs'",
+        // Double quotes as Bash reads them: removed, their content literal and not expanded.
+        "git log --format=\"%h [%an] %s\"",
+        "git diff -- \"*.rs\"",
+        "git log --grep=\"fix?\"",
+        "cd \"./a b\" && git log -1",
+        // git gets the literal directory `~/repo`; the shell expands no `~` inside quotes.
+        "git -C \"~/repo\" log",
     ];
     let denied = [
         "git ls-remote --upload-pack=x origin",
@@ -1968,6 +1984,25 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "git branch newbranch",
         "git remote add o u",
         "npm install -g coding-supervisor",
+        // Bash passes one `-C` directory `x status y/..` (git folds `y/..` as text) and runs the
+        // command after it; split at the spaces inside the quotes this read as `git status`.
+        "git -C \"x status y/..\" push origin",
+        "git -C \"x status y/..\" clean -fdx",
+        "git -C \"x status y/..\" reset --hard",
+        "git -C \"x status y/..\" commit -am x",
+        "git -C x\\ status push",
+        // Bash splits words only at a space or a tab.
+        "cd ./sub\u{a0} && git status",
+        "git -C x\u{a0}status push",
+        "git -C x\u{b}status push",
+        "git -C x\u{3000}status push",
+        "git log \"$(id)\"",
+        "git log \"`id`\"",
+        "git log \"a\\\"b\"",
+        "git log \"x",
+        "git log --grep=\"a\nb\"",
+        // Bash reads an unquoted word starting with `#` and the rest of the line as a comment.
+        "git -C #x status",
     ];
     // Every mismatch at once, so one run shows each rule that is off.
     let mut wrong = Vec::new();
@@ -2103,6 +2138,9 @@ fn the_enforcement_sentence_names_what_every_level_denies() {
         "at every level",
         "gate's own state and level files",
         "configured action policy",
+        // Only the writes the guard recognises: it matches edit tools and command text.
+        "the guard recognises",
+        "shell or Terminal Commander commands that name those paths",
     ] {
         assert!(text.contains(words), "{words}: {text}");
     }
