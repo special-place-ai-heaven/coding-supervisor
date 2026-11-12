@@ -1061,6 +1061,86 @@ fn poll(env: &mut Env, name: &str, input: Value, response: Value) -> Decision {
     )
 }
 
+/// The final `command_status` of `job` with `exit`.
+fn finished(env: &mut Env, job: &str, exit: i32) -> Decision {
+    poll(
+        env,
+        "command_status",
+        json!({"job_id":job}),
+        json!({"job_id":job,"bucket_id":"bucket-1","state":"exited","complete":true,
+            "exit_code":exit,"outcome_trust":"observed","degraded":false,"pipeline_exit_masked":false}),
+    )
+}
+
+/// G58 review: the pending hold is not counted, so the refusal after it, once the job failed,
+/// is the turn's first.
+#[test]
+fn the_refusal_after_a_pending_hold_is_the_first_of_the_turn() {
+    let (_d, mut env, _) = autonomous();
+    start_job(&mut env, "tc1", "job-1");
+    let Decision::Block(first) = stop(&mut env, "main") else {
+        panic!("the first stop must hold for the pending job");
+    };
+    assert!(first.contains("no recorded exit yet"), "{first}");
+    finished(&mut env, "job-1", 1);
+    let Decision::Block(second) = stop_with(&mut env, "main", true) else {
+        panic!("a failing check must be refused");
+    };
+    assert!(second.contains("refusal 1 of 3"), "{second}");
+}
+
+/// Hold a stop for a pending job, send a new prompt with no tool call after it, and return the
+/// next continued stop's decision: a new prompt starts a new turn, so it must be held again.
+fn stop_after_a_new_prompt(env: &mut Env) -> Decision {
+    start_job(env, "tc1", "job-1");
+    let Decision::Block(first) = stop(env, "main") else {
+        panic!("the first stop must hold for the pending job");
+    };
+    assert!(first.contains("no recorded exit yet"), "{first}");
+    assert!(matches!(
+        follow_up(env, "session", "later", "Keep going on the same work"),
+        Decision::Context { .. }
+    ));
+    stop_with(env, "main", true)
+}
+
+/// G58 review: a new prompt clears the hold of a prompt-managed task.
+#[test]
+fn a_new_prompt_clears_the_pending_hold_of_a_prompt_managed_task() {
+    let (_d, mut env, _) = autonomous();
+    let later = stop_after_a_new_prompt(&mut env);
+    assert!(
+        matches!(&later, Decision::Block(held) if held.contains("no recorded exit yet")),
+        "a stop in the next turn must be held again, got {later:?}"
+    );
+}
+
+/// G58 review: a new prompt clears the hold of a person's `task start` task too.
+#[test]
+fn a_new_prompt_clears_the_pending_hold_of_a_persons_task() {
+    let (_d, mut env, _) = idle();
+    supervisor_claude_code::lifecycle::start_as(
+        &env.state_dir,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &contract("person"),
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    let event = prompt(&mut env, "first", "Keep working on the task");
+    let task = supervisor_claude_code::lifecycle::active_task(&env.state_dir)
+        .unwrap()
+        .unwrap()
+        .task_id;
+    propose(&env, &event, "continue", Some(&task), None);
+    let later = stop_after_a_new_prompt(&mut env);
+    assert!(
+        matches!(&later, Decision::Block(held) if held.contains("no recorded exit yet")),
+        "a stop in the next turn must be held again, got {later:?}"
+    );
+}
+
 /// G60: a run cancelled because the code changed while it ran is named so in the Stop refusal,
 /// which is not a hold for it: the job can never record an exit.
 #[test]

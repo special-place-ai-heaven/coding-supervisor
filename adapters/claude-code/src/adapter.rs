@@ -1206,6 +1206,12 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
     let legacy_contract = root.join("contract.json").is_file()
         && !root.join("active.json").exists()
         && !root.join("intents.json").exists();
+    // G58 review: a prompt starts a new turn (the legacy layout clears in `process`). A failed
+    // clear keeps the mark, which can release one later stop uncertified, never certify it.
+    if event == "UserPromptSubmit" && !legacy_contract {
+        let _ =
+            lifecycle::clear_pending_hold(&root, text(payload, "session_id").unwrap_or_default());
+    }
     // G36 (AAP report): a background-task notice the harness delivers as a prompt is not a
     // request; the previous prompt's classification stands. A person typing this marker
     // first only keeps that classification, it never widens it.
@@ -3554,14 +3560,10 @@ impl Session {
                     }
                 }
                 let state = state_name(self.task.state());
-                // G58: the harness's continuation flag survives the tool calls that reset the
-                // count, so a stop it continued right after the gate's pending hold is released
-                // too; after any other block the flag alone releases nothing.
-                let continued = payload
-                    .get("stop_hook_active")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                if only_pending_job && ((continued && held) || self.gate.continuations >= 1) {
+                // G58: the stop right after the gate's own pending hold is released, whatever
+                // tool calls (which reset the count) came between; so is one after a numbered
+                // refusal with no tool call since. A new prompt clears the hold.
+                if only_pending_job && (held || self.gate.continuations >= 1) {
                     return Ok(Decision::System(format!(
                         "GATE: waiting, task remains {state}; {why}; nothing is certified"
                     )));
@@ -3571,15 +3573,16 @@ impl Session {
                         "GATE: refusal cap reached; task remains {state}"
                     )));
                 }
-                self.gate.continuations += 1;
-                // G58: a hold for a job with no recorded exit is not a numbered refusal; the
-                // count still rises, so a next stop without the harness flag waits as before.
+                // G58: a hold for a job with no recorded exit is not a numbered refusal and is
+                // not counted. It stays bounded: every judged stop uses the hold up, so the stop
+                // after a hold is released or refused with a number, never held again.
                 if only_pending_job {
                     self.gate.pending_hold = true;
                     return Ok(Decision::Block(format!(
                         "GATE: pending, not a numbered refusal: a check has no recorded exit yet; state {state}{round}; {why}; nothing is certified; the next stop is released with a note."
                     )));
                 }
+                self.gate.continuations += 1;
                 let run_instead: String = instructions.iter().map(|i| format!(" {i}")).collect();
                 let next = match review_gap {
                     Some(rejected) => review_protocol(rejected, &self.task_id),
