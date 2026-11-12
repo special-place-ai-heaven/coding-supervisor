@@ -899,9 +899,9 @@ fn start_job(env: &mut Env, id: &str, job: &str) {
     );
 }
 
-/// G58 review: a pending-only stop is released only when the gate's own pending hold came
-/// before it. After a numbered refusal, an edit and a restarted check, the
-/// continued stop is held and names the job and the `command_status` call.
+/// G58 review: a numbered refusal does not set the pending-hold mark. After one, an edit (which
+/// sets the refusal count back to 0) and a restarted check, the next stop is held, naming the job
+/// and the `command_status` call; the harness's continuation flag it carries changes nothing.
 #[test]
 fn a_continued_stop_after_a_numbered_refusal_is_held_for_a_pending_job() {
     let (_d, mut env, _) = autonomous();
@@ -1165,5 +1165,50 @@ fn a_run_cancelled_by_a_code_change_is_named_and_not_waited_on() {
     assert!(
         matches!(&second, Decision::Block(why) if why.contains("refusal 2 of 3")),
         "a cancelled run is not waited on, got {second:?}"
+    );
+}
+
+/// G58 review round 3: a released hold is used up without any prompt, so after a tool call the
+/// next pending-only stop is held again rather than released.
+#[test]
+fn a_released_hold_is_used_up_without_a_prompt() {
+    let (_d, mut env, _) = autonomous();
+    start_job(&mut env, "tc1", "job-1");
+    assert!(matches!(stop(&mut env, "main"), Decision::Block(_)));
+    assert!(matches!(
+        stop_with(&mut env, "main", true),
+        Decision::System(_)
+    ));
+    assert_eq!(
+        tool(&mut env, "PreToolUse", "session", "Write", "w1", json!({})),
+        Decision::None
+    );
+    let later = stop_with(&mut env, "main", true);
+    assert!(
+        matches!(&later, Decision::Block(held) if held.contains("no recorded exit yet")),
+        "a stop after a released hold must be held again, got {later:?}"
+    );
+}
+
+/// G60: the Stop list names a run cancelled only when the cancellation is that run's own, with
+/// the same task, session and agent, as `latest_run` reads it.
+#[test]
+fn another_sessions_cancellation_row_does_not_cancel_this_run() {
+    let (_d, mut env, _) = autonomous();
+    start_job(&mut env, "tc1", "job-1");
+    let active = supervisor_claude_code::lifecycle::active_task(&env.state_dir)
+        .unwrap()
+        .unwrap();
+    let runs = active.dir.join("runs.jsonl");
+    let text = fs::read_to_string(&runs).unwrap();
+    let mut row: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    row["kind"] = "invalidated".into();
+    row["session_id"] = "other-session".into();
+    fs::write(&runs, format!("{text}{row}\n")).unwrap();
+    let first = stop(&mut env, "main");
+    assert!(
+        matches!(&first, Decision::Block(why) if why.contains("no recorded exit yet")
+            && !why.contains("cancelled")),
+        "{first:?}"
     );
 }

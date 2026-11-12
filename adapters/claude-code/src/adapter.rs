@@ -3032,6 +3032,9 @@ impl Session {
                 None if current_rows.iter().any(|row| {
                     text(row, "kind") == Some("invalidated")
                         && text(row, "dispatch_id") == Some(dispatch)
+                        && ["task_id", "session_id", "agent_id"]
+                            .iter()
+                            .all(|key| row.get(*key) == latest.get(*key))
                 }) =>
                 {
                     problems.push(format!(
@@ -3579,7 +3582,7 @@ impl Session {
                 if only_pending_job {
                     self.gate.pending_hold = true;
                     return Ok(Decision::Block(format!(
-                        "GATE: pending, not a numbered refusal: a check has no recorded exit yet; state {state}{round}; {why}; nothing is certified; the next stop is released with a note."
+                        "GATE: pending, not a numbered refusal: a check has no recorded exit yet; state {state}{round}; {why}; nothing is certified; the next stop is released with a note if only pending jobs remain."
                     )));
                 }
                 self.gate.continuations += 1;
