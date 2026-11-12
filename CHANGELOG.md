@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.21.0](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.20.1...v0.21.0) (2026-11-12)
+
+
+### Features
+
+* name the hook-observed receipts a completed task was accepted on in the next prompt's context ([a40fa53](https://github.com/special-place-ai-heaven/coding-supervisor/commit/a40fa5347bb3b75e1001c5eeba6aa79a89ecacbe))
+
+
+### Bug Fixes
+
+* do not count the pending hold and clear it at every prompt of the task's session ([cfbcca9](https://github.com/special-place-ai-heaven/coding-supervisor/commit/cfbcca91c34ec472c45a18f282b25fd0eb017a23))
+* do not number a stop held only for a job with no recorded exit, and release the continued stop ([ef09e64](https://github.com/special-place-ai-heaven/coding-supervisor/commit/ef09e64b2594db143f032845f0c42825d07f6442))
+* keep a check run when a poll cannot read the code version, and stop numbering a pending-job hold ([d52d3e8](https://github.com/special-place-ai-heaven/coding-supervisor/commit/d52d3e86df5fe2001036c38c19e0735f61eaa8c1))
+* keep a Terminal Commander run when a poll cannot read the code version, and name a cancelled run ([36bde8d](https://github.com/special-place-ai-heaven/coding-supervisor/commit/36bde8dc6a8df1f47addaac0ec4c7b387df3095c))
+* name a cancelled run only on its own cancellation row and qualify the hold's release note ([076a22d](https://github.com/special-place-ai-heaven/coding-supervisor/commit/076a22ddf8bd670619aa917e6fa7fec5b2783117))
+* release a continued pending-only stop only right after the gate's own pending hold ([82b721f](https://github.com/special-place-ai-heaven/coding-supervisor/commit/82b721f86cc22e0c17945b00be4ffb668697ae3e))
+
 ## [0.20.1](https://github.com/special-place-ai-heaven/coding-supervisor/compare/v0.20.0...v0.20.1) (2026-11-12)
 
 
