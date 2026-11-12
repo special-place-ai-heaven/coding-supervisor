@@ -1791,6 +1791,375 @@ fn pending_prompt_allows_tool_search_and_single_read_only_commands() {
     );
 }
 
+/// The project's task, then: session `pending` with an unclassified prompt, session `talk` in a
+/// discussion turn, and the task's first owner `session` after `replacement` resumed the task.
+fn three_sessions_beside_a_task() -> (Fixture, String) {
+    let f = Fixture::new();
+    let task = f.start();
+    autonomy::record_prompt(
+        &f.root,
+        &f.project,
+        &json!({"session_id":"pending","prompt_id":"p","prompt":"Look at the remote"}),
+    )
+    .unwrap();
+    let talk = autonomy::record_prompt(
+        &f.root,
+        &f.project,
+        &json!({"session_id":"talk","prompt_id":"t","prompt":"What does this do?"}),
+    )
+    .unwrap();
+    f.apply(&talk, "discussion", None, None).unwrap();
+    let resume = autonomy::record_prompt(
+        &f.root,
+        &f.project,
+        &json!({"session_id":"replacement","prompt_id":"r","prompt":"resume task"}),
+    )
+    .unwrap();
+    f.apply(&resume, "resume", Some(&task), None).unwrap();
+    (f, task)
+}
+
+/// Follow-up brief item 2 (G53): read-only shell reads seen refused under 0.19.1 run before an
+/// intent, in a discussion turn and beside another session's task; mutations stay refused.
+#[test]
+fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sessions_task() {
+    use supervisor_claude_code::adapter::{Decision, handle};
+    let (f, task) = three_sessions_beside_a_task();
+    let mut env = hook_env(&f);
+    // A `cd` into a directory of the same repository keeps the state the hooks read; one into a
+    // nested repository or out of the project would move later hook calls to another state.
+    // `sub/x` is a plain directory beside the nested repository `subx`: Bash runs `cd sub\x`
+    // as `cd subx`. Bash reads `cd #sub && ...` as a bare `cd`, which goes home.
+    // `sub\u{a0}` is a nested repository: Bash reads `cd ./sub\u{a0}` as one word, not `./sub`.
+    for dir in ["sub/x", "a b", "nested", "subx", "#sub", "sub\u{a0}"] {
+        fs::create_dir_all(f.project.join(dir)).unwrap();
+    }
+    // Plain directories of the project named as a rule would read the word if it took the
+    // characters literally, so removing that rule lets `is_dir` pass. Windows refuses `*`, `"`
+    // and `\` in a directory name, so there these cases are refused by `is_dir` as well.
+    #[cfg(unix)]
+    for dir in ["n*", "sub\"x\"", "sub\\x"] {
+        fs::create_dir_all(f.project.join(dir)).unwrap();
+    }
+    for dir in [
+        f.project.clone(),
+        f.project.join("nested"),
+        f.project.join("subx"),
+        f.project.join("sub\u{a0}"),
+    ] {
+        assert!(run_process("git", &["init", "-q"], &dir).status.success());
+    }
+    let as_session = |session: &str, id: String, tool: &str, input: Value| {
+        let mut payload = pre_tool(&f, &id, tool, input);
+        payload["session_id"] = session.into();
+        payload
+    };
+    let allowed = [
+        "git ls-remote",
+        "git ls-remote --heads origin",
+        "git ls-remote --tags --sort=version:refname origin 'v1*'",
+        "git stash list",
+        "cat Cargo.toml",
+        "which cargo",
+        "gh repo view",
+        "gh api repos/o/r/pulls --jq '.[] | .number'",
+        "gh api repos/o/r/pulls --paginate -X GET",
+        "gh api repos/{owner}/{repo}/pulls --jq '.[].number'",
+        // Only a directory word starting with `./` is safe from CDPATH.
+        "cd ./sub && git status",
+        "cd './a b' && git log -1",
+        "git log -1 --format='%h %s'",
+        "git log --grep='a&b'",
+        // Bash expands a brace only around a `,` or `..`, and a `~` only at the start of a word
+        // or after `=` or `:`; these words reach git as written.
+        "git log @{u}..HEAD",
+        "git diff stash@{0}..stash@{1}",
+        "git show HEAD~1",
+        "git log HEAD~3..HEAD",
+        "git log -- '*.rs'",
+        // Double quotes as Bash reads them: removed, their content literal and not expanded.
+        "git log --format=\"%h [%an] %s\"",
+        "git diff -- \"*.rs\"",
+        "git log --grep=\"fix?\"",
+        "cd \"./a b\" && git log -1",
+        // git gets the literal directory `~/repo`; the shell expands no `~` inside quotes.
+        "git -C \"~/repo\" log",
+        // Inside double quotes a `\` before any other character is literal: Windows paths.
+        "git -C \"E:\\x\" status",
+        "cat \"C:\\a\\b\"",
+    ];
+    let denied = [
+        "git ls-remote --upload-pack=x origin",
+        "git ls-remote origin --upload-pack=x",
+        "git ls-remote -u x origin",
+        "git ls-remote --exec=x origin",
+        "git ls-remote ext::sh",
+        "git ls-remote https://x/y",
+        "git ls-remote ../other",
+        "git ls-remote .",
+        // An unquoted glob could expand to a file named like a flag.
+        "git ls-remote origin v1*",
+        "gh api repos/o/r --jq .[]",
+        "gh api x{1..3}",
+        "gh api repos/o/r/pulls?state=open",
+        "git stash",
+        "git stash pop",
+        "gh api -X POST repos/o/r/issues",
+        "gh api repos/o/r -X POST",
+        "gh api --method=POST repos/o/r",
+        "gh api repos/o/r -f a=b",
+        "gh api repos/o/r -F a=b",
+        "gh api graphql -f query=x",
+        "gh api --hostname h x",
+        "gh api --input f x",
+        "gh api https://x/y",
+        "gh api repos/o/r extra",
+        // A glob that does not start with `-` can still expand to a file named `--output=x`.
+        "git stash list *",
+        "git log *",
+        "git diff *",
+        "git diff ?-output=x",
+        "git show *",
+        "git status *",
+        // An expanded `-C` directory can become several words and shift the subcommand.
+        "git -C * stash list",
+        "git -C * log",
+        "git -C ~/x log",
+        // Bash resolves a relative directory word without `./` through CDPATH.
+        "cd sub && git status",
+        "cd 'a b' && git log -1",
+        // `sub` exists, so these reach the rules for what follows the `cd`.
+        "cd ./sub && cd ./b && git status",
+        "cd ./sub && cd ./x",
+        "cd ./sub && cd --version",
+        "cd ./sub && git status && touch x",
+        "cd ./sub && touch x",
+        "cd ./sub && git log --grep='a&b'",
+        // `a` does not exist.
+        "cd ./a && cd ./b && git status",
+        "cd ./a && git status && touch x",
+        "cd ./a && touch x",
+        "cd ./a b && git status",
+        // Bash drops a backslash or double quote inside an unquoted word.
+        "cd ./sub\\x && git status",
+        "cd ./sub\"x\" && git status",
+        "cd #sub && git status",
+        "cd ./nested && pwd",
+        "cd .. && pwd",
+        "cd ./.. && pwd",
+        "cd ./sub/.. && pwd",
+        "cd '\\sub' && pwd",
+        "cd ./missing && pwd",
+        "cd - && pwd",
+        "cd ~ && pwd",
+        "cd ./n* && pwd",
+        "cd / && pwd",
+        "cd '' && pwd",
+        "cd $(x) && ls",
+        "cd a; ls",
+        "git log \\'; rm x; \\'",
+        "git log 'a\nb'",
+        "git branch '-D' main",
+        "cat x > y",
+        "git status | head -3",
+        // Every command the first read-only list already refused.
+        "git status; rm -rf x",
+        "git status -sb | head -3",
+        "git status && touch x",
+        "git log > out.txt",
+        "git show $(touch x)",
+        "git branch -D main",
+        "git diff --output=out.txt",
+        "touch x",
+        "./build.sh --version",
+        "tools\\run.exe --version",
+        "node --version -e x",
+        "{node,x.js} --version",
+        "node* --version",
+        "~/x --version",
+        "'./x' --version",
+        "gh pr merge 59 --merge",
+        "gh api -X DELETE repos/o/r/git/refs/heads/b",
+        "gh pr checkout 59",
+        "git worktree remove x",
+        "git -C C:/x branch -D main",
+        "git -C C:/x push",
+        "git branch newbranch",
+        "git remote add o u",
+        "npm install -g coding-supervisor",
+        // Bash passes one `-C` directory `x status y/..` (git folds `y/..` as text) and runs the
+        // command after it; split at the spaces inside the quotes this read as `git status`.
+        "git -C \"x status y/..\" push origin",
+        "git -C \"x status y/..\" clean -fdx",
+        "git -C \"x status y/..\" reset --hard",
+        "git -C \"x status y/..\" commit -am x",
+        "git -C x\\ status push",
+        // Bash splits words only at a space or a tab.
+        "cd ./sub\u{a0} && git status",
+        "git -C x\u{a0}status push",
+        "git -C x\u{b}status push",
+        "git -C x\u{3000}status push",
+        "git log \"$(id)\"",
+        "git log \"`id`\"",
+        "git log \"a\\\"b\"",
+        // A `\` that escapes `\`, `$`, a backtick or the closing `"` is refused, not interpreted.
+        "git log \"a\\\\b\"",
+        "git log \"a\\$b\"",
+        "git log \"a\\`b\"",
+        "cat \"C:\\a\\\"",
+        // One `-C` directory word `x\ status y/..`, then `push`, which is not a read.
+        "git -C \"x\\ status y/..\" push origin",
+        // A `{...}` without a `,` does not close the brace: `{x}y,z}` becomes `x}y` and `z`.
+        "git log {x}y,z}",
+        "git diff {--output=o}x,HEAD}",
+        "git ls-remote origin {x}y,--upload-pack=p}",
+        "git log \"x",
+        "git log --grep=\"a\nb\"",
+        // Bash reads an unquoted word starting with `#` and the rest of the line as a comment.
+        "git -C #x status",
+    ];
+    // Every mismatch at once, so one run shows each rule that is off.
+    let mut wrong = Vec::new();
+    for session in ["pending", "talk", "session"] {
+        for (n, command) in allowed.iter().enumerate() {
+            let payload = as_session(
+                session,
+                format!("{session}-a{n}"),
+                "Bash",
+                json!({ "command": command }),
+            );
+            let decision = handle(&payload, &mut env);
+            if decision != Decision::None {
+                wrong.push(format!(
+                    "{session}: {command} was not allowed: {decision:?}"
+                ));
+            }
+        }
+        for (n, command) in denied.iter().enumerate() {
+            let payload = as_session(
+                session,
+                format!("{session}-d{n}"),
+                "Bash",
+                json!({ "command": command }),
+            );
+            if !matches!(handle(&payload, &mut env), Decision::Deny(_)) {
+                wrong.push(format!("{session}: {command} must stay denied"));
+            }
+        }
+        let write = as_session(
+            session,
+            format!("{session}-w"),
+            "Write",
+            json!({"file_path":"src/x.rs","content":""}),
+        );
+        assert!(
+            matches!(handle(&write, &mut env), Decision::Deny(_)),
+            "{session}: Write"
+        );
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    assert!(autonomy::pending(&f.root, "pending").unwrap().is_some());
+    assert!(autonomy::discussion_turn(&f.root, "talk").unwrap());
+    assert_eq!(
+        lifecycle::active_task(&f.root).unwrap().unwrap().task_id,
+        task
+    );
+}
+
+/// G53: `--output` writes a file, and a quote or backslash inside the word does not hide it from
+/// the read-only check; a command with an unclosed quote is not read-only either.
+#[test]
+fn quoted_or_escaped_output_flags_and_unclosed_quotes_are_not_read_only() {
+    use supervisor_claude_code::adapter::{Decision, handle};
+    let f = Fixture::new();
+    f.prompt("first", "Look at the diff");
+    let mut env = hook_env(&f);
+    let allowed: Vec<&str> = [
+        "git diff '--output=x'",
+        "git diff --out'put=x'",
+        "git diff \"--output=x\"",
+        "git diff -\\-output=x",
+        // A brace list or a glob Bash expands into `--output=...`.
+        "git diff -{-output=x,-stat}",
+        "git diff --{output=x,stat}",
+        "git diff -{x,-output=y}",
+        "git diff --out*",
+        "git log 'x",
+    ]
+    .into_iter()
+    .enumerate()
+    .filter(|(n, command)| {
+        let payload = pre_tool(&f, &format!("q{n}"), "Bash", json!({ "command": command }));
+        !matches!(handle(&payload, &mut env), Decision::Deny(_))
+    })
+    .map(|(_, command)| command)
+    .collect();
+    assert!(allowed.is_empty(), "allowed before an intent: {allowed:?}");
+    assert!(autonomy::pending(&f.root, "session").unwrap().is_some());
+}
+
+/// Follow-up brief items 1 and 2 (G53): a session refused beside another session's live task is
+/// told what still runs and how a person sets up parallel work. One active task per project, so
+/// `supervisor task start --worktree` is not the way while that task is unfinished.
+#[test]
+fn a_session_locked_out_by_another_sessions_task_is_told_how_to_work_in_parallel() {
+    use supervisor_claude_code::adapter::{Decision, handle};
+    let (f, _task) = three_sessions_beside_a_task();
+    let mut env = hook_env(&f);
+    let mut write = pre_tool(
+        &f,
+        "locked-write",
+        "Write",
+        json!({"file_path":"src/x.rs","content":""}),
+    );
+    write["session_id"] = "session".into();
+    let Decision::Deny(why) = handle(&write, &mut env) else {
+        panic!("the Write of a session locked out was not denied");
+    };
+    for words in [
+        "belongs to another session",
+        "explicit user resume is required before mutation",
+        "read-only",
+        "git worktree add",
+        "own terminal",
+        "new Claude Code session",
+        // A fresh worktree carries the hooks only when the project's settings are committed.
+        "not committed",
+        "supervisor install --harness claude-code --project",
+    ] {
+        assert!(why.contains(words), "{words}: {why}");
+    }
+    let prompt = json!({"hook_event_name":"UserPromptSubmit","cwd":f.project,
+        "session_id":"newcomer","prompt_id":"n","prompt":"Implement an unrelated change"});
+    let Decision::Context { text, .. } = handle(&prompt, &mut env) else {
+        panic!("the prompt hook gave no advice");
+    };
+    for words in [
+        "has not ended",
+        "git worktree add",
+        "new Claude Code session",
+    ] {
+        assert!(text.contains(words), "{words}: {text}");
+    }
+}
+
+/// G57: the `enforcement` sentence of an `intent_apply` answer does not claim that `audit` and
+/// `off` refuse nothing: the gate's state and level files and the action policy hold at every level.
+#[test]
+fn the_enforcement_sentence_names_what_every_level_denies() {
+    let text = autonomy::INTENT_ENFORCEMENT;
+    for words in [
+        "at every level",
+        "gate's own state and level files",
+        "configured action policy",
+        // Only the writes the guard recognises: it matches edit tools and command text.
+        "the guard recognises",
+        "shell or Terminal Commander commands that name those paths",
+    ] {
+        assert!(text.contains(words), "{words}: {text}");
+    }
+}
+
 #[test]
 fn pending_prompt_without_a_task_allows_read_only_commands() {
     use supervisor_claude_code::adapter::{Decision, handle};

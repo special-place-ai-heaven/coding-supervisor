@@ -462,7 +462,7 @@ fn simple_words(payload: &Value) -> Option<Vec<&str>> {
     let command = payload["tool_input"]["command"]
         .as_str()
         .unwrap_or_default();
-    if command.contains([';', '&', '|', '<', '>', '$', '`', '(', ')', '\n', '\r']) {
+    if command.contains(SHELL_SYNTAX) {
         return None;
     }
     let words: Vec<&str> = command.split_whitespace().collect();
@@ -493,12 +493,155 @@ fn limit_exempt(payload: &Value) -> bool {
         || simple_words(payload).is_some_and(|words| supervisor_read_only(&words))
 }
 
-/// One read-only shell command with no shell syntax, usable before the prompt is classified.
-/// It still passes the gate-state guard and the action policy, and is observed like any run.
+/// One read-only shell command with no shell syntax, usable before the prompt is classified,
+/// optionally after `cd ./<dir> &&` into the same project ([`same_project`], G53). It still
+/// passes the gate-state guard and the action policy, and is observed like any run.
 fn read_only_command(payload: &Value) -> bool {
-    let Some(mut words) = simple_words(payload) else {
+    if text(payload, "tool_name") != Some("Bash") {
+        return false;
+    }
+    let command = payload["tool_input"]["command"]
+        .as_str()
+        .unwrap_or_default();
+    if let Some((cd, rest)) = command.split_once(" && ") {
+        return !rest.contains('&')
+            && shell_words(cd).is_some_and(|w| {
+                matches!(w.as_slice(), [(c, false), (dir, false)] if c == "cd" && same_project(payload, dir))
+            })
+            && shell_words(rest)
+                .is_some_and(|w| w.first().is_none_or(|(c, _)| c != "cd") && read_only_words(&w));
+    }
+    shell_words(command).is_some_and(|w| read_only_words(&w))
+}
+
+/// G53: whether `cd <dir>` leaves the shell in the project the hooks judge now. Later hook calls
+/// take their state from the shell's directory, so a nested repository, a parent or a directory
+/// outside a repository would move them to another state. Only an existing directory going
+/// down, written `./<dir>`, because Bash looks a relative word without `./` or `../` up in
+/// CDPATH first. `dir` is the word as Bash passes it ([`shell_words`] refuses an unquoted `\` and
+/// removes quotes, so `cd ./sub"x"` is judged at `./subx`); a `\` or `"` left in it came from
+/// single quotes and is refused, as are a drive letter and a `..` (Bash drops `link/..` as text,
+/// the file system follows the link), which resolve unlike here; an absolute directory is refused.
+fn same_project(payload: &Value, dir: &str) -> bool {
+    let Some(cwd) = text(payload, "cwd").map(Path::new) else {
         return false;
     };
+    if !dir.starts_with("./")
+        || dir.contains([':', '\\', '"'])
+        || Path::new(dir)
+            .components()
+            .any(|c| c == Component::ParentDir)
+    {
+        return false;
+    }
+    let target = cwd.join(dir);
+    target.is_dir() && location::canonical_project(&target) == location::canonical_project(cwd)
+}
+
+/// Shell syntax that makes a command more than one plain command.
+const SHELL_SYNTAX: [char; 11] = [';', '&', '|', '<', '>', '$', '`', '(', ')', '\n', '\r'];
+
+/// G53: the words Bash passes for `command`, each with whether Bash may expand it into other
+/// words ([`expands`], from the characters outside quotes only). Quotes are removed as Bash
+/// removes them: inside `'` everything but a control character is literal; inside `"` also, but
+/// `$` and a backtick are refused, and a `\` is literal unless it comes before `$`, a backtick,
+/// `"`, `\` or a line break (refused, not interpreted). Outside quotes words end at a space or a tab only, and
+/// [`SHELL_SYNTAX`], `\`, any other whitespace or control character and a word starting with
+/// `#` (a comment) are refused; an unclosed quote is refused. A tab inside quotes is refused too.
+fn shell_words(command: &str) -> Option<Vec<(String, bool)>> {
+    // Each word as Bash passes it, beside the characters of it that stood outside quotes.
+    let (mut words, mut word) = (Vec::new(), None::<(String, String)>);
+    let mut quote = None::<char>;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_control() && (c != '\t' || quote.is_some()) {
+            return None;
+        }
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            // Bash keeps a `\` inside `"` unless it escapes one of these; that escape is refused.
+            (Some('"'), '\\')
+                if chars
+                    .peek()
+                    .is_none_or(|n| matches!(n, '$' | '`' | '"' | '\\' | '\n')) =>
+            {
+                return None;
+            }
+            (Some('"'), '$' | '`') => return None,
+            (Some(_), _) => word.get_or_insert_default().0.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                word.get_or_insert_default();
+            }
+            (None, ' ' | '\t') => {
+                if let Some((text, bare)) = word.take() {
+                    words.push((text, expands(&bare)));
+                }
+            }
+            (None, '#') if word.is_none() => return None,
+            (None, '\\') => return None,
+            (None, _) if SHELL_SYNTAX.contains(&c) || c.is_whitespace() => return None,
+            (None, _) => {
+                let w = word.get_or_insert_default();
+                w.0.push(c);
+                w.1.push(c);
+            }
+        }
+    }
+    if let Some((text, bare)) = word {
+        words.push((text, expands(&bare)));
+    }
+    quote.is_none().then_some(words)
+}
+
+/// Whether Bash may turn these unquoted characters of a word into other words: a glob, a `~` at
+/// the start or after `=` or `:`, a `,` anywhere after a `{` (a `}` between does not close a
+/// brace without a `,`: Bash reads `{x}y,z}` as `x}y z`), or a `..` inside an open brace, an
+/// unclosed one counting (`{owner}`, `@{u}..HEAD` and `HEAD~1` stay as written).
+fn expands(bare: &str) -> bool {
+    if bare.contains(['*', '?', '['])
+        || bare.starts_with('~')
+        || bare.contains("=~")
+        || bare.contains(":~")
+        || bare.find('{').is_some_and(|at| bare[at..].contains(','))
+    {
+        return true;
+    }
+    let (mut depth, mut dot) = (0usize, false);
+    for c in bare.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            '.' if depth > 0 && dot => return true,
+            _ => {}
+        }
+        dot = c == '.';
+    }
+    false
+}
+
+/// Whether the words of one command are a read-only command of the list.
+fn read_only_words(words: &[(String, bool)]) -> bool {
+    // `--output` writes a file; the word is unquoted, so a quote does not hide it, and a brace
+    // list or a glob starting with `-` could expand into it.
+    if words.iter().any(|(w, e)| {
+        w.replace(['"', '\\'], "").starts_with("--output")
+            || (*e && (w.contains('{') || w.starts_with('-')))
+    }) {
+        return false;
+    }
+    let expanded = words.iter().any(|(_, e)| *e);
+    // An expanded word after the subcommand (past `git -C <dir>`), for the git reads below.
+    let c_dir = matches!(words, [(g, _), (c, _), ..] if g == "git" && c == "-C");
+    // An expanded `-C` directory can become several words and shift the subcommand.
+    if c_dir && words.get(2).is_some_and(|(_, e)| *e) {
+        return false;
+    }
+    let expanded_args = words
+        .iter()
+        .skip(if c_dir { 4 } else { 2 })
+        .any(|(_, e)| *e);
+    let mut words: Vec<&str> = words.iter().map(|(w, _)| w.as_str()).collect();
     if supervisor_read_only(&words) {
         return true;
     }
@@ -516,6 +659,19 @@ fn read_only_command(payload: &Value) -> bool {
     {
         return true;
     }
+    // G53: an expanded word could become a flag (a file named `--upload-pack=x`, or
+    // `--output=x`, which these git reads take and which writes the file), so these take only
+    // words Bash passes as written.
+    match words.as_slice() {
+        ["git", "ls-remote", args @ ..] => return !expanded && ls_remote(args),
+        ["gh", "api", args @ ..] => return !expanded && gh_api_get(args),
+        ["git", "status" | "log" | "diff" | "show", ..] | ["git", "stash", "list", ..]
+            if expanded_args =>
+        {
+            return false;
+        }
+        _ => {}
+    }
     matches!(
         words.as_slice(),
         ["git", "status" | "log" | "diff" | "show" | "rev-parse", ..]
@@ -523,13 +679,76 @@ fn read_only_command(payload: &Value) -> bool {
             | ["git", "worktree", "list", ..]
             | ["git", "remote"]
             | ["git", "remote", "-v"]
+            | ["git", "stash", "list", ..]
             // G40: read-only views of the forge and the npm registry.
             | ["gh", "pr" | "issue" | "release" | "run", "view" | "list" | "checks" | "diff" | "status", ..]
+            | ["gh", "repo", "view", ..]
             | ["npm", "view" | "ls" | "list", ..]
-            | ["ls", ..]
+            | ["ls" | "cat" | "which", ..]
             | ["pwd"]
     ) || matches!(words.as_slice(), ["git", "branch", flags @ ..]
         if flags.iter().all(|f| matches!(*f, "-a" | "-r" | "-v" | "-vv" | "--all" | "--remotes" | "--list" | "--verbose")))
+}
+
+/// G53: `git ls-remote` that only lists refs: listing flags anywhere, at most one plain word,
+/// which git reads as a remote name or else as a relative path to a repository (a URL, a `.`
+/// start or any other character is refused), then ref patterns. Git reads a flag after that word
+/// as a ref pattern; any flag outside the listing ones is refused wherever it stands,
+/// `--upload-pack`, `-u` and `--exec` (a program) among them.
+fn ls_remote(args: &[&str]) -> bool {
+    let mut remote = false;
+    args.iter().all(|arg| {
+        if arg.starts_with('-') {
+            matches!(
+                *arg,
+                "--heads"
+                    | "--tags"
+                    | "--refs"
+                    | "-h"
+                    | "-t"
+                    | "-q"
+                    | "--quiet"
+                    | "--symref"
+                    | "--get-url"
+            ) || arg.strip_prefix("--sort=").is_some_and(|key| {
+                !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_'))
+            })
+        } else if !remote {
+            remote = true;
+            !arg.starts_with('.')
+                && arg
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        } else {
+            true
+        }
+    })
+}
+
+/// G53: `gh api <endpoint>` as a GET that only filters its output. A field or input makes it a
+/// POST and `graphql` is one, so only `--jq`/`-q` with its value, `--paginate`, `--slurp` and
+/// `-X GET`/`--method GET` are taken; a host, header or any other flag is refused.
+fn gh_api_get(args: &[&str]) -> bool {
+    let (mut endpoint, mut args) = (None, args.iter());
+    while let Some(arg) = args.next() {
+        match *arg {
+            "--jq" | "-q" if args.next().is_some() => {}
+            "-X" | "--method" if args.next() == Some(&"GET") => {}
+            "--paginate" | "--slurp" => {}
+            word if !word.starts_with('-') && endpoint.is_none() => endpoint = Some(word),
+            _ => return false,
+        }
+    }
+    endpoint.is_some_and(|e| {
+        e != "graphql"
+            && !e.contains("..")
+            && e.chars().all(|c| {
+                c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '.' | '{' | '}' | '-')
+            })
+    })
 }
 
 /// `supervisor intent apply ...` run alone from Bash: the MCP proposal for a session that has no
@@ -559,6 +778,12 @@ fn proposal_command(payload: &Value) -> bool {
     }
     !quoted
 }
+
+/// G53: what a session kept out by another session's task can still do, and how a person sets
+/// up parallel work. A project has one active task, so a second task needs its own worktree,
+/// whose gate state is its own; a fresh worktree carries the project's hooks only when their
+/// settings are committed.
+const PARALLEL_WORK: &str = "Read-only tools and read-only shell commands still run. To work in parallel, a person creates a separate git worktree in their own terminal (`git worktree add <path> -b <branch>`) and opens a new Claude Code session there, which has its own gate state; when the project's hook settings are not committed, the person first runs `supervisor install --harness claude-code --project <path>` in that worktree, or the new session may run without the gate's hooks. An agent cannot create the worktree (`git worktree add` is not read-only), and `supervisor task start --worktree` applies only after the active task ends, because a project has one active task.";
 
 /// Ends the refusal for a Terminal Commander job whose exit is not recorded yet (G27).
 const PENDING_JOB: &str = " after it ends to record its exit";
@@ -1085,7 +1310,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     // ends the block, and the cancel is for a session known to be closed.
                     call["action"] = "discussion".into();
                     format!(
-                        "The active task {} belongs to another session that has not ended, so it may be live and stays protected; continue, start and cancel are refused from this one. If the user asked to resume that task, send \"action\":\"resume\". Otherwise call intent_apply {call} and tell the user that the task is protected while that session may be running and, only if that session is closed, {}.",
+                        "The active task {} belongs to another session that has not ended, so it may be live and stays protected; continue, start and cancel are refused from this one. If the user asked to resume that task, send \"action\":\"resume\". Otherwise call intent_apply {call} and tell the user that the task is protected while that session may be running and, only if that session is closed, {}. {PARALLEL_WORK}",
                         intent["task_id"].as_str().unwrap_or_default(),
                         crate::autonomy::person_cancel(
                             &intent,
@@ -1176,7 +1401,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     Err(_) => return adapter_error(payload, env, &root, "task lifecycle state unavailable"),
                     Ok(Some(active)) => match crate::autonomy::owns_session(&active.dir, text(payload, "session_id").unwrap_or_default()) {
                         Ok(true) => {},
-                        Ok(false) => return Decision::Deny("GATE: this task belongs to another session; explicit user resume is required before mutation".to_owned()),
+                        Ok(false) => return Decision::Deny(format!("GATE: this task belongs to another session; explicit user resume is required before mutation. {PARALLEL_WORK}")),
                         Err(_) => return adapter_error(payload, env, &root, "task session ownership unavailable"),
                     }
                 }
@@ -1300,7 +1525,7 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                 if !crate::autonomy::owns_session(dir, text(payload, "session_id").unwrap_or_default())?
                 {
                     return Ok(if event == "PreToolUse" && !inspection(payload) {
-                        Decision::Deny("GATE: task ownership changed; explicit user resume is required before mutation".to_owned()).to_json().unwrap_or(Value::Null)
+                        Decision::Deny(format!("GATE: task ownership changed; explicit user resume is required before mutation. {PARALLEL_WORK}")).to_json().unwrap_or(Value::Null)
                     } else {
                         Value::Null
                     });
@@ -3915,6 +4140,82 @@ mod fail_closed_tests {
             blocking_words("x: No such file or directory; Missing field; NOT FOUND"),
             "x: no file or directory; absent field; absent"
         );
+    }
+}
+
+#[cfg(test)]
+mod shell_words_tests {
+    use super::{exempt_from_failing_closed, inspection, shell_words};
+
+    /// G53: no caller of the read-only checks takes a write that splitting at the spaces
+    /// inside a double-quoted `-C` directory read as `git status` (it did on main).
+    #[test]
+    fn a_quoted_c_directory_does_not_hide_a_write_from_any_caller() {
+        for command in [
+            "git -C \"x status y/..\" push origin",
+            "git -C x\u{a0}status push",
+        ] {
+            let payload = serde_json::json!({"tool_name":"Bash","tool_input":{"command":command}});
+            assert!(!exempt_from_failing_closed(&payload), "{command}");
+            assert!(!inspection(&payload), "{command}");
+        }
+    }
+
+    /// G53: words as Bash passes them, with whether Bash may expand them.
+    #[test]
+    fn quotes_are_read_as_bash_reads_them() {
+        let words = shell_words;
+        let w = |t: &str, e: bool| (t.to_owned(), e);
+        assert_eq!(words("\"*.rs\""), Some(vec![w("*.rs", false)]));
+        assert_eq!(
+            words("\"a'b\" 'a\"b'"),
+            Some(vec![w("a'b", false), w("a\"b", false)])
+        );
+        assert_eq!(words("a\"b\"*"), Some(vec![w("ab*", true)]));
+        assert_eq!(
+            words("\"\" x\t\"a b\""),
+            Some(vec![w("", false), w("x", false), w("a b", false)])
+        );
+        assert_eq!(
+            words("x#y \"#z\""),
+            Some(vec![w("x#y", false), w("#z", false)])
+        );
+        assert_eq!(
+            words("-C \"x\\ status y/..\" push"),
+            Some(vec![
+                w("-C", false),
+                w("x\\ status y/..", false),
+                w("push", false)
+            ])
+        );
+        assert_eq!(words("\"C:\\a\\b\""), Some(vec![w("C:\\a\\b", false)]));
+        // Bash: `{x}y,z}` is `x}y z`; `{a}1..3}`, `{x}..{y}` and `a,{b}` stay as written.
+        assert_eq!(words("{x}y,z}"), Some(vec![w("{x}y,z}", true)]));
+        for kept in ["{a}1..3}", "{x}..{y}", "a,{b}", "@{u}..HEAD", "{\"a,b\"}"] {
+            assert!(!words(kept).unwrap()[0].1, "{kept}");
+        }
+        for refused in [
+            "\"x",
+            "'x",
+            "\"$x\"",
+            "\"`x`\"",
+            "a\\ b",
+            "a\u{a0}b",
+            "\"a\nb\"",
+            "#x",
+            "a;b",
+            "\"a\tb\"",
+            "'a\tb'",
+            "\"a\\\\b\"",
+            "\"a\\\"b\"",
+            "\"a\\$b\"",
+            "\"a\\`b\"",
+            "\"a\\\nb\"",
+            "\"C:\\a\\\"",
+            "\"a\\",
+        ] {
+            assert_eq!(words(refused), None, "{refused:?}");
+        }
     }
 }
 

@@ -1,0 +1,138 @@
+{
+  "base_sha": "c4ef9bca096dc3d08ef33a3c87e1e86eaa35d2c9",
+  "bundle_version": 1,
+  "candidate": {
+    "base_commit": "c4ef9bca096dc3d08ef33a3c87e1e86eaa35d2c9",
+    "dirty_digest": "83abbfae00dd8b3bb222f3dc25f3d050bee418b83bdd63b6c5d8dd8370d9e8a0"
+  },
+  "chain_head": "1196a9f9a984900281394d6744bf1f845cecdd969e488ee29a3f109cfd991fcb",
+  "changed_paths": [
+    "adapters/claude-code/src/adapter.rs",
+    "adapters/claude-code/src/autonomy.rs",
+    "adapters/claude-code/src/lifecycle.rs",
+    "adapters/claude-code/src/observation.rs",
+    "adapters/claude-code/src/worktree.rs",
+    "adapters/claude-code/tests/autonomy.rs",
+    "adapters/claude-code/tests/execution_context.rs",
+    "adapters/claude-code/tests/lifecycle.rs",
+    "adapters/claude-code/tests/limits.rs",
+    "adapters/mcp/src/lib.rs",
+    "adapters/mcp/tests/autonomy.rs",
+    "cli/src/main.rs",
+    "cli/tests/lifecycle.rs",
+    "cli/tests/worktree_create.rs",
+    "skills/supervisor-chair.SKILL.template.md"
+  ],
+  "contract": "{\"approval\":{\"at\":1794465869,\"by\":null,\"via\":\"agent-proposal\"},\"base_sha\":\"c4ef9bca096dc3d08ef33a3c87e1e86eaa35d2c9\",\"criteria\":[{\"check\":\"autonomy_tests\",\"command\":\"cargo test -p supervisor-claude-code --test autonomy\",\"id\":\"C1\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"cargo fmt --all -- --check\",\"id\":\"AUTO_FMT\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"cargo clippy --workspace --all-targets -- -D warnings\",\"id\":\"AUTO_LINT\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":[\"cargo test --workspace\",\"cargo nextest run --workspace\"],\"id\":\"AUTO_TEST\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"npm --prefix npm run test\",\"id\":\"AUTO_NPM_TEST_NPM\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"git diff --check\",\"id\":\"AUTO_DIFF\",\"mandatory\":true}],\"event_id\":\"autonomy-f58114689f8bf017cd6e86db2b698e0cf37ac19995780f2fe25c92f09a280f85\",\"forbidden_effects\":[],\"goal\":\"Verify the finished change: more read-only shell commands allowed before a task exists, read the way Bash reads them, corrected advice texts, a per-session intent comparison, more harmless environment variables on check runs, and safer task cleanup\",\"id\":\"session-friction\",\"isolation\":\"none\",\"max_repair_rounds\":3,\"schema_version\":2,\"scope\":[\"adapters/\",\"cli/\",\"docs/\",\"skills/\",\"CLAUDE.md\",\"README.md\"]}",
+  "exported_at": "2026-11-12T08:50:40.000Z",
+  "exported_contract_sha256": "ba25e558eb9e761b5aba61da97f192e67987188bfa3dc3ba1376debdda36c9d3",
+  "gate_state": "completed",
+  "receipts": [
+    {
+      "candidate": {
+        "base_commit": "c4ef9bca096dc3d08ef33a3c87e1e86eaa35d2c9",
+        "dirty_digest": "83abbfae00dd8b3bb222f3dc25f3d050bee418b83bdd63b6c5d8dd8370d9e8a0"
+      },
+      "claim_supported": true,
+      "command": "cargo test -p supervisor-claude-code --test autonomy",
+      "criterion": "C1",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794465944,
+      "output_ref": "observed:task-18e7393375c8db24-6054-0:toolu_0114FuSmU4TT1HW6BgkQhGVZ",
+      "provenance": "observed",
+      "started_at": 1794465875
+    },
+    {
+      "candidate": {
+        "base_commit": "c4ef9bca096dc3d08ef33a3c87e1e86eaa35d2c9",
+        "dirty_digest": "83abbfae00dd8b3bb222f3dc25f3d050bee418b83bdd63b6c5d8dd8370d9e8a0"
+      },
+      "claim_supported": true,
+      "command": "cargo fmt --all -- --check",
+      "criterion": "AUTO_FMT",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794465964,
+      "output_ref": "observed:task-18e7393375c8db24-6054-0:toolu_01NTTcUVFB113dGgHtKvwsEP",
+      "provenance": "observed",
+      "started_at": 1794465955
+    },
+    {
+      "candidate": {
+        "base_commit": "c4ef9bca096dc3d08ef33a3c87e1e86eaa35d2c9",
+        "dirty_digest": "83abbfae00dd8b3bb222f3dc25f3d050bee418b83bdd63b6c5d8dd8370d9e8a0"
+      },
+      "claim_supported": true,
+      "command": "cargo clippy --workspace --all-targets -- -D warnings",
+      "criterion": "AUTO_LINT",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794465988,
+      "output_ref": "observed:task-18e7393375c8db24-6054-0:toolu_01KBP9FzpTYNsctQZzpsAxy7",
+      "provenance": "observed",
+      "started_at": 1794465968
+    },
+    {
+      "candidate": {
+        "base_commit": "c4ef9bca096dc3d08ef33a3c87e1e86eaa35d2c9",
+        "dirty_digest": "83abbfae00dd8b3bb222f3dc25f3d050bee418b83bdd63b6c5d8dd8370d9e8a0"
+      },
+      "claim_supported": true,
+      "command": "npm --prefix npm run test",
+      "criterion": "AUTO_NPM_TEST_NPM",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794471543,
+      "output_ref": "observed:task-18e7393375c8db24-6054-0:toolu_018qU1v8w6y8msHWF3X9Mcwr",
+      "provenance": "observed",
+      "started_at": 1794471530
+    },
+    {
+      "candidate": {
+        "base_commit": "c4ef9bca096dc3d08ef33a3c87e1e86eaa35d2c9",
+        "dirty_digest": "83abbfae00dd8b3bb222f3dc25f3d050bee418b83bdd63b6c5d8dd8370d9e8a0"
+      },
+      "claim_supported": true,
+      "command": "git diff --check",
+      "criterion": "AUTO_DIFF",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794471561,
+      "output_ref": "observed:task-18e7393375c8db24-6054-0:toolu_01Ad3VKyoRsTDaRNgQAjDucQ",
+      "provenance": "observed",
+      "started_at": 1794471553
+    },
+    {
+      "candidate": {
+        "base_commit": "c4ef9bca096dc3d08ef33a3c87e1e86eaa35d2c9",
+        "dirty_digest": "83abbfae00dd8b3bb222f3dc25f3d050bee418b83bdd63b6c5d8dd8370d9e8a0"
+      },
+      "claim_supported": true,
+      "command": "cargo test --workspace",
+      "criterion": "AUTO_TEST",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794473409,
+      "output_ref": "observed:task-18e7393375c8db24-6054-0:toolu_01SgZ3aE8iWQ3HpBCgPVCT7B",
+      "provenance": "observed",
+      "started_at": 1794471609
+    }
+  ],
+  "repository": {
+    "root_commits": [
+      "a447f728ba58c655393a75fe16af4a1456cb5a04"
+    ]
+  },
+  "reviews": [],
+  "signature": {
+    "body_sha256": "cf5c1f63a1e4944dffa3ca5cb275e77a142a8ff8caecb562a7eda3ae0ba66a19",
+    "key_id": "56fefcdc588ccb5b",
+    "signature": "7dfeca850b627825739b8cc7d4e4c9dd6d5e6eb3a08569281999649d6e1774257dca97d3286034b010c1b9e01077f24833623fc5c96a00a8abdcf64ae56e9601",
+    "statement": "coding-supervisor receipt bundle v2",
+    "storage": "windows-credential-manager"
+  },
+  "stored_contract_sha256": "780c287106a088f9173dc0bedb5b1311957eefb85b80f92030c9800cc7083f11",
+  "task_id": "task-18e7393375c8db24-6054-0",
+  "tree": "7d4c61c0a8dc0ba9dec988e8bc83ac071d8471c3"
+}

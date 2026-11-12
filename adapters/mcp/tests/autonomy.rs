@@ -61,8 +61,14 @@ fn caller_intent_is_labeled_and_discussion_leaves_project_inactive() {
         }),
     );
     assert_eq!(result["action"], "discussion");
-    assert_eq!(result["mode"], "advisory");
-    assert_eq!(result["answer_authority"], "advisory");
+    // G57: the answer records the proposal; whether mutations are refused is the hooks' level.
+    assert!(result.get("mode").is_none(), "{result}");
+    assert_eq!(result["answer_authority"], "proposal_recorded");
+    let enforcement = result["enforcement"].as_str().unwrap_or_default();
+    assert!(
+        enforcement.contains("enforce or strict") && enforcement.contains("supervisor status"),
+        "{result}"
+    );
     assert!(lifecycle::active_task(s.state_dir()).unwrap().is_none());
 }
 

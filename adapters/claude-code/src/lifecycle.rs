@@ -583,6 +583,22 @@ pub fn with_task(
                         .flatten()
                         .and_then(|v| v["canonical_worktree"].as_str().map(str::to_owned))
                         .unwrap_or_else(|| "<project>".to_owned());
+                    // G56: `rebind` refuses a prompt-managed task; a resume of the task's own
+                    // source binds it (a hook prompt cannot resume a caller-asserted task).
+                    if crate::autonomy::is_autonomous_task(&active.dir)? {
+                        let id = &active.task_id;
+                        return Err(
+                            if crate::autonomy::requires_observed_completion(&active.dir)? {
+                                format!(
+                                    "session belongs to an earlier task; the active task {id} is prompt-managed, so the user's direct prompt to resume it (intent_apply action resume for task {id}) binds this session to it"
+                                )
+                            } else {
+                                format!(
+                                    "session belongs to an earlier task; the active task {id} is prompt-managed through caller-asserted intent, which a hook-observed prompt cannot resume: in a session whose prompts the gate's hooks do not record, a caller-asserted resume (intent_record with the user's resume prompt, then intent_apply action resume for task {id}) binds that session to it; otherwise a person ends the task with `supervisor task cancel --project \"{project}\" --task {id} --reason \"<why>\"`"
+                                )
+                            },
+                        );
+                    }
                     return Err(format!(
                         "session belongs to an earlier task; a person runs `supervisor task rebind --project \"{project}\" --task {} --session {session}` from their own terminal before this session continues",
                         active.task_id

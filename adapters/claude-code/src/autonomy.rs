@@ -771,9 +771,17 @@ pub(crate) fn locked_intent_authority(
         }
         _ => IntentAuthority::Actionable,
     };
+    // G54: only what this session's authority is read from, so another session's prompt landing
+    // between the hook's two looks does not count as a change of this session's intent.
+    let own = json!([
+        store["latest"][session],
+        current,
+        store["registration_pending"][session],
+        store["registration_pending"]["*"]
+    ]);
     Ok((
         authority,
-        crate::sha256::hex(crate::chain::canonical(&store).as_bytes()),
+        crate::sha256::hex(crate::chain::canonical(&own).as_bytes()),
     ))
 }
 
@@ -1258,6 +1266,10 @@ fn within(path: &str, allowed: &str) -> bool {
         path == allowed
     }
 }
+
+/// G57: what an `intent_apply` answer (MCP or `supervisor intent apply`) means, true on every
+/// harness: the answer only records the proposal; refusing is the hooks' job, at their level.
+pub const INTENT_ENFORCEMENT: &str = "this answer only records the proposal and refuses nothing; where the gate's Claude Code hooks are installed at enforce or strict, they refuse mutation and delegation without an accepted intent and a stop without the contract's evidence, and strict also refuses edits outside the contract's scope; at audit they report instead of refusing, at off they judge nothing, and a harness without those hooks refuses nothing; at every level the hooks still deny the writes to the gate's own state and level files that the guard recognises (edit tools, and shell or Terminal Commander commands that name those paths) and calls the configured action policy forbids; `supervisor status` shows the effective level";
 
 /// G34: the shape every refusal for a malformed contract shows, so one refusal is enough.
 pub const MINIMAL_CONTRACT: &str = r#"{"id":"<short-slug>","goal":"<the request>","scope":["<path>/"],"criteria":<required_criteria>,"forbidden_effects":[],"max_repair_rounds":3}"#;
@@ -2127,6 +2139,55 @@ mod registration_repair_tests {
         );
         assert!(pending(&root, "other-session").is_err());
         propose(&root, &project, &json!({"event_id":current["event_id"],"nonce":current["nonce"],"prompt_hash":current["prompt_hash"],"action":"discussion"})).unwrap();
+        let _ = fs::remove_dir_all(project);
+    }
+
+    /// G54 (SymForge report item 14): another session's prompt landing between the hook's two
+    /// looks at the intent store does not change this session's intent.
+    #[test]
+    fn a_prompt_of_another_session_leaves_this_sessions_intent_fingerprint_unchanged() {
+        let project = std::env::temp_dir().join(format!(
+            "supervisor-intent-fingerprint-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&project).unwrap();
+        let root = project.join("state");
+        let fingerprint = |session| intent_authority(&root, session).unwrap().1;
+        let first = record_prompt(
+            &root,
+            &project,
+            &json!({"session_id":"a","prompt_id":"a1","prompt":"Explain the layout"}),
+        )
+        .unwrap();
+        propose(&root, &project, &json!({"event_id":first["event_id"],"nonce":first["nonce"],"prompt_hash":first["prompt_hash"],"action":"discussion"})).unwrap();
+        let before = fingerprint("a");
+        let other = record_prompt(
+            &root,
+            &project,
+            &json!({"session_id":"b","prompt_id":"b1","prompt":"Explain the tests"}),
+        )
+        .unwrap();
+        assert_eq!(fingerprint("a"), before, "a prompt of b changed a's intent");
+        propose(&root, &project, &json!({"event_id":other["event_id"],"nonce":other["nonce"],"prompt_hash":other["prompt_hash"],"action":"discussion"})).unwrap();
+        assert_eq!(fingerprint("a"), before, "b's proposal changed a's intent");
+        let next = record_prompt(
+            &root,
+            &project,
+            &json!({"session_id":"a","prompt_id":"a2","prompt":"Explain the build"}),
+        )
+        .unwrap();
+        let recorded = fingerprint("a");
+        assert_ne!(
+            recorded, before,
+            "a's own new prompt left its intent unchanged"
+        );
+        propose(&root, &project, &json!({"event_id":next["event_id"],"nonce":next["nonce"],"prompt_hash":next["prompt_hash"],"action":"discussion"})).unwrap();
+        assert_ne!(
+            fingerprint("a"),
+            recorded,
+            "a's own proposal left its intent unchanged"
+        );
         let _ = fs::remove_dir_all(project);
     }
 }

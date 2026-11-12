@@ -904,6 +904,42 @@ fn cleanup_removes_a_worktree_whose_marked_file_is_absent() {
     assert!(!listed(&f));
 }
 
+/// G56: git names a file whose name is not UTF-8 by bytes that do not decode; such a marked file
+/// still holds its hidden edit, so cleanup refuses as for any marked file.
+#[cfg(unix)]
+#[test]
+fn cleanup_refuses_a_marked_file_whose_name_is_not_utf8() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let f = Fixture::new("wt-clean-marked-not-utf8");
+    let name = OsStr::from_bytes(b"src/bad\xff.txt");
+    fs::write(f.project.join(name), "one\n").unwrap();
+    f.commit("a file whose name is not UTF-8");
+    let task = start(&f)["task_id"].as_str().unwrap().to_owned();
+    deactivate(&f, &task);
+    let marked = f
+        .command("git")
+        .arg("-C")
+        .arg(wt(&f))
+        .args(["update-index", "--skip-worktree", "--"])
+        .arg(name)
+        .output()
+        .unwrap();
+    assert!(marked.status.success(), "{marked:?}");
+    fs::write(wt(&f).join(name), "hidden edit\n").unwrap();
+    let out = cleanup(&f, &task);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("holds 1 files marked"),
+        "{out:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(wt(&f).join(name)).unwrap(),
+        "hidden edit\n"
+    );
+    assert!(listed(&f));
+}
+
 #[test]
 fn cleanup_refuses_committed_work_without_a_receipt() {
     let f = Fixture::new("wt-clean-unreceipted");

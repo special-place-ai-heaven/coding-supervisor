@@ -22,7 +22,12 @@ source changes need the full check floor; hooks stay fail-closed for mutation.
    `git ls-remote`, `which`, `cat`, `gh repo view`. Also on the other-session path, where the
    refusal should tell the session to start in a worktree. Seen refused under 0.19.1 in a
    discussion turn: `git stash list`, `gh api ... --jq ...`, and any `cd X && git ...` compound of
-   read-only commands.
+   read-only commands. Built on branch `fix/session-friction` (2026-11-12, ledger G53, not
+   merged): all of these run (`cd X &&` only with X relative, without `..`, `\` or `"`, not
+   starting with `#`, inside the same project), and the other-session refusal names a worktree a
+   person creates with a new session there. Pipes into readers (`git status | head`) stay refused. Left open: after an accepted
+   intent a plain `cd` into another project still moves later hook calls to a state with no
+   contract.
 3. (Done with approved change 1, owner's condition of 2026-11-10.)
 4. Acceptance line: the brief's item on how a completion is stated. Only the name survives; the
    follow-up brief itself is needed.
@@ -48,8 +53,13 @@ source changes need the full check floor; hooks stay fail-closed for mutation.
 - 11: same as pending-job answer above.
 - 13, "advisory" labels: `intent_apply` answers say `mode: advisory`,
   `answer_authority: advisory` while the hooks enforce; agents read it as optional. Wording only.
+  Built on branch `fix/session-friction` (G57, not merged): `answer_authority:
+  proposal_recorded` plus an `enforcement` sentence; MCP `intent_apply` drops `mode`.
 - 14, a teammate's message arriving mid-turn is treated as a changed prompt: "GATE: current
   prompt intent changed; retry before stopping". Only `<task-notification>` is exempt today.
+  Part built on branch `fix/session-friction` (G54, not merged): another session's prompt no
+  longer trips the check. Still open: a teammate message that reaches this session's own prompt
+  hook; exempting it needs its payload captured first.
 
 Fixed and merged, for reference: 1 dead-session lock (#73; a crash or kill still needs a resume
 or the person's `supervisor task cancel`), 3 inherited dirty files (#94, G48), 7 Stop gate in
@@ -61,10 +71,14 @@ sub-agents with an unchanged tree (#78), 9 harmless environment variables (#83),
 - CI has no job timeout: a Windows run of
   `concurrent_updates_serialize_without_lost_journal_lines` once hung 35 minutes until cancelled
   (PR #79), then passed on re-run.
-- Owner decisions still outstanding from #83 and #79: built-in versus per-project list of
-  harmless environment variables; whether thread-count and colour variables belong on it; the
-  sentence added to `CLAUDE.md` principle 2; other skills and web fetch staying refused before an
-  intent.
+- Owner decisions still outstanding from #83 and #79: the sentence added to `CLAUDE.md`
+  principle 2; other skills and web fetch staying refused before an intent. (The harmless
+  variable list was decided on 2026-11-11, below, and built on branch `fix/session-friction`,
+  G55.)
+- Plan of 2026-11-12 for the friction items, not built yet: the acceptance line at a completing
+  Stop (follow-up item 4), the pending-job Stop that spends no refusal (follow-up item 5), and
+  Workflow launches and teammate messages (SymForge items 6 and 14), which need a captured
+  payload first. Also left: the unix-only cleanup test of G56 has not run yet; the Linux CI job runs it.
 - On the home PC `supervisor status` shows `registration: not_configured` under 0.19.1 although
   the hooks fire. Not investigated. (Also seen on the work PC for a project whose hooks come from
   a `--settings` file.)

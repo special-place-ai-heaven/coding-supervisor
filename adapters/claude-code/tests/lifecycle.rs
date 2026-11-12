@@ -633,3 +633,141 @@ fn start_warns_that_forbidden_effects_are_not_enforced() {
         "{next}"
     );
 }
+
+/// G56: `supervisor task rebind` refuses a prompt-managed task, so a session bound to an earlier
+/// task is told the user's direct resume prompt for it instead.
+#[test]
+fn a_stale_session_of_a_prompt_managed_task_is_not_told_to_rebind() {
+    use supervisor_claude_code::autonomy;
+    let d = dir();
+    fs::write(
+        d.0.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let root = d.0.join("state");
+    let event = autonomy::record_prompt(
+        &root,
+        &d.0,
+        &json!({"session_id":"session","prompt_id":"first","prompt":"Implement a small change"}),
+    )
+    .unwrap();
+    let contract = json!({"id":"ordinary-task","goal":"implement requested change","criteria":[{"id":"C2","check":"candidate_passes_reported_test","mandatory":true,"command":"cargo test -p fixture"}],"forbidden_effects":[],"scope":["src/"],"max_repair_rounds":2});
+    let started = autonomy::propose(
+        &root,
+        &d.0,
+        &json!({"event_id":event["event_id"],"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],"action":"start","contract":contract}),
+    )
+    .unwrap();
+    let task = started["task_id"].as_str().unwrap();
+    fs::write(
+        root.join("sessions.json"),
+        json!({"session":"an-earlier-task"}).to_string(),
+    )
+    .unwrap();
+    let error = lifecycle::with_task(&root, None, Some("session"), None, |_| {
+        panic!("a session bound to an earlier task reached the active one")
+    })
+    .unwrap_err();
+    assert!(!error.contains("rebind"), "{error}");
+    assert!(
+        error.contains("resume") && error.contains(task) && error.contains("prompt-managed"),
+        "{error}"
+    );
+    // The advice works: the user's resume prompt binds the session to the task again.
+    let resume = autonomy::record_prompt(
+        &root,
+        &d.0,
+        &json!({"session_id":"session","prompt_id":"resume","prompt":"resume task"}),
+    )
+    .unwrap();
+    autonomy::propose(
+        &root,
+        &d.0,
+        &json!({"event_id":resume["event_id"],"nonce":resume["nonce"],"prompt_hash":resume["prompt_hash"],"action":"resume","task_id":task}),
+    )
+    .unwrap();
+    lifecycle::with_task(&root, None, Some("session"), None, |_| Ok(Value::Null)).unwrap();
+
+    // A task a caller-asserted intent manages is not resumed by a hook prompt from another
+    // session, so the advice names the caller-asserted resume and the person's cancel instead.
+    let d = dir();
+    fs::write(
+        d.0.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let root = d.0.join("state");
+    let event = autonomy::record_intent(
+        &root,
+        &d.0,
+        &json!({"session_id":"mcp","prompt_id":"first","prompt":"Implement a small change"}),
+    )
+    .unwrap();
+    let started = autonomy::propose(
+        &root,
+        &d.0,
+        &json!({"event_id":event["event_id"],"nonce":event["nonce"],"prompt_hash":event["prompt_hash"],"action":"start","contract":contract}),
+    )
+    .unwrap();
+    let task = started["task_id"].as_str().unwrap();
+    // `hooked` is a Claude Code session, whose hooks record each prompt; `session` is not.
+    fs::write(
+        root.join("sessions.json"),
+        json!({"session":"an-earlier-task","hooked":"an-earlier-task"}).to_string(),
+    )
+    .unwrap();
+    for session in ["session", "hooked"] {
+        let error = lifecycle::with_task(&root, None, Some(session), None, |_| {
+            panic!("a session bound to an earlier task reached the active one")
+        })
+        .unwrap_err();
+        assert!(!error.contains("rebind"), "{error}");
+        assert!(
+            error.contains("caller-asserted")
+                && error.contains("intent_record")
+                && error.contains("do not record")
+                && error.contains("task cancel")
+                && error.contains(task),
+            "{error}"
+        );
+    }
+    // In the session the hooks observe, neither resume is taken, so the person's cancel is the way.
+    let hook_resume = autonomy::record_prompt(
+        &root,
+        &d.0,
+        &json!({"session_id":"hooked","prompt_id":"hook-resume","prompt":"resume task"}),
+    )
+    .unwrap();
+    assert!(
+        autonomy::propose(
+            &root,
+            &d.0,
+            &json!({"event_id":hook_resume["event_id"],"nonce":hook_resume["nonce"],"prompt_hash":hook_resume["prompt_hash"],"action":"resume","task_id":task}),
+        )
+        .is_err()
+    );
+    assert!(
+        autonomy::record_intent(
+            &root,
+            &d.0,
+            &json!({"session_id":"hooked","prompt_id":"resume","prompt":"resume task"}),
+        )
+        .is_err()
+    );
+    // In the other session a caller-asserted resume binds it to the task again.
+    let resume = autonomy::record_intent(
+        &root,
+        &d.0,
+        &json!({"session_id":"session","prompt_id":"resume","prompt":"resume task"}),
+    )
+    .unwrap();
+    autonomy::propose(
+        &root,
+        &d.0,
+        &json!({"event_id":resume["event_id"],"nonce":resume["nonce"],"prompt_hash":resume["prompt_hash"],"action":"resume","task_id":task}),
+    )
+    .unwrap();
+    lifecycle::with_task(&root, None, Some("session"), None, |_| Ok(Value::Null)).unwrap();
+    autonomy::cancel(&root, task, "the hook-observed session cannot resume it").unwrap();
+}

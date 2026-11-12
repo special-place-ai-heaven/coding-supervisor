@@ -184,7 +184,11 @@ fn intent(flags: &Flags) -> Result<(), Failure> {
     let mut answer = supervisor_claude_code::autonomy::propose(&root, &project, &proposal)
         .map_err(|why| Failure::Error(format!("intent_apply refused: {why}")))?;
     if let Some(fields) = answer.as_object_mut() {
-        fields.insert("answer_authority".to_owned(), "advisory".into());
+        fields.insert("answer_authority".to_owned(), "proposal_recorded".into());
+        fields.insert(
+            "enforcement".to_owned(),
+            supervisor_claude_code::autonomy::INTENT_ENFORCEMENT.into(),
+        );
         fields.insert("source".to_owned(), "caller-asserted".into());
     }
     println!("{answer}");
