@@ -134,21 +134,32 @@ fn execution_profile(input: &Value) -> Value {
     profile
 }
 
-/// G46: environment variables that change how a check runs or prints (job and thread counts,
-/// colour, progress), never what it builds or tests. Approved with any value, in every project.
-// shortcut: one built-in list; add a per-project list when a project needs a name outside it.
+/// G46, G55: environment variables that change how a check runs or prints (job and thread
+/// counts, colour, progress, how much it prints), never what it builds or tests. Approved with
+/// any value, in every project. One built-in list and no per-project file (owner, 2026-11-11),
+/// because an agent could edit a project's file to make its own run count.
 pub(crate) const HARMLESS_ENV: &[&str] = &[
     "CARGO_BUILD_JOBS",
     "CARGO_TERM_COLOR",
     "CARGO_TERM_PROGRESS_WHEN",
     "CARGO_TERM_PROGRESS_WIDTH",
+    "CARGO_TERM_VERBOSE",
+    "CARGO_TERM_QUIET",
     "RAYON_NUM_THREADS",
     "RUST_TEST_THREADS",
     "NEXTEST_TEST_THREADS",
+    "NEXTEST_HIDE_PROGRESS_BAR",
+    "NEXTEST_STATUS_LEVEL",
+    "NEXTEST_FINAL_STATUS_LEVEL",
+    "CMAKE_BUILD_PARALLEL_LEVEL",
+    "GOMAXPROCS",
     "NO_COLOR",
     "FORCE_COLOR",
     "CLICOLOR",
     "CLICOLOR_FORCE",
+    "NODE_DISABLE_COLORS",
+    "PY_COLORS",
+    "PYTHONUNBUFFERED",
     "NPM_CONFIG_COLOR",
     "NPM_CONFIG_PROGRESS",
 ];
@@ -182,7 +193,7 @@ pub(crate) fn context_set(record: &Value) -> String {
 /// What to do about an unapproved execution context (G46), stated once per message.
 pub(crate) fn context_remedy() -> String {
     format!(
-        "rerun it without extra environment or shell; job and thread counts, colour and progress variables are approved ({}); a CARGO_TARGET_DIR passed to the command counts only when the hook's own environment has the same value (set it in the harness settings env or cargo's [build] target-dir instead)",
+        "rerun it without extra environment or shell; job and thread counts, colour, progress and output-level variables are approved ({}); a CARGO_TARGET_DIR passed to the command counts only when the hook's own environment has the same value (set it in the harness settings env or cargo's [build] target-dir instead)",
         HARMLESS_ENV.join(", ")
     )
 }

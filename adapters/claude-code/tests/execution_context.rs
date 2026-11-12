@@ -149,6 +149,52 @@ fn a_refused_variable_is_named() {
         "{refusal:?}"
     );
 }
+/// G55 (owner, 2026-11-11: one built-in list; thread-count and colour variables belong on it):
+/// variables that change only a thread or job count, colour or how much a tool prints keep the
+/// check; variables that change retries, selection, flags or the build stay refused.
+#[test]
+fn output_only_variables_keep_the_check() {
+    for key in [
+        "CARGO_TERM_VERBOSE",
+        "CARGO_TERM_QUIET",
+        "NEXTEST_HIDE_PROGRESS_BAR",
+        "NEXTEST_STATUS_LEVEL",
+        "NEXTEST_FINAL_STATUS_LEVEL",
+        "CMAKE_BUILD_PARALLEL_LEVEL",
+        "GOMAXPROCS",
+        "NODE_DISABLE_COLORS",
+        "PYTHONUNBUFFERED",
+        "PY_COLORS",
+    ] {
+        let (_fixture, mut env) = setup("cargo test");
+        let mut event = payload(&env, "run_and_watch", "output");
+        event["tool_input"]["env"] = json!([{"key":key, "value":"1"}]);
+        finish(&mut env, event, "exited", Some(0));
+        assert_eq!(stop(&mut env), Decision::None, "{key}");
+    }
+    for key in [
+        "NEXTEST_RETRIES",
+        "NEXTEST_PROFILE",
+        "NEXTEST_NO_TESTS",
+        "PYTEST_ADDOPTS",
+        "RUST_LOG",
+        "RUST_BACKTRACE",
+        "MAKEFLAGS",
+        "GOFLAGS",
+        "CARGO_INCREMENTAL",
+        "RUSTFLAGS",
+        "NODE_OPTIONS",
+    ] {
+        let (_fixture, mut env) = setup("cargo test");
+        let mut event = payload(&env, "run_and_watch", "changed");
+        event["tool_input"]["env"] = json!([{"key":key, "value":"1"}]);
+        finish(&mut env, event, "exited", Some(0));
+        assert!(
+            matches!(stop(&mut env), Decision::Block(why) if why.contains(&format!("set {key}"))),
+            "{key} must stay refused"
+        );
+    }
+}
 #[test]
 fn explicit_shell_override_requires_approval() {
     let (_fixture, mut env) = setup("cargo test");
