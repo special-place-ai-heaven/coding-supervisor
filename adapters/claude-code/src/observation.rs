@@ -1655,6 +1655,22 @@ mod tests {
         assert_eq!(run.unwrap()["status"], "finished");
     }
 
+    /// G60: the launching tool's own PostToolUse with no candidate still journals the job, so
+    /// a later `command_status` finds it and records the exit.
+    #[test]
+    fn tc_launch_without_a_candidate_keeps_the_job_for_a_later_poll() {
+        let (d, mut p, c) = setup();
+        assert!(event(&d, &p, "PreToolUse", &c));
+        p["tool_response"] = json!({"job_id":"job-1","bucket_id":"bucket-1"});
+        p["hook_event_name"] = "PostToolUse".into();
+        assert!(!observe(&d.0, &p, "task-1", "main", None, 100, &criteria()).unwrap());
+        let status = json!({"tool_name":format!("{TC}command_status"),"tool_use_id":"status-1",
+            "session_id":"session-1","cwd":d.0,"tool_input":{"job_id":"job-1"},"tool_response":final_response()});
+        assert!(event(&d, &status, "PostToolUse", &c));
+        let run = latest_run(&d.0, "task-1", &criteria()[0], &c.id).unwrap();
+        assert_eq!(run.unwrap()["status"], "finished");
+    }
+
     /// G60: a poll that sees another candidate still cancels the run for good, and the run is
     /// then reported as cancelled with its job, also after the tree is back on its candidate.
     #[test]
