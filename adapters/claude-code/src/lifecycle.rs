@@ -477,6 +477,30 @@ pub fn reset_rounds(root: &Path, expected: &str, reason: &str) -> Result<Value, 
     Ok(json!({"task_id":active.task_id,"state":"repairing","rounds_before":rounds_before}))
 }
 
+/// G58 review: a new prompt from the session that owns the active task starts a new turn, so the
+/// last turn's pending hold releases nothing. Writes only when the mark is set on a valid gate.
+pub fn clear_pending_hold(root: &Path, session: &str) -> Result<(), String> {
+    let tx = Transaction::open(root)?;
+    let Some(active) = active_task(root)? else {
+        return Ok(());
+    };
+    if !crate::autonomy::owns_session(&active.dir, session)? {
+        return Ok(());
+    }
+    let (_, digest) = state::read_contract(&active.dir)?;
+    let Stored::Valid(mut gate) = state::load_gate(&active.dir, &digest)? else {
+        return Ok(());
+    };
+    if !gate.pending_hold {
+        return Ok(());
+    }
+    gate.pending_hold = false;
+    let path = PathBuf::from("tasks")
+        .join(&active.task_id)
+        .join("gate.json");
+    tx.commit(vec![(path, state::gate_text(&gate, &digest))])
+}
+
 pub fn rebind(root: &Path, expected: &str, session: &str) -> Result<Value, String> {
     if session.is_empty() {
         return Err("session ID is empty".to_owned());

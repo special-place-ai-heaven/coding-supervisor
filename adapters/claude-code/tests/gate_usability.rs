@@ -833,6 +833,133 @@ fn a_pending_terminal_commander_job_refuses_stop_once_then_waits() {
     assert_ne!(gate(&env)["state"], "completed");
 }
 
+/// G58: a stop held only for a job with no recorded exit is not a numbered refusal, and a tool
+/// call between it and the next stop (which resets the refusal count) does not make the gate
+/// refuse again: the stop right after the hold is released with the note.
+#[test]
+fn a_pending_job_refusal_is_not_counted_and_tool_calls_do_not_rearm_it() {
+    let (_d, mut env, _) = autonomous();
+    let project = cwd(&env);
+    let input = json!({"argv":["cargo","test"],"cwd":project});
+    let name = "mcp__terminal_commander__command_start_combed";
+    assert_eq!(
+        tool(
+            &mut env,
+            "PreToolUse",
+            "session",
+            name,
+            "tc1",
+            input.clone()
+        ),
+        Decision::None
+    );
+    handle(
+        &json!({"hook_event_name":"PostToolUse","cwd":project,"session_id":"session",
+        "agent_id":"main","tool_use_id":"tc1","tool_name":name,"tool_input":input,
+        "tool_response":{"job_id":"job-1","bucket_id":"bucket-1"}}),
+        &mut env,
+    );
+    let Decision::Block(first) = stop_with(&mut env, "main", false) else {
+        panic!("the first stop must name the pending job");
+    };
+    assert!(
+        first.contains("job-1") && first.contains("no recorded exit yet"),
+        "{first}"
+    );
+    assert!(!first.contains("refusal 1 of 3"), "{first}");
+    // A judged tool call resets the refusal count, as before.
+    assert_eq!(
+        tool(&mut env, "PreToolUse", "session", "Write", "w1", json!({})),
+        Decision::None
+    );
+    let second = stop_with(&mut env, "main", true);
+    let Decision::System(note) = &second else {
+        panic!("the continued stop must be released, got {second:?}");
+    };
+    assert!(
+        note.contains("job-1") && note.contains("command_status"),
+        "{note}"
+    );
+    assert_ne!(gate(&env)["state"], "completed");
+}
+
+/// Start `cargo test` as a Terminal Commander job whose exit is never fetched.
+fn start_job(env: &mut Env, id: &str, job: &str) {
+    let input = json!({"argv":["cargo","test"],"cwd":cwd(env)});
+    let name = "mcp__terminal_commander__command_start_combed";
+    assert_eq!(
+        tool(env, "PreToolUse", "session", name, id, input.clone()),
+        Decision::None
+    );
+    handle(
+        &json!({"hook_event_name":"PostToolUse","cwd":cwd(env),"session_id":"session",
+        "agent_id":"main","tool_use_id":id,"tool_name":name,"tool_input":input,
+        "tool_response":{"job_id":job,"bucket_id":"bucket-1"}}),
+        env,
+    );
+}
+
+/// G58 review: a numbered refusal does not set the pending-hold mark. After one, an edit (which
+/// sets the refusal count back to 0) and a restarted check, the next stop is held, naming the job
+/// and the `command_status` call; the harness's continuation flag it carries changes nothing.
+#[test]
+fn a_continued_stop_after_a_numbered_refusal_is_held_for_a_pending_job() {
+    let (_d, mut env, _) = autonomous();
+    let Decision::Block(first) = stop(&mut env, "main") else {
+        panic!("a stop with no check run must be refused");
+    };
+    assert!(first.contains("refusal 1 of 3"), "{first}");
+    assert_eq!(
+        tool(&mut env, "PreToolUse", "session", "Write", "w1", json!({})),
+        Decision::None
+    );
+    start_job(&mut env, "tc1", "job-1");
+    let second = stop_with(&mut env, "main", true);
+    let Decision::Block(held) = &second else {
+        panic!("the continued stop must be held for the pending job, got {second:?}");
+    };
+    assert!(
+        held.contains("no recorded exit yet")
+            && held.contains("job-1")
+            && held.contains("command_status"),
+        "{held}"
+    );
+}
+
+/// G58 review: a released hold is used up, so a continued stop in a later turn, after a block
+/// the gate did not give, is held again rather than released.
+#[test]
+fn a_released_hold_does_not_release_a_later_continued_stop() {
+    let (_d, mut env, _) = autonomous();
+    start_job(&mut env, "tc1", "job-1");
+    let Decision::Block(first) = stop(&mut env, "main") else {
+        panic!("the first stop must name the pending job");
+    };
+    assert!(first.contains("no recorded exit yet"), "{first}");
+    assert_eq!(
+        tool(&mut env, "PreToolUse", "session", "Write", "w1", json!({})),
+        Decision::None
+    );
+    assert!(matches!(
+        stop_with(&mut env, "main", true),
+        Decision::System(_)
+    ));
+    assert!(matches!(
+        follow_up(&mut env, "session", "later", "Keep going on the same work"),
+        Decision::Context { .. }
+    ));
+    let later = stop_with(&mut env, "main", true);
+    let Decision::Block(held) = &later else {
+        panic!("a continued stop with no hold before it must be held, got {later:?}");
+    };
+    assert!(
+        held.contains("no recorded exit yet")
+            && held.contains("job-1")
+            && held.contains("command_status"),
+        "{held}"
+    );
+}
+
 /// G25: the chair records the exit of a Terminal Commander job its worker started in the
 /// same session, and that run then counts for the chair's Stop.
 #[test]
@@ -921,4 +1048,167 @@ fn a_checkless_repository_gets_one_short_line() {
     assert!(text.contains("supervisor task add-check"), "{text}");
     assert!(text.contains("supervisor intent apply"), "{text}");
     assert!(!text.contains("requires an intent proposal"), "{text}");
+}
+
+/// A Terminal Commander poll of `job` (or of bucket-1) after its tool ran.
+fn poll(env: &mut Env, name: &str, input: Value, response: Value) -> Decision {
+    handle(
+        &json!({"hook_event_name":"PostToolUse","cwd":cwd(env),"session_id":"session",
+        "agent_id":"main","tool_use_id":format!("poll-{name}"),
+        "tool_name":format!("mcp__terminal_commander__{name}"),"tool_input":input,
+        "tool_response":response}),
+        env,
+    )
+}
+
+/// The final `command_status` of `job` with `exit`.
+fn finished(env: &mut Env, job: &str, exit: i32) -> Decision {
+    poll(
+        env,
+        "command_status",
+        json!({"job_id":job}),
+        json!({"job_id":job,"bucket_id":"bucket-1","state":"exited","complete":true,
+            "exit_code":exit,"outcome_trust":"observed","degraded":false,"pipeline_exit_masked":false}),
+    )
+}
+
+/// G58 review: the pending hold is not counted, so the refusal after it, once the job failed,
+/// is the turn's first.
+#[test]
+fn the_refusal_after_a_pending_hold_is_the_first_of_the_turn() {
+    let (_d, mut env, _) = autonomous();
+    start_job(&mut env, "tc1", "job-1");
+    let Decision::Block(first) = stop(&mut env, "main") else {
+        panic!("the first stop must hold for the pending job");
+    };
+    assert!(first.contains("no recorded exit yet"), "{first}");
+    finished(&mut env, "job-1", 1);
+    let Decision::Block(second) = stop_with(&mut env, "main", true) else {
+        panic!("a failing check must be refused");
+    };
+    assert!(second.contains("refusal 1 of 3"), "{second}");
+}
+
+/// Hold a stop for a pending job, send a new prompt with no tool call after it, and return the
+/// next continued stop's decision: a new prompt starts a new turn, so it must be held again.
+fn stop_after_a_new_prompt(env: &mut Env) -> Decision {
+    start_job(env, "tc1", "job-1");
+    let Decision::Block(first) = stop(env, "main") else {
+        panic!("the first stop must hold for the pending job");
+    };
+    assert!(first.contains("no recorded exit yet"), "{first}");
+    assert!(matches!(
+        follow_up(env, "session", "later", "Keep going on the same work"),
+        Decision::Context { .. }
+    ));
+    stop_with(env, "main", true)
+}
+
+/// G58 review: a new prompt clears the hold of a prompt-managed task.
+#[test]
+fn a_new_prompt_clears_the_pending_hold_of_a_prompt_managed_task() {
+    let (_d, mut env, _) = autonomous();
+    let later = stop_after_a_new_prompt(&mut env);
+    assert!(
+        matches!(&later, Decision::Block(held) if held.contains("no recorded exit yet")),
+        "a stop in the next turn must be held again, got {later:?}"
+    );
+}
+
+/// G58 review: a new prompt clears the hold of a person's `task start` task too.
+#[test]
+fn a_new_prompt_clears_the_pending_hold_of_a_persons_task() {
+    let (_d, mut env, _) = idle();
+    supervisor_claude_code::lifecycle::start_as(
+        &env.state_dir,
+        &supervisor_claude_code::state::Writer::task_start(None),
+        &contract("person"),
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    let event = prompt(&mut env, "first", "Keep working on the task");
+    let task = supervisor_claude_code::lifecycle::active_task(&env.state_dir)
+        .unwrap()
+        .unwrap()
+        .task_id;
+    propose(&env, &event, "continue", Some(&task), None);
+    let later = stop_after_a_new_prompt(&mut env);
+    assert!(
+        matches!(&later, Decision::Block(held) if held.contains("no recorded exit yet")),
+        "a stop in the next turn must be held again, got {later:?}"
+    );
+}
+
+/// G60: a run cancelled because the code changed while it ran is named so in the Stop refusal,
+/// which is not a hold for it: the job can never record an exit.
+#[test]
+fn a_run_cancelled_by_a_code_change_is_named_and_not_waited_on() {
+    let (_d, mut env, digest) = autonomous();
+    start_job(&mut env, "tc1", "job-1");
+    *digest.lock().unwrap() = "b";
+    poll(
+        &mut env,
+        "bucket_wait",
+        json!({"bucket_id":"bucket-1"}),
+        json!({"signals":[],"heartbeat":true}),
+    );
+    *digest.lock().unwrap() = "a";
+    let first = stop(&mut env, "main");
+    assert!(
+        matches!(&first, Decision::Block(why) if why.contains("C2 latest run was cancelled because the code changed while it ran: run it again")
+            && why.contains("refusal 1 of 3")),
+        "{first:?}"
+    );
+    let second = stop_with(&mut env, "main", true);
+    assert!(
+        matches!(&second, Decision::Block(why) if why.contains("refusal 2 of 3")),
+        "a cancelled run is not waited on, got {second:?}"
+    );
+}
+
+/// G58 review round 3: a released hold is used up without any prompt, so after a tool call the
+/// next pending-only stop is held again rather than released.
+#[test]
+fn a_released_hold_is_used_up_without_a_prompt() {
+    let (_d, mut env, _) = autonomous();
+    start_job(&mut env, "tc1", "job-1");
+    assert!(matches!(stop(&mut env, "main"), Decision::Block(_)));
+    assert!(matches!(
+        stop_with(&mut env, "main", true),
+        Decision::System(_)
+    ));
+    assert_eq!(
+        tool(&mut env, "PreToolUse", "session", "Write", "w1", json!({})),
+        Decision::None
+    );
+    let later = stop_with(&mut env, "main", true);
+    assert!(
+        matches!(&later, Decision::Block(held) if held.contains("no recorded exit yet")),
+        "a stop after a released hold must be held again, got {later:?}"
+    );
+}
+
+/// G60: the Stop list names a run cancelled only when the cancellation is that run's own, with
+/// the same task, session and agent, as `latest_run` reads it.
+#[test]
+fn another_sessions_cancellation_row_does_not_cancel_this_run() {
+    let (_d, mut env, _) = autonomous();
+    start_job(&mut env, "tc1", "job-1");
+    let active = supervisor_claude_code::lifecycle::active_task(&env.state_dir)
+        .unwrap()
+        .unwrap();
+    let runs = active.dir.join("runs.jsonl");
+    let text = fs::read_to_string(&runs).unwrap();
+    let mut row: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    row["kind"] = "invalidated".into();
+    row["session_id"] = "other-session".into();
+    fs::write(&runs, format!("{text}{row}\n")).unwrap();
+    let first = stop(&mut env, "main");
+    assert!(
+        matches!(&first, Decision::Block(why) if why.contains("no recorded exit yet")
+            && !why.contains("cancelled")),
+        "{first:?}"
+    );
 }

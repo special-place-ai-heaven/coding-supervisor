@@ -96,6 +96,9 @@ pub struct Gate {
     pub starting: Option<Box<CandidateId>>,
     /// WP5: every review recorded, each bound to its candidate. Written only when not empty.
     pub reviews: Vec<StoredReview>,
+    /// G58: the last judged Stop was the hold for a job with no recorded exit, so the next judged
+    /// stop is released; a prompt from the task's session clears it. Written only when set.
+    pub pending_hold: bool,
 }
 
 /// A review as gate.json keeps it: the core record plus the worktree tree when it was recorded,
@@ -119,6 +122,7 @@ impl Gate {
             repair_charged: None,
             starting: None,
             reviews: Vec::new(),
+            pending_hold: false,
         }
     }
 
@@ -129,6 +133,9 @@ impl Gate {
         }
         if let (Some(c), Some(o)) = (&self.starting, v.as_object_mut()) {
             o.insert("starting_candidate".to_owned(), candidate_json(c));
+        }
+        if let (true, Some(o)) = (self.pending_hold, v.as_object_mut()) {
+            o.insert("pending_hold".to_owned(), true.into());
         }
         if let (false, Some(o)) = (self.reviews.is_empty(), v.as_object_mut()) {
             o.insert(
@@ -213,6 +220,10 @@ impl Gate {
                     .map(review_from)
                     .collect::<Result<_, _>>()?,
             },
+            pending_hold: v
+                .get("pending_hold")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             handback_refusals: refusals
                 .iter()
                 .map(|(k, n)| {

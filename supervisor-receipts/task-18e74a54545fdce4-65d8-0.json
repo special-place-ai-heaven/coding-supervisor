@@ -1,0 +1,134 @@
+{
+  "base_sha": "8a70de2f45d29be72374732777535d438f83d20e",
+  "bundle_version": 1,
+  "candidate": {
+    "base_commit": "8a70de2f45d29be72374732777535d438f83d20e",
+    "dirty_digest": "f11a8ce75b7b20d14c1f35e6198756f9859fd18f559d1a8cba4bc36a11f89653"
+  },
+  "chain_head": "72aa5aab65d5ee8f51ec06753889e039a54ddf2d47c13cb10f4d8381b839ab61",
+  "changed_paths": [
+    "adapters/claude-code/src/adapter.rs",
+    "adapters/claude-code/src/autonomy.rs",
+    "adapters/claude-code/src/chain.rs",
+    "adapters/claude-code/src/lifecycle.rs",
+    "adapters/claude-code/src/observation.rs",
+    "adapters/claude-code/src/state.rs",
+    "adapters/claude-code/tests/autonomous_completion.rs",
+    "adapters/claude-code/tests/gate_usability.rs",
+    "cli/src/verdict.rs",
+    "cli/tests/verdict.rs",
+    "skills/supervisor-chair.SKILL.template.md"
+  ],
+  "contract": "{\"approval\":{\"at\":1794484702,\"by\":null,\"via\":\"agent-proposal\"},\"base_sha\":\"8a70de2f45d29be72374732777535d438f83d20e\",\"criteria\":[{\"check\":\"repository_validation\",\"command\":\"cargo test -p supervisor-claude-code --test gate_usability\",\"id\":\"C1\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"cargo fmt --all -- --check\",\"id\":\"AUTO_FMT\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"cargo clippy --workspace --all-targets -- -D warnings\",\"id\":\"AUTO_LINT\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":[\"cargo test --workspace\",\"cargo nextest run --workspace\"],\"id\":\"AUTO_TEST\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"npm --prefix npm run test\",\"id\":\"AUTO_NPM_TEST_NPM\",\"mandatory\":true},{\"check\":\"repository_validation\",\"command\":\"git diff --check\",\"id\":\"AUTO_DIFF\",\"mandatory\":true}],\"event_id\":\"autonomy-4abb611facd20fdd8600fe4b8360dae34661c5b93469506462933a02a236d0f6\",\"forbidden_effects\":[],\"goal\":\"Verify the finished change: a check run is kept when a poll cannot read the code version, a cancelled run is named, a stop held only for a pending job is not a numbered refusal, the next prompt names the receipts a task was accepted on, and corrected documentation\",\"id\":\"session-friction-2\",\"isolation\":\"none\",\"max_repair_rounds\":3,\"schema_version\":2,\"scope\":[\"adapters/\",\"cli/\",\"docs/\",\"skills/\",\"CLAUDE.md\"]}",
+  "exported_at": "2026-11-12T12:30:55.000Z",
+  "exported_contract_sha256": "da84959bba8be781dc1172f01787d2119b63fd039fdaedfa038b4ecf1f700b6e",
+  "gate_state": "completed",
+  "receipts": [
+    {
+      "candidate": {
+        "base_commit": "8a70de2f45d29be72374732777535d438f83d20e",
+        "dirty_digest": "f11a8ce75b7b20d14c1f35e6198756f9859fd18f559d1a8cba4bc36a11f89653"
+      },
+      "claim_supported": true,
+      "command": "cargo test -p supervisor-claude-code --test gate_usability",
+      "criterion": "C1",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794484802,
+      "output_ref": "observed:task-18e74a54545fdce4-65d8-0:toolu_01HjM6LR5v3oqjFVNUp58waX",
+      "provenance": "observed",
+      "started_at": 1794484709
+    },
+    {
+      "candidate": {
+        "base_commit": "8a70de2f45d29be72374732777535d438f83d20e",
+        "dirty_digest": "f11a8ce75b7b20d14c1f35e6198756f9859fd18f559d1a8cba4bc36a11f89653"
+      },
+      "claim_supported": true,
+      "command": "cargo fmt --all -- --check",
+      "criterion": "AUTO_FMT",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794484815,
+      "output_ref": "observed:task-18e74a54545fdce4-65d8-0:toolu_01DiPtrucb6UoTaoLvfh4uMM",
+      "provenance": "observed",
+      "started_at": 1794484805
+    },
+    {
+      "candidate": {
+        "base_commit": "8a70de2f45d29be72374732777535d438f83d20e",
+        "dirty_digest": "f11a8ce75b7b20d14c1f35e6198756f9859fd18f559d1a8cba4bc36a11f89653"
+      },
+      "claim_supported": true,
+      "command": "cargo clippy --workspace --all-targets -- -D warnings",
+      "criterion": "AUTO_LINT",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794484836,
+      "output_ref": "observed:task-18e74a54545fdce4-65d8-0:toolu_01QXmYRHhpTu4T3daY2i2xBS",
+      "provenance": "observed",
+      "started_at": 1794484821
+    },
+    {
+      "candidate": {
+        "base_commit": "8a70de2f45d29be72374732777535d438f83d20e",
+        "dirty_digest": "f11a8ce75b7b20d14c1f35e6198756f9859fd18f559d1a8cba4bc36a11f89653"
+      },
+      "claim_supported": true,
+      "command": "cargo test --workspace",
+      "criterion": "AUTO_TEST",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794486603,
+      "output_ref": "observed:task-18e74a54545fdce4-65d8-0:toolu_01CDJb4MjHNGVKjftnmAN83u",
+      "provenance": "observed",
+      "started_at": 1794484843
+    },
+    {
+      "candidate": {
+        "base_commit": "8a70de2f45d29be72374732777535d438f83d20e",
+        "dirty_digest": "f11a8ce75b7b20d14c1f35e6198756f9859fd18f559d1a8cba4bc36a11f89653"
+      },
+      "claim_supported": true,
+      "command": "npm --prefix npm run test",
+      "criterion": "AUTO_NPM_TEST_NPM",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794486617,
+      "output_ref": "observed:task-18e74a54545fdce4-65d8-0:toolu_01XfDRrPwnZWteaiMN5wdaNQ",
+      "provenance": "observed",
+      "started_at": 1794486607
+    },
+    {
+      "candidate": {
+        "base_commit": "8a70de2f45d29be72374732777535d438f83d20e",
+        "dirty_digest": "f11a8ce75b7b20d14c1f35e6198756f9859fd18f559d1a8cba4bc36a11f89653"
+      },
+      "claim_supported": true,
+      "command": "git diff --check",
+      "criterion": "AUTO_DIFF",
+      "cwd": ".",
+      "exit_code": 0,
+      "finished_at": 1794486628,
+      "output_ref": "observed:task-18e74a54545fdce4-65d8-0:toolu_01KQodZ1m2ji8R4cMnxgmELm",
+      "provenance": "observed",
+      "started_at": 1794486621
+    }
+  ],
+  "repository": {
+    "root_commits": [
+      "a447f728ba58c655393a75fe16af4a1456cb5a04"
+    ]
+  },
+  "reviews": [],
+  "signature": {
+    "body_sha256": "d858093c1a5c58ec6a6ac3ac462d4249a71ce096220541438c11f713db54c512",
+    "key_id": "56fefcdc588ccb5b",
+    "signature": "37119081aeb362d46343e6e049b3dac1b2185534df5e135ed97dd41eac7b8b758e7cb476c4e90fe8419750823ef4c516e5b6b18574a3a99bd4a881d835ea5005",
+    "statement": "coding-supervisor receipt bundle v2",
+    "storage": "windows-credential-manager"
+  },
+  "stored_contract_sha256": "1caaad2f8b23a29858e0a9996516c2f46628135f7bee879efce36b86232e5529",
+  "task_id": "task-18e74a54545fdce4-65d8-0",
+  "tree": "d54b77752be50bcf0c0b8e77b8a33b003afffc92"
+}

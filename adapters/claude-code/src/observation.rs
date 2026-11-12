@@ -581,11 +581,11 @@ pub(crate) fn observe(
     }
     let current =
         candidate.map(|c| json!({"base_commit":c.id.base_commit,"dirty_digest":c.id.dirty_digest}));
-    if current.as_ref() != dispatch.get("candidate") {
+    if current.is_some() && current.as_ref() != dispatch.get("candidate") {
         // An observed mismatch permanently invalidates this dispatch, including
         // a later status replay after the checkout has reverted to its old bytes.
         run["kind"] = "invalidated".into();
-        run["invalidation"] = "candidate changed or not observed".into();
+        run["invalidation"] = "candidate changed".into();
         append(&run)?;
         return Ok(false);
     }
@@ -680,6 +680,11 @@ pub(crate) fn observe(
         }
         terminal(&v)
     };
+    // G60: a hook call whose git read failed (timeout) proves no candidate either way; a later
+    // poll that can read it judges the run. The job row above is kept so that poll finds it.
+    if candidate.is_none() {
+        return Ok(false);
+    }
     let Some(exit) = exit else { return Ok(false) };
     run["kind"] = "completed".into();
     run["completion_trust"] = completion_trust.into();
@@ -1101,8 +1106,9 @@ pub(crate) fn read_runs(dir: &Path, task: &str) -> Result<Vec<Run>, String> {
 
 /// G51: the latest journaled run of `criterion` on exactly `candidate`, read only, as the Stop
 /// judges it: `finished` with its exit and receipt reference, `pending` with the Terminal
-/// Commander job whose exit is not recorded yet, or `unapproved`. `None` when there is none, or
-/// the run was stopped or invalidated. Reporting it never makes it evidence.
+/// Commander job whose exit is not recorded yet, `cancelled` (G60) when a poll saw the candidate
+/// change while it ran, or `unapproved`. `None` when there is none, or the run was stopped.
+/// Reporting it never makes it evidence.
 pub(crate) fn latest_run(
     dir: &Path,
     task: &str,
@@ -1153,9 +1159,20 @@ pub(crate) fn latest_run(
     if rows
         .iter()
         .filter(same)
-        .any(|row| matches!(text(row, "kind"), Some("stopped" | "invalidated")))
+        .any(|row| text(row, "kind") == Some("stopped"))
     {
         return Ok(None);
+    }
+    let job = rows.iter().filter(same).find_map(|row| text(row, "job_id"));
+    // G60: a poll saw the code change while it ran; its exit will never be recorded.
+    if rows
+        .iter()
+        .filter(same)
+        .any(|row| text(row, "kind") == Some("invalidated"))
+    {
+        return Ok(Some(
+            json!({"status":"cancelled","command":command,"job_id":job}),
+        ));
     }
     Ok(rows
         .iter()
@@ -1607,6 +1624,69 @@ mod tests {
         let records = records(&d.0).unwrap();
         assert_ne!(records[0]["command"], other);
         assert_eq!(records[0]["identity"]["argv"], json!(["echo", "a b"]));
+    }
+
+    /// Start `cargo test` as a job and return a `bucket_wait` and a final `command_status`.
+    fn started_job(d: &Dir, mut p: Value, c: &Candidate) -> (Value, Value) {
+        assert!(event(d, &p, "PreToolUse", c));
+        p["tool_response"] = json!({"job_id":"job-1","bucket_id":"bucket-1"});
+        event(d, &p, "PostToolUse", c);
+        let wait = json!({"tool_name":format!("{TC}bucket_wait"),"tool_use_id":"wait-1",
+            "session_id":"session-1","cwd":d.0,"tool_input":{"bucket_id":"bucket-1"},
+            "tool_response":{"signals":[],"heartbeat":true}});
+        let status = json!({"tool_name":format!("{TC}command_status"),"tool_use_id":"status-1",
+            "session_id":"session-1","cwd":d.0,"tool_input":{"job_id":"job-1"},"tool_response":final_response()});
+        (wait, status)
+    }
+
+    /// G60: a poll in a hook call that could not read the code version judges nothing, so a
+    /// later poll that can read it records the exit.
+    #[test]
+    fn tc_poll_without_a_candidate_leaves_the_run_to_a_later_poll() {
+        let (d, p, c) = setup();
+        let (mut wait, status) = started_job(&d, p, &c);
+        wait["hook_event_name"] = "PostToolUse".into();
+        assert!(!observe(&d.0, &wait, "task-1", "main", None, 100, &criteria()).unwrap());
+        assert!(event(&d, &status, "PostToolUse", &c));
+        let runs = read_runs(&d.0, "task-1").unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].exit_code, Some(0));
+        let run = latest_run(&d.0, "task-1", &criteria()[0], &c.id).unwrap();
+        assert_eq!(run.unwrap()["status"], "finished");
+    }
+
+    /// G60: the launching tool's own PostToolUse with no candidate still journals the job, so
+    /// a later `command_status` finds it and records the exit.
+    #[test]
+    fn tc_launch_without_a_candidate_keeps_the_job_for_a_later_poll() {
+        let (d, mut p, c) = setup();
+        assert!(event(&d, &p, "PreToolUse", &c));
+        p["tool_response"] = json!({"job_id":"job-1","bucket_id":"bucket-1"});
+        p["hook_event_name"] = "PostToolUse".into();
+        assert!(!observe(&d.0, &p, "task-1", "main", None, 100, &criteria()).unwrap());
+        let status = json!({"tool_name":format!("{TC}command_status"),"tool_use_id":"status-1",
+            "session_id":"session-1","cwd":d.0,"tool_input":{"job_id":"job-1"},"tool_response":final_response()});
+        assert!(event(&d, &status, "PostToolUse", &c));
+        let run = latest_run(&d.0, "task-1", &criteria()[0], &c.id).unwrap();
+        assert_eq!(run.unwrap()["status"], "finished");
+    }
+
+    /// G60: a poll that sees another candidate still cancels the run for good, and the run is
+    /// then reported as cancelled with its job, also after the tree is back on its candidate.
+    #[test]
+    fn tc_poll_on_another_candidate_cancels_the_run_and_says_so() {
+        let (d, p, c) = setup();
+        let (wait, status) = started_job(&d, p, &c);
+        let mut changed = c.clone();
+        changed.id.dirty_digest = "two".into();
+        assert!(!event(&d, &wait, "PostToolUse", &changed));
+        assert!(!event(&d, &status, "PostToolUse", &c));
+        assert!(read_runs(&d.0, "task-1").unwrap().is_empty());
+        let run = latest_run(&d.0, "task-1", &criteria()[0], &c.id)
+            .unwrap()
+            .expect("a cancelled run is reported");
+        assert_eq!(run["status"], "cancelled", "{run}");
+        assert_eq!(run["job_id"], "job-1", "{run}");
     }
 
     #[test]

@@ -1206,6 +1206,12 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
     let legacy_contract = root.join("contract.json").is_file()
         && !root.join("active.json").exists()
         && !root.join("intents.json").exists();
+    // G58 review: a prompt starts a new turn (the legacy layout clears in `process`). A failed
+    // clear keeps the mark, which can release one later stop uncertified, never certify it.
+    if event == "UserPromptSubmit" && !legacy_contract {
+        let _ =
+            lifecycle::clear_pending_hold(&root, text(payload, "session_id").unwrap_or_default());
+    }
     // G36 (AAP report): a background-task notice the harness delivers as a prompt is not a
     // request; the previous prompt's classification stands. A person typing this marker
     // first only keeps that classification, it never widens it.
@@ -1266,8 +1272,23 @@ fn judge(payload: &Value, env: &mut Env) -> Decision {
                     // G47: a completed task takes no more work, whichever session owned it, so
                     // `continue` would be refused and a start from any session is accepted.
                     call["action"] = "start".into();
+                    // G59: how it was accepted, only when the hook-observed evidence still holds.
+                    let accepted = lifecycle::active_task(&root)
+                        .ok()
+                        .flatten()
+                        .and_then(|active| {
+                            crate::autonomy::observed_receipt_count(
+                                &active.dir,
+                                &active.task_id,
+                                &project,
+                            )
+                        })
+                        .map_or_else(
+                            || ".".to_owned(),
+                            |n| format!("; it was accepted on {n} hook-observed receipts."),
+                        );
                     format!(
-                        "The active task {} is completed and takes no more work (continue is refused). Next call for new work: intent_apply {call} plus \"contract\": a scoped contract, at least {}; for a question, the same fields with \"action\":\"discussion\".",
+                        "The active task {} is completed and takes no more work (continue is refused){accepted} Next call for new work: intent_apply {call} plus \"contract\": a scoped contract, at least {}; for a question, the same fields with \"action\":\"discussion\".",
                         intent["task_id"].as_str().unwrap_or_default(),
                         crate::autonomy::MINIMAL_CONTRACT
                     )
@@ -1985,6 +2006,7 @@ fn process(
     let refusals = (
         session.gate.continuations,
         session.gate.handback_refusals.clone(),
+        session.gate.pending_hold,
     );
     let refused_for_limit = match reached {
         Some(reached) if event == "PreToolUse" && !limit_exempt(payload) => {
@@ -2018,6 +2040,7 @@ fn process(
         }
         "UserPromptSubmit" => {
             session.gate.continuations = 0;
+            session.gate.pending_hold = false;
             session.gate.prompt_id = text(payload, "prompt_id").map(str::to_owned);
             Decision::None
         }
@@ -2037,7 +2060,11 @@ fn process(
     let release = matches!(event, "Stop" | "SubagentStop") && uncertified && review_only.is_none();
     let decision = match (decision, reached, &usage) {
         (_, Some(reached), Some(usage)) if release => {
-            (session.gate.continuations, session.gate.handback_refusals) = refusals.clone();
+            (
+                session.gate.continuations,
+                session.gate.handback_refusals,
+                session.gate.pending_hold,
+            ) = refusals.clone();
             session.limit_release(event, reached, usage, &env.state_dir, reasons)?
         }
         (decision, ..) => decision,
@@ -2046,7 +2073,11 @@ fn process(
     {
         // Lite never blocks, so a stop refusal it only reports must not count toward the caps.
         if matches!(decision, Decision::Block(_)) {
-            (session.gate.continuations, session.gate.handback_refusals) = refusals;
+            (
+                session.gate.continuations,
+                session.gate.handback_refusals,
+                session.gate.pending_hold,
+            ) = refusals;
         }
         reasons.push("level audit: reported, not blocked".to_owned());
     }
@@ -2996,6 +3027,21 @@ impl Session {
                     criterion: criterion.id.clone(),
                     exit_code: exit,
                 })),
+                // G60: a poll saw the code change while it ran, so its exit is never recorded;
+                // naming it apart keeps the G27 wait off a job that cannot finish here.
+                None if current_rows.iter().any(|row| {
+                    text(row, "kind") == Some("invalidated")
+                        && text(row, "dispatch_id") == Some(dispatch)
+                        && ["task_id", "session_id", "agent_id"]
+                            .iter()
+                            .all(|key| row.get(*key) == latest.get(*key))
+                }) =>
+                {
+                    problems.push(format!(
+                        "{} latest run was cancelled because the code changed while it ran: run it again",
+                        criterion.id.0
+                    ));
+                }
                 None => {
                     // A Terminal Commander job is recorded only from its final command_status;
                     // an exit seen through bucket_wait carries no structured exit state.
@@ -3402,6 +3448,8 @@ impl Session {
         repair: bool,
         reasons: &mut Vec<String>,
     ) -> Result<Decision, String> {
+        // G58: a hold counts for the next judged stop only; every judged stop uses it up.
+        let held = std::mem::take(&mut self.gate.pending_hold);
         let message = text(payload, "last_assistant_message").unwrap_or_default();
         if crate::autonomy::is_paused(dir)? {
             reasons.push("task paused; no completion attempted".to_owned());
@@ -3515,7 +3563,10 @@ impl Session {
                     }
                 }
                 let state = state_name(self.task.state());
-                if only_pending_job && self.gate.continuations >= 1 {
+                // G58: the stop right after the gate's own pending hold is released, whatever
+                // tool calls (which reset the count) came between; so is one after a numbered
+                // refusal with no tool call since. A new prompt clears the hold.
+                if only_pending_job && (held || self.gate.continuations >= 1) {
                     return Ok(Decision::System(format!(
                         "GATE: waiting, task remains {state}; {why}; nothing is certified"
                     )));
@@ -3523,6 +3574,15 @@ impl Session {
                 if self.gate.continuations >= 3 {
                     return Ok(Decision::System(format!(
                         "GATE: refusal cap reached; task remains {state}"
+                    )));
+                }
+                // G58: a hold for a job with no recorded exit is not a numbered refusal and is
+                // not counted. It stays bounded: every judged stop uses the hold up, so the stop
+                // after a hold is released or refused with a number, never held again.
+                if only_pending_job {
+                    self.gate.pending_hold = true;
+                    return Ok(Decision::Block(format!(
+                        "GATE: pending, not a numbered refusal: a check has no recorded exit yet; state {state}{round}; {why}; nothing is certified; the next stop is released with a note if only pending jobs remain."
                     )));
                 }
                 self.gate.continuations += 1;

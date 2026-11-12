@@ -1509,6 +1509,17 @@ fn observed_completion(dir: &Path, task_id: &str, project: &Path) -> Result<(), 
     Ok(())
 }
 
+/// G59: how many hook-observed receipts a completed task rests on: the rollover's check (G22)
+/// found one for each mandatory criterion of its stored contract. `None` when it did not (a
+/// completion on caller-asserted receipts, or one the documentation-only rule of G46 scaled down).
+pub(crate) fn observed_receipt_count(dir: &Path, task_id: &str, project: &Path) -> Option<usize> {
+    validate_entrypoints(dir, project)
+        .and_then(|()| observed_completion(dir, task_id, project))
+        .ok()?;
+    let (contract, _) = state::read_contract(dir).ok()?;
+    Some(contract?.criteria.iter().filter(|c| c.mandatory).count())
+}
+
 /// The person-only command that ends a task no call from this prompt can end.
 pub fn person_cancel(event: &Value, task_id: &str) -> String {
     let project = event["project"].as_str().unwrap_or("<project>");

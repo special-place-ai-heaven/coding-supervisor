@@ -22,20 +22,29 @@ source changes need the full check floor; hooks stay fail-closed for mutation.
    `git ls-remote`, `which`, `cat`, `gh repo view`. Also on the other-session path, where the
    refusal should tell the session to start in a worktree. Seen refused under 0.19.1 in a
    discussion turn: `git stash list`, `gh api ... --jq ...`, and any `cd X && git ...` compound of
-   read-only commands. Built on branch `fix/session-friction` (2026-11-12, ledger G53, not
-   merged): all of these run (`cd X &&` only with X relative, without `..`, `\` or `"`, not
+   read-only commands. Built on branch `fix/session-friction` (2026-11-12, ledger G53,
+   merged in #110): all of these run (`cd X &&` only with X relative, without `..`, `\` or `"`, not
    starting with `#`, inside the same project), and the other-session refusal names a worktree a
    person creates with a new session there. Pipes into readers (`git status | head`) stay refused. Left open: after an accepted
    intent a plain `cd` into another project still moves later hook calls to a state with no
    contract.
 3. (Done with approved change 1, owner's condition of 2026-11-10.)
 4. Acceptance line: the brief's item on how a completion is stated. Only the name survives; the
-   follow-up brief itself is needed.
+   follow-up brief itself is needed. Built on branch `fix/session-friction-2` (2026-11-12, G59,
+   not merged), as the plan's fallback: the prompt after completion says the task was accepted
+   on `<n>` hook-observed receipts. Left open for the owner: a line at the completing Stop
+   itself, which changes the answer asserted at every completing Stop (56 tests in seven files).
 5. Pending-job answer: after a long Terminal Commander job the agent must call `command_status`
    or Stop refuses with "AUTO_TEST latest execution has no observed completion". Ask: the gate
    reads the job's end itself, or says so earlier than Stop. G50 (2026-11-11) names the
    `command_status` action in the Stop refusal; reading the exit from the `bucket_wait` payload
-   is not built.
+   is not built. Built on branch `fix/session-friction-2` (G58, not merged): that hold is no
+   longer a numbered refusal ("a check has no recorded exit yet") and is not counted, the stop
+   right after it is released with a note even after tool calls in between, and a new prompt
+   clears the hold. Also there (G60): a poll in a hook call that could not read the code
+   version no longer cancels the job's run, and a run cancelled by a real code change is named
+   as cancelled in `verdict` and the Stop list. The gate still cannot tell a job still running
+   from one that ended unfetched.
 
 ## SymForge report items still open
 
@@ -53,11 +62,11 @@ source changes need the full check floor; hooks stay fail-closed for mutation.
 - 11: same as pending-job answer above.
 - 13, "advisory" labels: `intent_apply` answers say `mode: advisory`,
   `answer_authority: advisory` while the hooks enforce; agents read it as optional. Wording only.
-  Built on branch `fix/session-friction` (G57, not merged): `answer_authority:
+  Built on branch `fix/session-friction` (G57, merged in #110): `answer_authority:
   proposal_recorded` plus an `enforcement` sentence; MCP `intent_apply` drops `mode`.
 - 14, a teammate's message arriving mid-turn is treated as a changed prompt: "GATE: current
   prompt intent changed; retry before stopping". Only `<task-notification>` is exempt today.
-  Part built on branch `fix/session-friction` (G54, not merged): another session's prompt no
+  Part built on branch `fix/session-friction` (G54, merged in #110): another session's prompt no
   longer trips the check. Still open: a teammate message that reaches this session's own prompt
   hook; exempting it needs its payload captured first.
 
@@ -75,9 +84,10 @@ sub-agents with an unchanged tree (#78), 9 harmless environment variables (#83),
   principle 2; other skills and web fetch staying refused before an intent. (The harmless
   variable list was decided on 2026-11-11, below, and built on branch `fix/session-friction`,
   G55.)
-- Plan of 2026-11-12 for the friction items, not built yet: the acceptance line at a completing
-  Stop (follow-up item 4), the pending-job Stop that spends no refusal (follow-up item 5), and
-  Workflow launches and teammate messages (SymForge items 6 and 14), which need a captured
+- Plan of 2026-11-12 for the friction items: the acceptance line (follow-up item 4) and the
+  pending-job Stop that spends no refusal (follow-up item 5) are built on branch
+  `fix/session-friction-2` (G59, G58, G60, not merged; item 4 as the prompt-line fallback). Not built
+  yet: Workflow launches and teammate messages (SymForge items 6 and 14), which need a captured
   payload first. Also left: the unix-only cleanup test of G56 has not run yet; the Linux CI job runs it.
 - On the home PC `supervisor status` shows `registration: not_configured` under 0.19.1 although
   the hooks fire. Not investigated. (Also seen on the work PC for a project whose hooks come from

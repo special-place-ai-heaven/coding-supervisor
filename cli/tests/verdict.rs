@@ -1934,3 +1934,50 @@ fn t46_verdict_reports_runs_a_stop_has_not_counted_yet() {
     );
     assert!(human.contains("\nC4: missing\n"), "{human}");
 }
+
+/// G60: a run cancelled because the code changed while it ran is reported as cancelled, with
+/// its job, and the text says to run it again; before, the verdict said only `missing`.
+#[test]
+fn t47_verdict_reports_a_run_cancelled_by_a_code_change() {
+    let f = Fixture::git("t47");
+    let head = f.head();
+    let criteria = json!([{"id":"C1","check":"test","mandatory":true,"command":"cargo test"}]);
+    let (task, dir) = f.task_stored_with(
+        TaskState::Verifying,
+        &[],
+        &[],
+        &[],
+        &json!({ "criteria": criteria }),
+    );
+    let cwd = canonical_project(&f.project);
+    let dispatch = json!({"kind":"dispatch","task_id":task,"agent_id":"main","session_id":"s",
+        "dispatch_id":"test","tool":"mcp__terminal_commander__command_start_combed",
+        "identity_schema":3,"identity":{"argv":["cargo","test"]},"command":"cargo test",
+        "cwd":cwd,"execution_project":cwd,"execution_root":cwd,
+        "execution_profile":{"name":"local-default-v1","approved":true,"cargo_target_sha256":null},
+        "candidate":{"base_commit":head.base_commit,"dirty_digest":head.dirty_digest},"t":T0});
+    let mut job = dispatch.clone();
+    job["kind"] = "job".into();
+    job["job_id"] = "job-test".into();
+    let mut cancelled = job.clone();
+    cancelled["kind"] = "invalidated".into();
+    cancelled["invalidation"] = "candidate changed".into();
+    let rows: Vec<String> = [dispatch, job, cancelled]
+        .iter()
+        .map(Value::to_string)
+        .collect();
+    fs::write(dir.join("runs.jsonl"), rows.join("\n") + "\n").unwrap();
+    let (code, r) = f.verdict_json(&[]);
+    assert_eq!(code, 3, "{r}");
+    let c1 = criterion(&r, "C1");
+    assert_eq!(c1["state"], "missing");
+    assert_eq!(c1["latest_run"]["status"], "cancelled", "{r}");
+    assert_eq!(c1["latest_run"]["job_id"], "job-test", "{r}");
+    let human = String::from_utf8(f.verdict(&[]).stdout).unwrap();
+    assert!(
+        human.contains(
+            "C1: missing (latest run, job job-test, was cancelled because the code changed while it ran: run it again)"
+        ),
+        "{human}"
+    );
+}
