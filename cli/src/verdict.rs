@@ -461,6 +461,12 @@ fn human(report: &Value) -> String {
                 "{phrase} (latest run has no recorded exit: call command_status on job {})",
                 run["job_id"].as_str().unwrap_or("?")
             ),
+            Some("cancelled") => format!(
+                "{phrase} (latest run{}was cancelled because the code changed while it ran: run it again)",
+                run["job_id"]
+                    .as_str()
+                    .map_or(" ".to_owned(), |job| format!(", job {job}, "))
+            ),
             Some("unapproved") => format!(
                 "{phrase} (latest run has unapproved execution context and will not count; rerun it without extra environment or shell)"
             ),

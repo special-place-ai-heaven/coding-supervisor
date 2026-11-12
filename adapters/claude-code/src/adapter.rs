@@ -3021,6 +3021,18 @@ impl Session {
                     criterion: criterion.id.clone(),
                     exit_code: exit,
                 })),
+                // G60: a poll saw the code change while it ran, so its exit is never recorded;
+                // naming it apart keeps the G27 wait off a job that cannot finish here.
+                None if current_rows.iter().any(|row| {
+                    text(row, "kind") == Some("invalidated")
+                        && text(row, "dispatch_id") == Some(dispatch)
+                }) =>
+                {
+                    problems.push(format!(
+                        "{} latest run was cancelled because the code changed while it ran: run it again",
+                        criterion.id.0
+                    ));
+                }
                 None => {
                     // A Terminal Commander job is recorded only from its final command_status;
                     // an exit seen through bucket_wait carries no structured exit state.

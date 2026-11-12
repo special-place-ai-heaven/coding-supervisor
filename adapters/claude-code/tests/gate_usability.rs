@@ -1049,3 +1049,41 @@ fn a_checkless_repository_gets_one_short_line() {
     assert!(text.contains("supervisor intent apply"), "{text}");
     assert!(!text.contains("requires an intent proposal"), "{text}");
 }
+
+/// A Terminal Commander poll of `job` (or of bucket-1) after its tool ran.
+fn poll(env: &mut Env, name: &str, input: Value, response: Value) -> Decision {
+    handle(
+        &json!({"hook_event_name":"PostToolUse","cwd":cwd(env),"session_id":"session",
+        "agent_id":"main","tool_use_id":format!("poll-{name}"),
+        "tool_name":format!("mcp__terminal_commander__{name}"),"tool_input":input,
+        "tool_response":response}),
+        env,
+    )
+}
+
+/// G60: a run cancelled because the code changed while it ran is named so in the Stop refusal,
+/// which is not a hold for it: the job can never record an exit.
+#[test]
+fn a_run_cancelled_by_a_code_change_is_named_and_not_waited_on() {
+    let (_d, mut env, digest) = autonomous();
+    start_job(&mut env, "tc1", "job-1");
+    *digest.lock().unwrap() = "b";
+    poll(
+        &mut env,
+        "bucket_wait",
+        json!({"bucket_id":"bucket-1"}),
+        json!({"signals":[],"heartbeat":true}),
+    );
+    *digest.lock().unwrap() = "a";
+    let first = stop(&mut env, "main");
+    assert!(
+        matches!(&first, Decision::Block(why) if why.contains("C2 latest run was cancelled because the code changed while it ran: run it again")
+            && why.contains("refusal 1 of 3")),
+        "{first:?}"
+    );
+    let second = stop_with(&mut env, "main", true);
+    assert!(
+        matches!(&second, Decision::Block(why) if why.contains("refusal 2 of 3")),
+        "a cancelled run is not waited on, got {second:?}"
+    );
+}
