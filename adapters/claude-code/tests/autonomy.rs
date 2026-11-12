@@ -1826,6 +1826,14 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
     use supervisor_claude_code::adapter::{Decision, handle};
     let (f, task) = three_sessions_beside_a_task();
     let mut env = hook_env(&f);
+    // A `cd` into a directory of the same repository keeps the state the hooks read; one into a
+    // nested repository or out of the project would move later hook calls to another state.
+    for dir in ["sub", "a b", "nested"] {
+        fs::create_dir_all(f.project.join(dir)).unwrap();
+    }
+    for dir in [f.project.clone(), f.project.join("nested")] {
+        assert!(run_process("git", &["init", "-q"], &dir).status.success());
+    }
     let as_session = |session: &str, id: String, tool: &str, input: Value| {
         let mut payload = pre_tool(&f, &id, tool, input);
         payload["session_id"] = session.into();
@@ -1876,6 +1884,14 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         "cd a && git status && touch x",
         "cd a && touch x",
         "cd a b && git status",
+        "cd nested && pwd",
+        "cd .. && pwd",
+        "cd missing && pwd",
+        "cd - && pwd",
+        "cd ~ && pwd",
+        "cd n* && pwd",
+        "cd / && pwd",
+        "cd '' && pwd",
         "cd $(x) && ls",
         "cd a; ls",
         "git log \\'; rm x; \\'",
@@ -1967,6 +1983,11 @@ fn quoted_or_escaped_output_flags_and_unclosed_quotes_are_not_read_only() {
         "git diff --out'put=x'",
         "git diff \"--output=x\"",
         "git diff -\\-output=x",
+        // A brace list or a glob Bash expands into `--output=...`.
+        "git diff -{-output=x,-stat}",
+        "git diff --{output=x,stat}",
+        "git diff -{x,-output=y}",
+        "git diff --out*",
         "git log 'x",
     ]
     .into_iter()

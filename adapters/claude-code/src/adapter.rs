@@ -494,8 +494,8 @@ fn limit_exempt(payload: &Value) -> bool {
 }
 
 /// One read-only shell command with no shell syntax, usable before the prompt is classified,
-/// optionally after `cd <one word> &&` (G53). It still passes the gate-state guard and the
-/// action policy, and is observed like any run.
+/// optionally after `cd <one word> &&` into the same project ([`same_project`], G53). It still
+/// passes the gate-state guard and the action policy, and is observed like any run.
 fn read_only_command(payload: &Value) -> bool {
     if text(payload, "tool_name") != Some("Bash") {
         return false;
@@ -505,11 +505,30 @@ fn read_only_command(payload: &Value) -> bool {
         .unwrap_or_default();
     if let Some((cd, rest)) = command.split_once(" && ") {
         return !rest.contains('&')
-            && shell_words(cd).is_some_and(|w| matches!(w.as_slice(), [(c, _), _] if c == "cd"))
+            && shell_words(cd).is_some_and(|w| {
+                matches!(w.as_slice(), [(c, false), (dir, false)] if c == "cd" && same_project(payload, dir))
+            })
             && shell_words(rest)
                 .is_some_and(|w| w.first().is_none_or(|(c, _)| c != "cd") && read_only_words(&w));
     }
     shell_words(command).is_some_and(|w| read_only_words(&w))
+}
+
+/// G53: whether `cd <dir>` leaves the shell in the project the hooks judge now. Later hook calls
+/// take their state from the shell's directory, so a nested repository, a parent or a directory
+/// outside a repository would move them to another state. Only a relative existing directory: a
+/// leading `-` (`cd -`), `/` (Git Bash reads `/c` as `C:\`) or a drive letter resolves unlike here.
+// shortcut: a CDPATH set in the session's shell can send a relative `cd` elsewhere; refuse
+// words without `./` if that is seen.
+fn same_project(payload: &Value, dir: &str) -> bool {
+    let Some(cwd) = text(payload, "cwd").map(Path::new) else {
+        return false;
+    };
+    if dir.is_empty() || dir.starts_with(['-', '/']) || dir.contains(':') {
+        return false;
+    }
+    let target = cwd.join(dir);
+    target.is_dir() && location::canonical_project(&target) == location::canonical_project(cwd)
 }
 
 /// Shell syntax that makes a command more than one plain command.
@@ -565,11 +584,12 @@ fn expands(bare: &str) -> bool {
 
 /// Whether the words of one command are a read-only command of the list.
 fn read_only_words(words: &[(String, bool)]) -> bool {
-    // `--output` writes a file; a quote or backslash inside the word does not hide it.
-    if words
-        .iter()
-        .any(|(w, _)| w.replace(['"', '\\'], "").starts_with("--output"))
-    {
+    // `--output` writes a file; a quote or backslash inside the word does not hide it, and a
+    // brace list or a glob starting with `-` could expand into it.
+    if words.iter().any(|(w, e)| {
+        w.replace(['"', '\\'], "").starts_with("--output")
+            || (*e && (w.contains('{') || w.starts_with('-')))
+    }) {
         return false;
     }
     let expanded = words.iter().any(|(_, e)| *e);
