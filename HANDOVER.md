@@ -1,4 +1,4 @@
-# HANDOVER — coding-supervisor, prepared 2026-11-12
+# HANDOVER — coding-supervisor, prepared 2026-11-12 (updated the same day after 0.21.0)
 
 For the next session in this repository. It replaces the handover of 2026-10-28/29. `CLAUDE.md`
 is the live truth and wins where the two disagree. The earlier handover (lab paths and hashes,
@@ -14,7 +14,7 @@ receipt that CI checks again before a pull request is merged.
 
 ## 2. Merged and released
 
-Latest release: 0.20.0 (tag `v0.20.0`, 2026-11-11; `CHANGELOG.md`). Governance Phase 1 plan:
+Latest release: 0.21.0 (tag `v0.21.0`, 2026-11-12; `CHANGELOG.md`). Governance Phase 1 plan:
 `docs/research/2026-11-09-governance-phase1/PLAN.md`. Ledger: `GATES.md` in the same folder.
 
 | WP | What | PR | Pinned by |
@@ -28,13 +28,14 @@ Latest release: 0.20.0 (tag `v0.20.0`, 2026-11-11; `CHANGELOG.md`). Governance P
 | 5 | Reviewer record | #82 | `adapters/claude-code/tests/review_record.rs` |
 | 6 | Signed receipts | #87 (machine key: #93) | `cli/tests/receipt_sign.rs` |
 | 7 | Receipt bundles and the CI job `Verify supervisor receipts` | #96 (follow-ups: #99) | `cli/tests/receipt_verify.rs`, `cli/tests/receipt_in_tree.rs`, `cli/tests/receipt_exemption.rs` |
-| 8 | The 20-case results matrix, `RESULTS.md` | branch `test/barrier-matrix`, the change that brings this file | the tests named per case in `RESULTS.md` |
+| 8 | The 20-case results matrix, `RESULTS.md` | #108 | the tests named per case in `RESULTS.md` |
 
 Field fixes merged beside the plan: #73 (session takeover), #78, #79, #83, #91, #94, #103 (early
-gate feedback, limits and paths). `CHANGELOG.md` and `OPEN-ITEMS.md` describe them.
+gate feedback, limits and paths), #110 and #112 (session friction, ledger G53 to G60 in
+`docs/research/2026-11-02-gate-modes/LEDGER.md`). `CHANGELOG.md` and `OPEN-ITEMS.md` describe them.
 
-Ledger rows still open in `GATES.md`: W3.1, W3.2, W8.1, W8.2, F5 and F6. F6 needs one `ABANDON:`
-line per deferral listed in `RESULTS.md`.
+The ledger `GATES.md` is closed (#109, all 34 gates met). "All met" means every work package is
+merged, not that every barrier of the spec is complete: see `RESULTS.md`.
 
 ## 3. How a code pull request gets merged
 
@@ -50,7 +51,7 @@ limits: the WP7 bullet in `CLAUDE.md` and `docs/adopting-receipt-verification.md
 Signing key: Windows Credential Manager entry `coding-supervisor/receipt-signing-key`, key id
 `56fefcdc588ccb5b`, listed in `supervisor-keys.json`. CI reads that list from `main`.
 
-Recipe that has worked (bundles for #99, #103 and #106 are in `supervisor-receipts/`; `GATES.md`
+Recipe that has worked (bundles for #99, #103, #106, #110 and #112 are in `supervisor-receipts/`; `GATES.md`
 W7.8 records a pass without the label):
 
 1. Make a worktree at the merge base of the branch and `main`, with the branch content as
@@ -64,6 +65,19 @@ W7.8 records a pass without the label):
 6. Run `supervisor receipt verify --bundle <file>` locally and expect `valid`, exit 0.
 7. Commit the work, then the bundle (so far as its own `chore: add the supervisor receipt ...`
    commit), then open the pull request.
+
+Order that avoids paying for a session twice (a code change after export makes the receipt
+stale): independent review passes, `cargo test --workspace` finishes locally, push and open the
+pull request, the Linux job is green (it is the first compile of unix-only test code), then run
+the session, export, commit the bundle. Start the session as a detached process, not as a child
+of Terminal Commander: a daemon restart killed one mid-run on 2026-11-12. A killed session can be
+continued with `claude -p --resume <session id>`; the gate keeps the task.
+
+A second machine needs its own signing key. `supervisor receipt sign` creates one at first use
+and prints the entry for `supervisor-keys.json`; CI reads that list from `main`, so the entry has
+to be merged before a receipt signed on that machine verifies. `supervisor-keys.json` is not on
+the docs list, so the pull request that adds the key needs the owner's `receipt-exempt` label (as
+#93 did) or a receipt from a machine whose key is already listed.
 
 `docs/research/2026-11-09-governance-phase1/WP7-LIVE-RUN.md` records the first attempt. It
 produced no receipt. Read it for the setup (merge-base worktree, hooks from a settings file), how
@@ -85,29 +99,35 @@ The gaps are in its section "Deferrals and gaps". Most evidence is replay, not a
 
 ## 5. Open work, in priority order
 
-1. Friction fixes from field use (`docs/research/2026-11-11-open-items/OPEN-ITEMS.md`; the
-   follow-up brief's items are not approved by the owner yet):
-   - a read-only shell allow-list before an intent and in discussion turns;
-   - an acceptance line telling the session its task was accepted (task id, state, receipts);
-   - "pending: job <id> still running" instead of a refusal while a check runs;
-   - a `Workflow` launch counted as outstanding background work, like `Agent`;
-   - a teammate's message mid-turn not treated as a changed prompt;
-   - clearer wording than "advisory" in `intent_apply` answers.
-2. Re-test the items of the 2026-11-06 friction report (A1.1 to A3 in `OPEN-ITEMS.md`) against
+1. Friction fixes from field use (`docs/research/2026-11-11-open-items/OPEN-ITEMS.md`). Merged in
+   #110 and #112: the read-only shell allow-list read the way Bash reads a command, the
+   per-session intent comparison, the harmless environment variable list, the `intent_apply`
+   wording, the pending-job hold that is not a numbered refusal, the acceptance sentence at the
+   next prompt, and a check run kept when a poll cannot read the code version. Still open:
+   - a `Workflow` launch counted as outstanding background work, like `Agent` (plan item 4), and a
+     teammate's message mid-turn not treated as a changed prompt (5b). Both wait for a captured
+     real hook payload;
+   - an acceptance line at the completing Stop itself (measured: it changes the answer in 56
+     tests; left for the owner);
+   - a foreground shell run whose own PostToolUse saw no code version is still lost (G60).
+2. `CLAUDE.md`: the bullets for WP7, WP6, WP4 and the first friction batch still carry review
+   history. The WP3 bullet was condensed in #112 and is the model; check every statement against
+   the code when condensing (the first draft of the WP3 rewrite was wrong in several places).
+3. Re-test the items of the 2026-11-06 friction report (A1.1 to A3 in `OPEN-ITEMS.md`) against
    `main`. None has been re-checked.
-3. The matrix gaps, listed in `OPEN-ITEMS.md` section "Gaps recorded by the results matrix
+4. The matrix gaps, listed in `OPEN-ITEMS.md` section "Gaps recorded by the results matrix
    (2026-11-12)". Biggest: approval is not checked (2), base-checkout writes by shell or MCP are
    not refused (6), no local commit barrier (13), no per-artifact hashes (14), an agent proposal
    can bind an existing worktree (8, 19).
-4. One task per git worktree, so two sessions can work in one project (decided 2026-11-11, option
+5. One task per git worktree, so two sessions can work in one project (decided 2026-11-11, option
    b; not built beyond a person's `task start --worktree`).
-5. Decided 2026-11-11 (`OPEN-ITEMS.md`): empty scope for a task that changes nothing (not built:
-   an empty scope is still refused); one built-in list of harmless environment variables and
-   clearer `revise` messages (check `main` before starting).
-6. Smaller: CI has no job timeout; `supervisor status` shows `registration: not_configured` while
+6. Empty scope for a task that changes nothing (decided 2026-11-11; not built: an empty scope is
+   still refused); clearer `revise` messages.
+7. Smaller: CI has no job timeout; `supervisor status` shows `registration: not_configured` while
    hooks fire; the receipt job re-runs every bundled command (WP7-LIVE-RUN follow-up 2); the
-   hook's own 20 s limit under load.
-7. Other harnesses: Codex, Cursor and Grok live-model runs were never done
+   hook's own 20 s limit under load; the skills that `supervisor install` renders into a checkout
+   go stale until it is run again after a release.
+8. Other harnesses: Codex, Cursor and Grok live-model runs were never done
    (`docs/research/2026-10-29-installable/`).
 
 ## 6. Limits that matter most
