@@ -546,13 +546,13 @@ const SHELL_SYNTAX: [char; 11] = [';', '&', '|', '<', '>', '$', '`', '(', ')', '
 /// removes them: inside `'` everything but a control character is literal; inside `"` also, but
 /// `$`, a backtick and `\` are refused. Outside quotes words end at a space or a tab only, and
 /// [`SHELL_SYNTAX`], `\`, any other whitespace or control character and a word starting with
-/// `#` (a comment) are refused; an unclosed quote is refused. A tab inside quotes is literal.
+/// `#` (a comment) are refused; an unclosed quote is refused. A tab inside quotes is refused too.
 fn shell_words(command: &str) -> Option<Vec<(String, bool)>> {
     // Each word as Bash passes it, beside the characters of it that stood outside quotes.
     let (mut words, mut word) = (Vec::new(), None::<(String, String)>);
     let mut quote = None::<char>;
     for c in command.chars() {
-        if c.is_control() && c != '\t' {
+        if c.is_control() && (c != '\t' || quote.is_some()) {
             return None;
         }
         match (quote, c) {
@@ -4163,8 +4163,8 @@ mod shell_words_tests {
         );
         assert_eq!(words("a\"b\"*"), Some(vec![w("ab*", true)]));
         assert_eq!(
-            words("\"\" x\t\"a\tb\""),
-            Some(vec![w("", false), w("x", false), w("a\tb", false)])
+            words("\"\" x\t\"a b\""),
+            Some(vec![w("", false), w("x", false), w("a b", false)])
         );
         assert_eq!(
             words("x#y \"#z\""),
@@ -4172,7 +4172,7 @@ mod shell_words_tests {
         );
         for refused in [
             "\"x", "'x", "\"$x\"", "\"`x`\"", "\"a\\b\"", "a\\ b", "a\u{a0}b", "\"a\nb\"", "#x",
-            "a;b",
+            "a;b", "\"a\tb\"", "'a\tb'",
         ] {
             assert_eq!(words(refused), None, "{refused:?}");
         }
