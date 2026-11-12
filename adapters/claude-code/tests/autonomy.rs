@@ -1829,8 +1829,8 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
     // A `cd` into a directory of the same repository keeps the state the hooks read; one into a
     // nested repository or out of the project would move later hook calls to another state.
     // `sub/x` is a plain directory beside the nested repository `subx`: Bash runs `cd sub\x`
-    // as `cd subx`.
-    for dir in ["sub/x", "a b", "nested", "subx"] {
+    // as `cd subx`. Bash reads `cd #sub && ...` as a bare `cd`, which goes home.
+    for dir in ["sub/x", "a b", "nested", "subx", "#sub"] {
         fs::create_dir_all(f.project.join(dir)).unwrap();
     }
     for dir in [
@@ -1890,6 +1890,7 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         // `sub` exists, so these reach the rules for what follows the `cd`.
         "cd sub && cd b && git status",
         "cd sub && cd x",
+        "cd sub && cd --version",
         "cd sub && git status && touch x",
         "cd sub && touch x",
         "cd sub && git log --grep='a&b'",
@@ -1901,6 +1902,7 @@ fn read_only_shell_reads_run_before_an_intent_in_discussion_and_for_another_sess
         // Bash drops a backslash or double quote inside an unquoted word.
         "cd sub\\x && git status",
         "cd sub\"x\" && git status",
+        "cd #sub && git status",
         "cd nested && pwd",
         "cd .. && pwd",
         "cd sub/.. && pwd",
