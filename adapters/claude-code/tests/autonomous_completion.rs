@@ -402,10 +402,12 @@ fn a_prompt_after_completion_reports_the_hook_observed_receipts() {
         "{text}"
     );
 
-    // The same task shape completed on caller-asserted receipts only.
+    // The same task shape completed on caller-asserted receipts only: the checks ran through
+    // the hooks, but no Stop counted them.
     use coding_supervisor::{CriterionId, TaskState, VerificationReceipt};
     use supervisor_claude_code::state::{Stored, load_gate, save_gate};
     let (_d, mut env, _task) = autonomous();
+    run_autonomous_checks(&mut env, "initial");
     let write = json!({"hook_event_name":"PreToolUse","cwd":env.state_dir.parent().unwrap(),
         "session_id":"session","agent_id":"main","tool_use_id":"w1","tool_name":"Write",
         "tool_input":{"file_path":"src/lib.rs","content":"x"}});
